@@ -12,6 +12,7 @@ import ProductsPage from "./pages/ProductsPage";
 import PurchasePage from "./pages/PurchasePage";
 import SalesPage from "./pages/SalesPage";
 import AccountsPage from "./pages/AccountsPage";
+import LedgerPage from "./pages/LedgerPage";
 import StaffPage from "./pages/StaffPage";
 import LoadersPage from "./pages/LoadersPage";
 import ShopProfilePage from "./pages/ShopProfilePage";
@@ -166,6 +167,7 @@ function AppInner() {
           {active === "purchase"     && <PurchasePage purchases={purchases} products={products} loadPurchases={loadPurchases} loadProducts={loadProducts} />}
           {active === "sales"        && <SalesPage sales={sales} products={products} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} />}
           {active === "accounts"     && <AccountsPage />}
+          {active === "ledger"       && <LedgerPage purchases={purchases} sales={sales} />}
           {active === "staff"        && <StaffPage staff={staff} loadStaff={loadStaff} />}
           {active === "loaders"      && <LoadersPage loaders={loaders} loadLoaders={loadLoaders} />}
           {active === "shop-profile" && <ShopProfilePage />}

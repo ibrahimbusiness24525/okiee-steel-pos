@@ -9,7 +9,8 @@ import { CHADER_TYPES, NET_TYPES, NET_CHORUS_GAUGES, ROUND_INCHES, SQUARE_INCHES
 // ═══════════════════════════════════════════════════════════════════════════
 // PRODUCTS PAGE
 // ═══════════════════════════════════════════════════════════════════════════
-const EMPTY_FORM = { category:"", name:"", pipeType:"", pipeSubType:"", pipeInch:"", gauge:"", length:"", weight:"", basePrice:"", percentage:"", price:"", purchasePrice:"", subType:"", stock:"", unit:"piece", width:"" };
+const EMPTY_FORM = { category:"", name:"", pipeType:"", pipeSubType:"", pipeInch:"", gauge:"", length:"", weight:"", basePrice:"", percentage:"", price:"", purchasePrice:"", subType:"", stock:"", unit:"piece", width:"", barcode:"", location:"", notes:"" };
+const EMPTY_HW = { name:"", barcode:"", subType:"", location:"", notes:"", purchasePrice:"", price:"" };
 
 function ProductsPage({ products, loadProducts }) {
   const th = useTheme(); const {t,lang} = useLang(); const { isMobile } = useResponsive();
@@ -17,18 +18,55 @@ function ProductsPage({ products, loadProducts }) {
   const [showModal,setShowModal]=useState(false); const [form,setForm]=useState(EMPTY_FORM);
   const [editing,setEditing]=useState(null); const [saving,setSaving]=useState(false);
   const [catTab,setCatTab]=useState("all"); const [search,setSearch]=useState("");
+  const [showHwModal,setShowHwModal]=useState(false); const [hwForm,setHwForm]=useState(EMPTY_HW); const [hwEditing,setHwEditing]=useState(null); const [hwSaving,setHwSaving]=useState(false);
 
   const openAdd  = () => { setForm(EMPTY_FORM); setEditing(null); setShowModal(true); };
+  const openHwAdd = () => { setHwForm(EMPTY_HW); setHwEditing(null); setShowHwModal(true); };
   const openEdit = (d) => {
-    setForm({ category:d.category||"",name:d.name||"",pipeType:d.pipeType||"",pipeSubType:d.pipeSubType||"",pipeInch:d.pipeInch||"",gauge:d.gauge||"",length:d.length||"",weight:String(d.weight||""),basePrice:String(d.basePrice||""),percentage:String(d.percentage||""),subType:d.subType||"",stock:String(d.stock||""),price:String(d.price||""),purchasePrice:String(d.purchasePrice||""),unit:d.unit||"piece",width:d.width||"" });
+    if (d.category === "Hardware") {
+      setHwForm({
+        name: d.name || "",
+        barcode: d.barcode || "",
+        subType: d.subType || d.brand || "",
+        location: d.location || "",
+        notes: d.notes || "",
+        purchasePrice: String(d.purchasePrice || ""),
+        price: String(d.price || ""),
+      });
+      setHwEditing(d._id);
+      setShowHwModal(true);
+      return;
+    }
+    setForm({ category:d.category||"",name:d.name||"",pipeType:d.pipeType||"",pipeSubType:d.pipeSubType||"",pipeInch:d.pipeInch||"",gauge:d.gauge||"",length:d.length||"",weight:String(d.weight||""),basePrice:String(d.basePrice||""),percentage:String(d.percentage||""),subType:d.subType||"",stock:String(d.stock||""),price:String(d.price||""),purchasePrice:String(d.purchasePrice||""),unit:d.unit||"piece",width:d.width||"",barcode:d.barcode||"",location:d.location||"",notes:d.notes||"" });
     setEditing(d._id); setShowModal(true);
+  };
+  const saveHardware = async () => {
+    if (!hwForm.name.trim()) { alert(isUrdu ? "نام ضروری ہے" : "Name is required"); return; }
+    if (!hwForm.barcode.trim()) { alert(isUrdu ? "نمبر ضروری ہے" : "Number is required"); return; }
+    setHwSaving(true);
+    const payload = {
+      name: hwForm.name.trim(),
+      category: "Hardware",
+      barcode: hwForm.barcode.trim(),
+      subType: (hwForm.subType || "").trim(),
+      location: (hwForm.location || "").trim(),
+      notes: (hwForm.notes || "").trim(),
+      purchasePrice: parseFloat(hwForm.purchasePrice) || 0,
+      price: parseFloat(hwForm.price) || 0,
+      unit: "piece",
+      stock: 0,
+    };
+    const res = hwEditing ? await api.updateProduct(hwEditing, payload) : await api.addProduct(payload);
+    if (res.success) { await loadProducts(); setShowHwModal(false); setHwEditing(null); }
+    else alert(res.message);
+    setHwSaving(false);
   };
   const canSave = () => {
     if(!form.category) return false;
     if(form.category==="Pipe") return !!(form.pipeType&&form.pipeInch&&form.pipeInch!=="__custom__"&&form.gauge&&form.price);
     if(form.category==="Chader") return form.subType==="Custom" ? !!(form.name&&form.name.trim()) : !!(form.subType);
     if(form.category==="Net") { if(!form.subType) return false; if(form.subType==="Chorus") return !!(form.gauge); return !!form.name; }
-    if(form.category==="Hardware") return !!form.name;
+    if(form.category==="Hardware") return !!(form.name&&form.name.trim()&&form.barcode&&form.barcode.trim());
     if(form.category==="Custom") return !!form.name;
     return false;
   };
@@ -42,7 +80,7 @@ function ProductsPage({ products, loadProducts }) {
     if(form.category==="Pipe") payload={...payload,price:parseFloat(form.price)||0,pipeType:form.pipeType,pipeSubType:form.pipeSubType,pipeInch:form.pipeInch,gauge:form.gauge,length:form.length,weight:Number(form.weight)||0,basePrice:Number(form.basePrice)||0,percentage:Number(form.percentage)||0,size:form.pipeInch};
     else if(form.category==="Chader") payload={...payload,subType:form.subType,purchasePrice:parseFloat(form.purchasePrice)||0};
     else if(form.category==="Net") payload={...payload,subType:form.subType,gauge:form.gauge||"",width:form.width||"",purchasePrice:parseFloat(form.purchasePrice)||0};
-    else if(form.category==="Hardware") payload={...payload,subType:form.subType,purchasePrice:parseFloat(form.purchasePrice)||0};
+    else if(form.category==="Hardware") payload={...payload,subType:form.subType||"",barcode:form.barcode||"",location:form.location||"",notes:form.notes||"",purchasePrice:parseFloat(form.purchasePrice)||0,price:parseFloat(form.price)||0};
     else if(form.category==="Custom") payload={...payload,purchasePrice:parseFloat(form.purchasePrice)||0};
     const res=editing?await api.updateProduct(editing,payload):await api.addProduct(payload);
     if(res.success){await loadProducts();setShowModal(false);}else alert(res.message);
@@ -108,13 +146,14 @@ function ProductsPage({ products, loadProducts }) {
       if (!isUrdu) return p.pipeSubType.charAt(0).toUpperCase() + p.pipeSubType.slice(1);
       return p.pipeSubType === "soft" ? "نرم" : p.pipeSubType === "hard" ? "سخت" : p.pipeSubType;
     }
+    if (p.category === "Hardware") return p.barcode || p.subType || p.location || "—";
     return p.gauge || "—";
   };
 
   const catColor={Pipe:{color:"#60a5fa",bg:"rgba(41,128,185,0.15)"},Chader:{color:"#34d399",bg:"rgba(26,188,156,0.15)"},Net:{color:"#f472b6",bg:"rgba(244,114,182,0.15)"},Hardware:{color:"#fbbf24",bg:"rgba(251,191,36,0.15)"},Custom:{color:"#a78bfa",bg:"rgba(167,139,250,0.15)"}};
   const searchLower=search.toLowerCase();
   const displayed=(catTab==="all"?products:products.filter(p=>p.category===catTab))
-    .filter(p=>!search||p.name?.toLowerCase().includes(searchLower)||p.subType?.toLowerCase().includes(searchLower)||p.pipeInch?.toLowerCase().includes(searchLower)||p.gauge?.toLowerCase().includes(searchLower)||p.pipeType?.toLowerCase().includes(searchLower));
+    .filter(p=>!search||p.name?.toLowerCase().includes(searchLower)||p.subType?.toLowerCase().includes(searchLower)||p.pipeInch?.toLowerCase().includes(searchLower)||p.gauge?.toLowerCase().includes(searchLower)||p.pipeType?.toLowerCase().includes(searchLower)||p.barcode?.toLowerCase().includes(searchLower)||p.brand?.toLowerCase().includes(searchLower)||p.subCategory?.toLowerCase().includes(searchLower));
   const tabCounts=ALL_CATS.reduce((acc,c)=>({...acc,[c]:products.filter(p=>p.category===c).length}),{});
 
   return (
@@ -134,23 +173,28 @@ function ProductsPage({ products, loadProducts }) {
             </button>
           ))}
         </div>
-        <button onClick={openAdd} style={{display:"flex",alignItems:"center",gap:6,padding:"9px 16px",borderRadius:12,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#1abc9c,#2980b9)",color:"white",fontWeight:600,fontSize:14,flexShrink:0}}>
-          <Icon path={ICONS.plus} size={15}/>{isMobile?"+":t.addProduct}
-        </button>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",flexShrink:0}}>
+          <button onClick={openHwAdd} style={{display:"flex",alignItems:"center",gap:6,padding:"9px 16px",borderRadius:12,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#d97706,#f59e0b)",color:"white",fontWeight:600,fontSize:14,flexShrink:0,boxShadow:"0 3px 0 rgba(180,83,9,0.45)"}}>
+            <Icon path={ICONS.plus} size={15}/>{isMobile?(isUrdu?"🔧":"🔧 HW"):(isUrdu?"ہارڈ ویئر آئٹم شامل کریں":t.addHardwareProduct)}
+          </button>
+          <button onClick={openAdd} style={{display:"flex",alignItems:"center",gap:6,padding:"9px 16px",borderRadius:12,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#1abc9c,#2980b9)",color:"white",fontWeight:600,fontSize:14,flexShrink:0}}>
+            <Icon path={ICONS.plus} size={15}/>{isMobile?"+":t.addProduct}
+          </button>
+        </div>
       </div>
       <Table
         cols={[t.number, t.pipeProduct, t.price, t.type, t.subType||"Sub Type"]}
         rows={displayed.map((p,i)=>{
           const cc=catColor[p.category]||catColor.Custom;
           const isPipe = p.category==="Pipe";
-          const displayAmt = isPipe ? parseFloat(p.price) : parseFloat(p.purchasePrice);
+          const displayAmt = isPipe ? parseFloat(p.price) : (parseFloat(p.price) || parseFloat(p.purchasePrice));
           const priceNum = isNaN(displayAmt) ? NaN : displayAmt;
           return {data:p,cells:[
             <span style={{color:th.textDim,fontSize:14}}>{i+1}</span>,
             <span style={{fontWeight:600,color:th.text,fontSize:15}}>{getProductDisplayName(p)}</span>,
             <span style={{color:"#34d399",fontSize:14,fontWeight:600}}>
               {!isNaN(priceNum)&&priceNum>0?`Rs ${priceNum.toLocaleString('en-PK')}`:"—"}
-              {isPipe&&priceNum>0?<span style={{color:th.textMuted,fontSize:12,fontWeight:400}}> /ft</span>:isPipe?null:<span style={{color:th.textMuted,fontSize:12,fontWeight:400}}> {isUrdu?"خریداری":"purchase"}</span>}
+              {isPipe?(priceNum>0?<span style={{color:th.textMuted,fontSize:12,fontWeight:400}}> /ft</span>:null):p.category==="Hardware"?<span style={{color:th.textMuted,fontSize:12,fontWeight:400}}> {isUrdu?"فروخت":"sale"}</span>:<span style={{color:th.textMuted,fontSize:12,fontWeight:400}}> {isUrdu?"خریداری":"purchase"}</span>}
             </span>,
             <span style={{fontSize:13,padding:"3px 10px",borderRadius:20,fontWeight:600,background:cc.bg,color:cc.color}}>
               {getTypeLabel(p)}
@@ -178,6 +222,11 @@ function ProductsPage({ products, loadProducts }) {
           {form.category&&<SaveBtn onClick={save} loading={saving} label={saving?t.saving:editing?t.updateProduct:t.saveProduct}/>}
         </div>
       </Modal>)}
+      {showHwModal&&(
+        <Modal title={hwEditing ? (isUrdu ? "ہارڈ ویئر ترمیم" : t.editProduct) : (isUrdu ? "ہارڈ ویئر آئٹم شامل کریں" : t.addHardwareProduct)} onClose={()=>{setShowHwModal(false);setHwEditing(null);}}>
+          <HardwareSimpleForm form={hwForm} setForm={setHwForm} onSave={saveHardware} saving={hwSaving} editing={!!hwEditing}/>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -385,16 +434,41 @@ function NetForm({ form, setForm }) {
   );
 }
 
-function HardwareForm({ form, setForm }) {
+function HardwareSimpleForm({ form, setForm, onSave, saving, editing }) {
   const {t,lang}=useLang(); const isUrdu=lang==="ur";
   return (
-    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+    <div style={{display:"flex",flexDirection:"column",gap:14}}>
       <FInput
-        label={isUrdu ? "پروڈکٹ کا نام" : t.productNameLabel}
+        label={isUrdu ? "نام" : "Name"}
         value={form.name}
         onChange={v=>setForm(p=>({...p,name:v}))}
         placeholder={isUrdu ? "مثلاً: 3/4 انچ نٹ" : "e.g. 3/4 inch Nut"}
         required
+      />
+      <FInput
+        label={isUrdu ? "نمبر" : "Number"}
+        value={form.barcode}
+        onChange={v=>setForm(p=>({...p,barcode:v}))}
+        placeholder={isUrdu ? "بارکوڈ / نمبر" : "Barcode / number"}
+        required
+      />
+      <FInput
+        label={isUrdu ? "قسم" : "Type"}
+        value={form.subType}
+        onChange={v=>setForm(p=>({...p,subType:v}))}
+        placeholder={isUrdu ? "مثلاً نٹ / بولٹ" : "e.g. Nut / Bolt"}
+      />
+      <FInput
+        label={isUrdu ? "پتہ" : "Address"}
+        value={form.location}
+        onChange={v=>setForm(p=>({...p,location:v}))}
+        placeholder={isUrdu ? "ریک / گودام" : "Rack / godown"}
+      />
+      <FInput
+        label={isUrdu ? "نوٹ" : "Note"}
+        value={form.notes}
+        onChange={v=>setForm(p=>({...p,notes:v}))}
+        placeholder="..."
       />
       <FInput
         label={isUrdu ? "خریداری قیمت (روپے) - اختیاری" : "Purchase Price (PKR) - Optional"}
@@ -403,8 +477,20 @@ function HardwareForm({ form, setForm }) {
         placeholder="0"
         inputMode="decimal"
       />
+      <FInput
+        label={isUrdu ? "فروخت قیمت (روپے) - اختیاری" : "Sale Price (PKR) - Optional"}
+        value={form.price}
+        onChange={v=>setForm(p=>({...p,price:v}))}
+        placeholder="0"
+        inputMode="decimal"
+      />
+      {onSave && <SaveBtn onClick={onSave} loading={saving} label={saving ? t.saving : editing ? t.updateProduct : t.saveProduct}/>}
     </div>
   );
+}
+
+function HardwareForm({ form, setForm }) {
+  return <HardwareSimpleForm form={form} setForm={setForm}/>;
 }
 
 function CustomForm({ form, setForm }) {

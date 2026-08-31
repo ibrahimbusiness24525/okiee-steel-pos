@@ -1235,7 +1235,11 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
   };
   const handleSelectProduct = (product) => {
     // Chader/Net/Hardware/Custom store their rate in purchasePrice; Pipe uses price.
-    const pp = product.category === "Pipe" ? (Number(product.price) || 0) : (Number(product.purchasePrice) || Number(product.price) || 0);
+    const pp = product.category === "Pipe"
+      ? (Number(product.price) || 0)
+      : product.category === "Hardware"
+        ? (Number(product.price) || Number(product.purchasePrice) || 0)
+        : (Number(product.purchasePrice) || Number(product.price) || 0);
     const productId = product._id || product.id;
     setSearch(productDisplayName(product)); setShowDrop(false);
     onChange({ ...block, productId, pipeRows:[makeDefaultRow("Pipe",pp)], chaderRows:[makeDefaultRow("Chader",pp)], netRows:[makeDefaultRow("Net",pp)], hwRows:[makeDefaultRow("Hardware",pp)] });
@@ -1268,7 +1272,7 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
                     {filtered.length===0
                       ? <div style={{padding:"10px",textAlign:"center",color:th.textDim,fontSize:13}}>{isUrdu?"کوئی product نہیں ملا":"No products found"}</div>
                       : filtered.map(p=>{
-                          const displayPrice = (p.category==="Pipe") ? (Number(p.price)||Number(p.purchasePrice)||0) : (Number(p.purchasePrice)||Number(p.price)||0);
+                          const displayPrice = (p.category==="Pipe" || p.category==="Hardware") ? (Number(p.price)||Number(p.purchasePrice)||0) : (Number(p.purchasePrice)||Number(p.price)||0);
                           const displayUnit  = p.category==="Chader"?"kg":p.category==="Net"?"ft":p.category==="Pipe"?"ft":"pc";
                           return (
                           <div key={p._id||p.id} onMouseDown={()=>handleSelectProduct(p)}
@@ -1292,14 +1296,14 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
             </div>
           </div>
           {selectedProduct && (() => {
-            const displayPrice = (selectedProduct.category==="Pipe") ? (Number(selectedProduct.price)||Number(selectedProduct.purchasePrice)||0) : (Number(selectedProduct.purchasePrice)||Number(selectedProduct.price)||0);
+            const displayPrice = (selectedProduct.category==="Pipe" || selectedProduct.category==="Hardware") ? (Number(selectedProduct.price)||Number(selectedProduct.purchasePrice)||0) : (Number(selectedProduct.purchasePrice)||Number(selectedProduct.price)||0);
             const displayUnit  = category==="Chader"?"kg":category==="Net"?"ft":category==="Pipe"?"ft":"pc";
             return (
             <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderRadius:8,background:catBgs[category]||"transparent",border:`1px solid ${(catColors[category]||"#aaa")}40`}}>
               <span style={{color:catColors[category],fontSize:12,fontWeight:700}}>{category}</span>
               <span style={{color:th.text,fontSize:13,fontWeight:600}}>{productDisplayName(selectedProduct)}</span>
               <span style={{marginLeft:"auto",color:displayPrice>0?catColors[category]:"#f87171",fontSize:12,fontWeight:600,padding:"2px 8px",borderRadius:8,background:th.input}}>
-                {displayPrice>0 ? `Purchase: Rs ${displayPrice}/${displayUnit}` : "⚠️ Purchase price not set"}
+                {displayPrice>0 ? `${selectedProduct.category==="Hardware"?"Sale":"Purchase"}: Rs ${displayPrice}/${displayUnit}` : "⚠️ Purchase price not set"}
               </span>
             </div>
             );
