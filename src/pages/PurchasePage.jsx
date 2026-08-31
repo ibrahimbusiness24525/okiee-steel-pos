@@ -3,8 +3,10 @@ import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table, WeightKgGInput } from "../components/shared";
 import { api } from "../utils/api";
+import { savePurchaseReturn, removePurchaseReturn } from "../utils/returnsStore";
 import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, pxToPageHeightMM } from "../utils/helpers";
-import { safeProductName } from "../utils/constants";
+import { safeProductName, productDisplayName } from "../utils/constants";
+import { PurchaseReturnModal, ReturnsTable } from "../components/StockReturns";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PURCHASE PAGE — Invoice matches Billing style exactly
@@ -820,13 +822,18 @@ function PurchaseFormModal({ products, onSave, onClose }) {
 }
 
 // ─── Purchase Page ────────────────────────────────────────────────────────────
-function PurchasePage({ purchases, products, loadPurchases, loadProducts }) {
+function PurchasePage({ purchases, products, loadPurchases, loadProducts, purchaseReturns=[], loadPurchaseReturns }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
   const isUrdu = lang === "ur";
 
   const [showModal,        setShowModal]        = useState(false);
+  const [showReturnModal,  setShowReturnModal]  = useState(false);
+  const [showDemandPopup,  setShowDemandPopup]  = useState(false);
+  const [showReturnsPopup, setShowReturnsPopup] = useState(false);
+  const [returnSeedId,     setReturnSeedId]     = useState("");
+  const [invSearch,        setInvSearch]        = useState("");
   const [printData,        setPrintData]        = useState(null);
   const [showSupplierList, setShowSupplierList] = useState(false);
 
@@ -843,7 +850,14 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts }) {
   const del = async (d) => {
     if (!window.confirm(t.deletePurchaseConfirm)) return;
     const res = await api.deletePurchase(d._id);
-    if (res.success) { await loadPurchases(); await loadProducts(); }
+    if (res.success) { await loadPurchases(); await loadProducts(); await loadPurchaseReturns?.(); }
+    else alert(res.message);
+  };
+
+  const delReturn = async (r) => {
+    if (!window.confirm(isUrdu ? "کیا یہ واپسی حذف کریں؟" : "Delete this return?")) return;
+    const res = await removePurchaseReturn(r._id);
+    if (res.success) { await loadPurchaseReturns?.(); await loadProducts(); }
     else alert(res.message);
   };
 
@@ -874,12 +888,84 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts }) {
     setShowSupplierList(false);
   };
 
-  const totalSpent = purchases.reduce((s, p) => s + (p.total || 0), 0);
+  const catBadge = (cat) => (
+    <span style={{
+      fontSize: 12, padding: "3px 9px", borderRadius: 20, fontWeight: 600,
+      background: cat === "Pipe" ? "rgba(41,128,185,0.15)" : cat === "Chader" ? "rgba(26,188,156,0.15)" : cat === "Net" ? "rgba(244,114,182,0.15)" : cat === "Hardware" ? "rgba(251,191,36,0.15)" : "rgba(167,139,250,0.15)",
+      color: cat === "Pipe" ? "#60a5fa" : cat === "Chader" ? "#34d399" : cat === "Net" ? "#f472b6" : cat === "Hardware" ? "#fbbf24" : "#a78bfa",
+    }}>
+      {isUrdu ? (cat ? getUrduItemLabel(cat) : "—") : (cat || "—")}
+    </span>
+  );
+
+  const stockLabel = (cat, qty) => (
+    cat === "Pipe"    ? `${Math.round(qty || 0)} pcs`
+    : cat === "Chader" ? formatWeightKgG(qty || 0)
+    : cat === "Net"    ? `${Math.round(qty || 0)} ft²`
+    : Math.round(qty || 0)
+  );
+
+  const stockOf = (p) => Number(p.stock) || 0;
+  const thresholdOf = (p) => {
+    const n = Number(p.lowStockThreshold);
+    return Number.isFinite(n) && n > 0 ? n : 10;
+  };
+  const qInv = invSearch.trim().toLowerCase();
+  const matchesInvSearch = (p) => {
+    if (!qInv) return true;
+    return (p.name || "").toLowerCase().includes(qInv)
+      || (p.barcode || "").toLowerCase().includes(qInv)
+      || (p.category || "").toLowerCase().includes(qInv)
+      || (p.brand || "").toLowerCase().includes(qInv)
+      || (p.subType || "").toLowerCase().includes(qInv)
+      || (p.lastInvoice || "").toLowerCase().includes(qInv)
+      || (p.lastSupplier || "").toLowerCase().includes(qInv)
+      || (Array.isArray(p.suppliers) ? p.suppliers.some((s) => (s?.name || "").toLowerCase().includes(qInv)) : false);
+  };
+  const inventory = products.filter((p) => stockOf(p) > thresholdOf(p) && matchesInvSearch(p));
+  const demandZero = products.filter((p) => stockOf(p) <= 0);
+  const demandLow = products.filter((p) => {
+    const s = stockOf(p);
+    return s > 0 && s <= thresholdOf(p);
+  });
+  const latestPurchase = {};
+  const latestByName = {};
+  const takeLatest = (map, key, p, stamp) => {
+    if (!key) return;
+    const prev = map[key];
+    const prevStamp = prev ? `${prev.date || ""}|${prev.createdAt || ""}` : "";
+    if (!prev || stamp >= prevStamp) map[key] = p;
+  };
+  purchases.forEach((p) => {
+    const raw = p.product;
+    const id = raw && typeof raw === "object" ? (raw._id || raw.id) : raw;
+    const stamp = `${p.date || ""}|${p.createdAt || ""}`;
+    takeLatest(latestPurchase, id ? String(id) : "", p, stamp);
+    takeLatest(latestByName, (p.productName || "").trim().toLowerCase(), p, stamp);
+  });
+  const billOf = (p) => latestPurchase[String(p._id)] || latestByName[(p.name || "").trim().toLowerCase()] || null;
+  const invoiceOf = (p, bill) => bill?.invoice || bill?.invoiceNum || p.lastInvoice || "—";
+  const dateOf = (p, bill) => bill?.date || p.lastPurchaseDate || "—";
+  const supplierOf = (p, bill) => {
+    const mainSup = (Array.isArray(p.suppliers) ? (p.suppliers.find((s) => s?.isMain) || p.suppliers[0]) : null)?.name || "";
+    return bill?.supplier || bill?.supplierName || p.lastSupplier || mainSup || "—";
+  };
+  const stockedCount = inventory.length;
+  const inventoryAmount = products.reduce((s, p) => {
+    const stock = Number(p.stock) || 0;
+    const cost = Number(p.purchasePrice) || Number(p.price) || 0;
+    return s + stock * cost;
+  }, 0);
+
+  const openInvReturn = (p) => {
+    setReturnSeedId(p?._id || "");
+    setShowReturnModal(true);
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-        <p style={{ color: th.textMuted, fontSize: 14, margin: 0 }}>{purchases.length} {t.purchaseRecords}</p>
+        <p style={{ color: th.textMuted, fontSize: 14, margin: 0 }}>{stockedCount} {isUrdu ? "انوینٹری" : "Inventory"}</p>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {purchases.length > 0 && (
             <button
@@ -890,6 +976,12 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts }) {
             </button>
           )}
           <button
+            onClick={() => { setReturnSeedId(""); setShowReturnModal(true); }}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#dc2626,#f87171)", color: "white", fontWeight: 600, fontSize: 14 }}
+          >
+            ↩ {isMobile ? (isUrdu ? "واپسی" : "Return") : t.purchaseReturn}
+          </button>
+          <button
             onClick={() => setShowModal(true)}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "white", fontWeight: 600, fontSize: 14 }}
           >
@@ -898,38 +990,128 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(auto-fit,minmax(190px,1fr))", gap: 12 }}>
-        <StatCard label={t.totalSpent}  value={formatPKR(totalSpent)} icon={ICONS.purchase} color="#3498db" />
-        <StatCard label={t.totalOrders} value={purchases.length}      icon={ICONS.box}      color="#9b59b6" />
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(auto-fit,minmax(180px,1fr))", gap: 12 }}>
+        <StatCard label={t.inventoryValue} value={formatPKR(inventoryAmount)} icon={ICONS.purchase} color="#3498db" />
+        <StatCard label={isUrdu ? "انوینٹری" : "Inventory"} value={stockedCount} icon={ICONS.box} color="#f59e0b" />
+        <StatCard
+          label={isUrdu ? "ڈیمانڈ" : "Demand"}
+          value={demandZero.length + demandLow.length}
+          icon={ICONS.warning}
+          color="#ea580c"
+          sub={`${demandZero.length} zero · ${demandLow.length} low`}
+          onClick={() => setShowDemandPopup(true)}
+        />
+        <StatCard
+          label={isUrdu ? "واپسی" : "Returns"}
+          value={(purchaseReturns || []).length}
+          icon={ICONS.trend_down}
+          color="#ef4444"
+          sub={isUrdu ? "کلک کرکے دیکھیں" : "Click to view"}
+          onClick={() => setShowReturnsPopup(true)}
+        />
       </div>
 
-      <Table
-        cols={[t.invoiceNum, t.date, t.supplier, t.name, t.category, t.quantity, t.totalLabel]}
-        rows={purchases.map(p => ({
-          data: p,
-          cells: [
-            <span style={{ fontFamily: "monospace", color: "#60a5fa", fontSize: 13 }}>{p.invoice}</span>,
-            p.date,
-            p.supplier,
-            p.productName || safeProductName(p.product),
-            <span style={{
-              fontSize: 12, padding: "3px 9px", borderRadius: 20, fontWeight: 600,
-              background: p.category === "Pipe" ? "rgba(41,128,185,0.15)" : p.category === "Chader" ? "rgba(26,188,156,0.15)" : p.category === "Net" ? "rgba(244,114,182,0.15)" : p.category === "Hardware" ? "rgba(251,191,36,0.15)" : "rgba(167,139,250,0.15)",
-              color: p.category === "Pipe" ? "#60a5fa" : p.category === "Chader" ? "#34d399" : p.category === "Net" ? "#f472b6" : p.category === "Hardware" ? "#fbbf24" : "#a78bfa",
-            }}>
-              {isUrdu ? (p.category ? getUrduItemLabel(p.category) : "—") : (p.category || "—")}
-            </span>,
-            <span style={{ color: th.textMuted, fontSize: 14 }}>
-              {p.category === "Pipe"    ? `${Math.round(p.qty || 0)} pcs`
-               : p.category === "Chader" ? formatWeightKgG(p.qty || 0)
-               : p.category === "Net"    ? `${Math.round(p.qty || 0)} ft²`
-               : Math.round(p.qty || 0)}
-            </span>,
-            <span style={{ fontWeight: 700, color: th.text, fontSize: 14 }}>{formatPKR(p.total)}</span>,
-          ],
-        }))}
-        onDelete={del}
-      />
+      <div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          <h3 style={{ color: th.text, fontWeight: 700, margin: 0, fontSize: 16 }}>{isUrdu ? "انوینٹری" : "Inventory"}</h3>
+          <input
+            value={invSearch}
+            onChange={(e) => setInvSearch(e.target.value)}
+            placeholder={isUrdu ? "نام / بارکوڈ تلاش..." : "Search name / barcode..."}
+            style={{ flex: "1 1 180px", maxWidth: 280, padding: "8px 12px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.text, fontSize: 13, outline: "none" }}
+          />
+        </div>
+        <Table
+          cols={[t.invoiceNum, t.date, t.supplier, t.name, t.category, t.stock, t.totalLabel, t.actions]}
+          rows={inventory.map((p) => {
+            const stock = Number(p.stock) || 0;
+            const cost = Number(p.purchasePrice) || Number(p.price) || 0;
+            const bill = billOf(p);
+            return {
+              data: p,
+              cells: [
+                <span style={{ fontFamily: "monospace", color: "#60a5fa", fontSize: 13 }}>{invoiceOf(p, bill)}</span>,
+                dateOf(p, bill),
+                supplierOf(p, bill),
+                <div>
+                  <div style={{ fontWeight: 700, color: th.text }}>{productDisplayName(p) || p.name}</div>
+                  {p.barcode ? <div style={{ color: th.textMuted, fontSize: 11 }}>{p.barcode}</div> : null}
+                </div>,
+                catBadge(p.category),
+                <span style={{ fontWeight: 700, color: "#34d399" }}>{stockLabel(p.category, stock)}</span>,
+                <span style={{ fontWeight: 700 }}>{formatPKR(stock * cost)}</span>,
+                <button
+                  onClick={() => openInvReturn(p)}
+                  style={{ padding: "5px 10px", borderRadius: 8, border: "none", cursor: "pointer", background: "rgba(248,113,113,0.15)", color: "#f87171", fontWeight: 700, fontSize: 12 }}
+                >↩ {isUrdu ? "واپسی" : "Return"}</button>,
+              ],
+            };
+          })}
+        />
+        {!inventory.length && (
+          <p style={{ color: th.textMuted, fontSize: 13, margin: "8px 0 0" }}>{isUrdu ? "اسٹاک والی آئٹمز یہاں آئیں گی" : "In-stock items will show here"}</p>
+        )}
+      </div>
+
+      {showDemandPopup && (
+        <Modal title={isUrdu ? `ڈیمانڈ · ${demandZero.length + demandLow.length}` : `Demand · ${demandZero.length + demandLow.length}`} onClose={() => setShowDemandPopup(false)}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div>
+              <div style={{ color: "#f87171", fontWeight: 800, fontSize: 12, marginBottom: 8, letterSpacing: "0.06em" }}>
+                {isUrdu ? "زیرو مقدار" : "ZERO QUANTITY"} ({demandZero.length})
+              </div>
+              {demandZero.length === 0 && <p style={{ color: th.textMuted, fontSize: 12, margin: 0 }}>{isUrdu ? "کوئی نہیں" : "None"}</p>}
+              {demandZero.map((p) => (
+                <div key={p._id} style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid rgba(248,113,113,0.25)", background: "rgba(248,113,113,0.08)", marginBottom: 6 }}>
+                  <div style={{ color: th.text, fontWeight: 700, fontSize: 13 }}>{productDisplayName(p) || p.name}</div>
+                  <div style={{ color: th.textMuted, fontSize: 11, marginTop: 2 }}>{p.category || "—"} · 0</div>
+                </div>
+              ))}
+            </div>
+            <div>
+              <div style={{ color: "#fbbf24", fontWeight: 800, fontSize: 12, marginBottom: 8, letterSpacing: "0.06em" }}>
+                {isUrdu ? "کم مقدار" : "LOW QUANTITY"} ({demandLow.length})
+              </div>
+              {demandLow.length === 0 && <p style={{ color: th.textMuted, fontSize: 12, margin: 0 }}>{isUrdu ? "کوئی نہیں" : "None"}</p>}
+              {demandLow.map((p) => {
+                const bill = billOf(p);
+                return (
+                <div key={p._id} style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid rgba(251,191,36,0.25)", background: "rgba(251,191,36,0.08)", marginBottom: 6 }}>
+                  <div style={{ color: th.text, fontWeight: 700, fontSize: 13 }}>{productDisplayName(p) || p.name}</div>
+                  <div style={{ color: "#fbbf24", fontSize: 11, marginTop: 2, fontWeight: 700 }}>
+                    {stockLabel(p.category, stockOf(p))} ≤ {thresholdOf(p)}
+                  </div>
+                  <div style={{ color: th.textMuted, fontSize: 11, marginTop: 2 }}>
+                    {invoiceOf(p, bill)} · {dateOf(p, bill)} · {supplierOf(p, bill)}
+                  </div>
+                </div>
+                );
+              })}
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {showReturnsPopup && (
+        <Modal title={isUrdu ? "خریداری واپسی کے ریکارڈ" : t.returnRecords} onClose={() => setShowReturnsPopup(false)} wide>
+          <ReturnsTable returns={purchaseReturns} kind="purchase" onDelete={delReturn} />
+        </Modal>
+      )}
+
+      {showReturnModal && (
+        <PurchaseReturnModal
+          purchases={purchases}
+          products={products}
+          returns={purchaseReturns}
+          seedProductId={returnSeedId}
+          onClose={() => { setShowReturnModal(false); setReturnSeedId(""); }}
+          onSave={async (payload) => {
+            const res = await savePurchaseReturn(payload, { products, purchases });
+            if (res.success) { await loadPurchaseReturns?.(); await loadProducts(); }
+            return res;
+          }}
+        />
+      )}
 
       {showModal && (
         <Modal title={t.addPurchase} onClose={() => setShowModal(false)} wide>

@@ -4,6 +4,7 @@ import { LangProvider, useLang } from "./context/LangContext";
 import { useResponsive } from "./components/shared";
 import { Sidebar, Topbar, BottomNav } from "./components/Layout";
 import { api, API, authHeaders } from "./utils/api";
+import { listPurchaseReturns, listSaleReturns } from "./utils/returnsStore";
 
 // Pages
 import LoginPage from "./pages/LoginPage";
@@ -91,7 +92,20 @@ function AppLoader() {
   );
 }
 
-// ── Main App ─────────────────────────────────────────────────────────────────
+const PAGE_KEY = "steelpos_active_page";
+const ROLE_PAGES = {
+  admin: ["dashboard", "products", "purchase", "sales", "accounts", "ledger", "staff", "loaders", "shop-profile", "profile"],
+  staff: ["billing", "loaders"],
+  superadmin: ["superadmin"],
+};
+const homePage = (role) => (role === "admin" ? "dashboard" : role === "superadmin" ? "superadmin" : "billing");
+const savedPage = (role) => {
+  try {
+    const saved = localStorage.getItem(PAGE_KEY);
+    if (saved && (ROLE_PAGES[role] || []).includes(saved)) return saved;
+  } catch { /* ignore */ }
+  return homePage(role);
+};
 function AppInner() {
   const th = useTheme();
   const { t, isUrdu } = useLang();
@@ -99,11 +113,19 @@ function AppInner() {
   const showSidebar = !isMobile;
 
   const [user,      setUser]      = useState(null);
-  const [active,    setActive]    = useState("dashboard");
+  const [active,    setActiveState] = useState(() => {
+    try { return localStorage.getItem(PAGE_KEY) || "dashboard"; } catch { return "dashboard"; }
+  });
+  const setActive = (page) => {
+    setActiveState(page);
+    try { localStorage.setItem(PAGE_KEY, page); } catch { /* ignore */ }
+  };
   const [loading,   setLoading]   = useState(true);
   const [products,  setProducts]  = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [sales,     setSales]     = useState([]);
+  const [saleReturns, setSaleReturns] = useState([]);
+  const [purchaseReturns, setPurchaseReturns] = useState([]);
   const [staff,     setStaff]     = useState([]);
   const [loaders,   setLoaders]   = useState([]);
 
@@ -111,6 +133,8 @@ function AppInner() {
   const loadProducts  = async () => { const r = await api.getProducts();  if (r.success) setProducts(Array.isArray(r.products) ? r.products : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
   const loadPurchases = async () => { const r = await api.getPurchases(); if (r.success) setPurchases(Array.isArray(r.purchases) ? r.purchases : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
   const loadSales     = async () => { const r = await api.getSales();     if (r.success) setSales(Array.isArray(r.sales) ? r.sales : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
+  const loadSaleReturns = async () => { try { const r = await listSaleReturns(); if (r.success) setSaleReturns(r.returns || []); } catch (e) {} };
+  const loadPurchaseReturns = async () => { try { const r = await listPurchaseReturns(); if (r.success) setPurchaseReturns(r.returns || []); } catch (e) {} };
   const loadStaff     = async () => { const r = await api.getStaff();     if (r.success) setStaff(Array.isArray(r.staff) ? r.staff : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
 
   useEffect(() => {
@@ -121,7 +145,7 @@ function AppInner() {
         .then(data => {
           if (data.success) {
             setUser(data.user);
-            setActive(data.user.role === "admin" ? "dashboard" : data.user.role === "superadmin" ? "superadmin" : "billing");
+            setActive(savedPage(data.user.role));
           } else {
             localStorage.removeItem("steelpos_token");
           }
@@ -138,20 +162,22 @@ function AppInner() {
       loadProducts();
       loadSales();
       loadLoaders();
-      if (user.role === "admin") { loadPurchases(); loadStaff(); }
+      loadSaleReturns();
+      if (user.role === "admin") { loadPurchases(); loadStaff(); loadPurchaseReturns(); }
     }
   }, [user]);
 
   const handleLogin = (u) => {
     setUser(u);
-    setActive(u.role === "admin" ? "dashboard" : u.role === "superadmin" ? "superadmin" : "billing");
+    setActive(homePage(u.role));
   };
 
   const handleLogout = () => {
     localStorage.removeItem("steelpos_token");
+    localStorage.removeItem(PAGE_KEY);
     setUser(null);
-    setActive("dashboard");
-    setProducts([]); setPurchases([]); setSales([]); setStaff([]); setLoaders([]);
+    setActiveState("dashboard");
+    setProducts([]); setPurchases([]); setSales([]); setStaff([]); setLoaders([]); setSaleReturns([]); setPurchaseReturns([]);
   };
 
   if (loading) return <AppLoader />;
@@ -162,10 +188,10 @@ function AppInner() {
     <main dir={isUrdu ? "rtl" : "ltr"} style={{ flex: 1, overflowY: "auto", padding: isMobile ? "14px" : "20px", paddingBottom: isMobile ? 80 : 20 }}>
       {user.role === "admin" && (
         <>
-          {active === "dashboard"    && <Dashboard products={products} purchases={purchases} sales={sales} staff={staff} loaders={loaders} />}
-          {active === "products"     && <ProductsPage products={products} loadProducts={loadProducts} />}
-          {active === "purchase"     && <PurchasePage purchases={purchases} products={products} loadPurchases={loadPurchases} loadProducts={loadProducts} />}
-          {active === "sales"        && <SalesPage sales={sales} products={products} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} />}
+          {active === "dashboard"    && <Dashboard products={products} purchases={purchases} sales={sales} staff={staff} loaders={loaders} saleReturns={saleReturns} purchaseReturns={purchaseReturns} />}
+          {active === "products"     && <ProductsPage products={products} loadProducts={loadProducts} loadPurchases={loadPurchases} />}
+          {active === "purchase"     && <PurchasePage purchases={purchases} products={products} loadPurchases={loadPurchases} loadProducts={loadProducts} purchaseReturns={purchaseReturns} loadPurchaseReturns={loadPurchaseReturns} />}
+          {active === "sales"        && <SalesPage sales={sales} products={products} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} saleReturns={saleReturns} loadSaleReturns={loadSaleReturns} />}
           {active === "accounts"     && <AccountsPage />}
           {active === "ledger"       && <LedgerPage purchases={purchases} sales={sales} />}
           {active === "staff"        && <StaffPage staff={staff} loadStaff={loadStaff} />}

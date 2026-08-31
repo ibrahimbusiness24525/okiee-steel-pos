@@ -179,10 +179,16 @@ export function SaveBtn({ label, onClick, loading, color, disabled }) {
   );
 }
 
-export function StatCard({ label, value, icon, color, sub }) {
+export function StatCard({ label, value, icon, color, sub, onClick }) {
   const th = useTheme();
   return (
-    <div style={{borderRadius:16,padding:"16px 18px",border:`1px solid ${th.border}`,display:"flex",alignItems:"flex-start",justifyContent:"space-between",background:th.bgCard,boxShadow:th.cardShadow}}>
+    <div
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      style={{borderRadius:16,padding:"16px 18px",border:`1px solid ${th.border}`,display:"flex",alignItems:"flex-start",justifyContent:"space-between",background:th.bgCard,boxShadow:th.cardShadow,cursor:onClick?"pointer":"default",transition:"border-color .15s, transform .15s"}}
+      onMouseEnter={onClick ? (e) => { e.currentTarget.style.borderColor = color; e.currentTarget.style.transform = "translateY(-1px)"; } : undefined}
+      onMouseLeave={onClick ? (e) => { e.currentTarget.style.borderColor = th.border; e.currentTarget.style.transform = "none"; } : undefined}
+    >
       <div style={{flex:1,minWidth:0}}>
         <p style={{color:th.textMuted,fontSize:11,textTransform:"uppercase",letterSpacing:"0.08em",margin:"0 0 4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</p>
         <p style={{fontSize:20,fontWeight:900,color:th.text,margin:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{value}</p>

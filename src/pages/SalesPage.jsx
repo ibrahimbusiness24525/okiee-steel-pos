@@ -3,9 +3,11 @@ import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, StatCard, Table } from "../components/shared";
 import { api } from "../utils/api";
+import { saveSaleReturn, removeSaleReturn, netSaleAmount, saleReturnedAmount } from "../utils/returnsStore";
 import { formatPKR, todayStr, loadShopProfile, pxToPageHeightMM } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
 import { BillingNewSaleModal, BillingSaleInvoice, getPaymentBadgeStyle } from "./BillingPage";
+import { SaleReturnModal, ReturnsTable } from "../components/StockReturns";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SALES PAGE — Fixed: th (useTheme) was missing in SaleThermalInvoice
@@ -193,19 +195,21 @@ function SaleThermalInvoice({ invoiceData, onClose }) {
   );
 }
 
-function SalesPage({ sales, products, loadSales, loadProducts, loaders=[] }) {
+function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleReturns=[], loadSaleReturns }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
   const isUrdu = lang === "ur";
 
   const [showSaleModal, setShowSaleModal] = useState(false);
+  const [showReturnModal, setShowReturnModal] = useState(false);
+  const [showReturnsPopup, setShowReturnsPopup] = useState(false);
   const [reprintData,   setReprintData]   = useState(null);
   const [editData,      setEditData]      = useState(null);
 
   const today2       = todayStr();
   const todaySales   = sales.filter(s => s.date === today2);
-  const todayRevenue = todaySales.reduce((s, x) => s + (x.total || 0), 0);
+  const todayRevenue = todaySales.reduce((s, x) => s + netSaleAmount(x, saleReturns), 0);
 
   const buildItemsFromSale = (s) => {
     if (s.items && s.items.length > 0) return s.items;
@@ -303,7 +307,14 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[] }) {
   const del = async (s) => {
     if (!window.confirm(t.deleteSaleConfirm || (isUrdu ? "کیا آپ یہ فروخت حذف کرنا چاہتے ہیں؟" : "Delete this sale?"))) return;
     const res = await api.deleteSale(s._id);
-    if (res.success) { await loadSales(); await loadProducts(); }
+    if (res.success) { await loadSales(); await loadProducts(); await loadSaleReturns?.(); }
+    else alert(res.message);
+  };
+
+  const delReturn = async (r) => {
+    if (!window.confirm(isUrdu ? "کیا یہ واپسی حذف کریں؟" : "Delete this return?")) return;
+    const res = await removeSaleReturn(r._id);
+    if (res.success) { await loadSaleReturns?.(); await loadProducts(); }
     else alert(res.message);
   };
 
@@ -347,22 +358,39 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[] }) {
         <StatCard label={isUrdu?"آج کی آمدنی":t.todayRevenue||"Today Revenue"} value={formatPKR(todayRevenue)} icon={ICONS.trend_up} color="#1abc9c" sub={`${todaySales.length} ${isUrdu?"آج کی فروخت":"today's sales"}`}/>
         <StatCard label={isUrdu?"دستیاب اشیاء":t.productsInStock||"In Stock"} value={products.filter(p=>p.stock>0).length} icon={ICONS.box} color="#9b59b6"/>
         <StatCard label={isUrdu?"بائنڈنگ مزدوری":"Binding Fee"} value={formatPKR(sales.reduce((s,p)=>s+(Number(p.bindingFee)||0),0))} icon={ICONS.invoice} color="#fbbf24" sub={`${sales.filter(p=>Number(p.bindingFee)>0).length} ${isUrdu?"invoices":"invoices"}`}/>
+        <StatCard
+          label={isUrdu ? "واپسی" : "Returns"}
+          value={(saleReturns || []).length}
+          icon={ICONS.trend_down}
+          color="#ef4444"
+          sub={isUrdu ? "کلک کرکے دیکھیں" : "Click to view"}
+          onClick={() => setShowReturnsPopup(true)}
+        />
       </div>
 
       {/* Header row */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8 }}>
         <h3 style={{ color:th.text, fontWeight:700, margin:0, fontSize:17 }}>{isUrdu?"فروخت کا ریکارڈ":t.salesRecords||"Sales Records"}</h3>
-        <button onClick={openAdd}
-          style={{ display:"flex", alignItems:"center", gap:6, padding:isMobile?"10px 14px":"12px 20px", borderRadius:12, border:"none", cursor:"pointer", background:"linear-gradient(135deg,#1abc9c,#2980b9)", color:"white", fontWeight:700, fontSize:14 }}>
-          <Icon path={ICONS.plus} size={16}/>{isUrdu?"نئی فروخت / انوائس":t.newSaleInvoice||"New Sale / Invoice"}
-        </button>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+          <button onClick={()=>setShowReturnModal(true)}
+            style={{ display:"flex", alignItems:"center", gap:6, padding:isMobile?"10px 14px":"12px 18px", borderRadius:12, border:"none", cursor:"pointer", background:"linear-gradient(135deg,#059669,#34d399)", color:"white", fontWeight:700, fontSize:14 }}>
+            ↩ {isUrdu?"فروخت واپسی":t.saleReturn}
+          </button>
+          <button onClick={openAdd}
+            style={{ display:"flex", alignItems:"center", gap:6, padding:isMobile?"10px 14px":"12px 20px", borderRadius:12, border:"none", cursor:"pointer", background:"linear-gradient(135deg,#1abc9c,#2980b9)", color:"white", fontWeight:700, fontSize:14 }}>
+            <Icon path={ICONS.plus} size={16}/>{isUrdu?"نئی فروخت / انوائس":t.newSaleInvoice||"New Sale / Invoice"}
+          </button>
+        </div>
       </div>
 
       {/* Sales table — wrapped for horizontal scroll to prevent page stretch */}
       <div style={{ width:"100%", overflowX:"auto" }}>
         <Table
           cols={[t.invoiceNum, t.date, t.customer, t.products, t.totalLabel, "💳", "💰", isUrdu?"بائنڈنگ":"Binding", isUrdu?"کس نے فروخت کی":"Sold By", "🖨️"]}
-          rows={[...sales].reverse().map(s=>({
+          rows={[...sales].reverse().map(s=>{
+            const net = netSaleAmount(s, saleReturns);
+            const retAmt = saleReturnedAmount(s, saleReturns);
+            return {
             data:s,
             cells:[
               <span style={{fontFamily:"monospace",color:"#34d399",fontSize:13}}>{s.invoice}</span>,
@@ -371,7 +399,10 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[] }) {
               <span style={{display:"inline-block",maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",verticalAlign:"bottom"}} title={s.productName||safeProductName(s.product)||(s.items?.[0]?.productName)||"—"}>
                 {s.productName||safeProductName(s.product)||(s.items?.[0]?.productName)||"—"}
               </span>,
-              <span style={{fontWeight:700,color:th.text}}>{formatPKR(s.total)}</span>,
+              <div>
+                <span style={{fontWeight:700,color:"#34d399"}}>{formatPKR(net)}</span>
+                {retAmt>0 && <div style={{fontSize:11,color:"#f87171",fontWeight:700}}>-{formatPKR(retAmt)}</div>}
+              </div>,
               <span style={{ fontSize:12, padding:"2px 8px", borderRadius:20, fontWeight:600, whiteSpace:"nowrap", ...getPaymentBadgeStyle(s.paymentMethod) }}>
                 {s.paymentMethod==="bank"?`🏦 ${s.bankName||"Bank"}`:s.paymentMethod==="jazzcash"?"🎵 JazzCash":s.paymentMethod==="easypaisa"?"📱 Easypaisa":"💵 Cash"}
               </span>,
@@ -400,7 +431,8 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[] }) {
                 onMouseEnter={e=>e.currentTarget.style.background="rgba(96,165,250,0.25)"}
                 onMouseLeave={e=>e.currentTarget.style.background="rgba(96,165,250,0.12)"}>🖨️</button>,
             ]
-          }))}
+          };
+          })}
           onEdit={openEdit}
           onDelete={del}
         />
@@ -421,6 +453,26 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[] }) {
             prefill={editData ? buildEditPayload(editData) : null}
             loaders={loaders}
           />
+        </Modal>
+      )}
+
+      {showReturnModal && (
+        <SaleReturnModal
+          sales={sales}
+          products={products}
+          returns={saleReturns}
+          onClose={()=>setShowReturnModal(false)}
+          onSave={async (payload) => {
+            const res = await saveSaleReturn(payload, { products, sales });
+            if (res.success) { await loadSaleReturns?.(); await loadProducts(); }
+            return res;
+          }}
+        />
+      )}
+
+      {showReturnsPopup && (
+        <Modal title={isUrdu ? "فروخت واپسی کے ریکارڈ" : t.returnRecords} onClose={() => setShowReturnsPopup(false)} wide>
+          <ReturnsTable returns={saleReturns} kind="sale" onDelete={delReturn} />
         </Modal>
       )}
 

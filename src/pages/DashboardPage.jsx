@@ -8,7 +8,7 @@ import { safeProductName } from "../utils/constants";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
-function Dashboard({ products, purchases, sales, staff, loaders=[] }) {
+function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=[], purchaseReturns=[] }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
@@ -50,11 +50,15 @@ function Dashboard({ products, purchases, sales, staff, loaders=[] }) {
 
   const filteredSales     = sales.filter((s) => inRange(s.date));
   const filteredPurchases = purchases.filter((p) => inRange(p.date));
+  const filteredSaleReturns = (saleReturns || []).filter((r) => inRange(r.date));
+  const filteredPurchaseReturns = (purchaseReturns || []).filter((r) => inRange(r.date));
 
   const totalSalesCount    = filteredSales.length;
-  const totalSalesAmount   = filteredSales.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
+  const totalSalesAmount   = filteredSales.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0)
+    - filteredSaleReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
   const totalPurchaseCount = filteredPurchases.length;
-  const totalPurchaseAmt   = filteredPurchases.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
+  const totalPurchaseAmt   = filteredPurchases.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0)
+    - filteredPurchaseReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
 
   // ─── PROFIT / LOSS — per invoice, real margin ────────────────────────────────
   const calcInvoiceProfit = (sale, productsList) => {
