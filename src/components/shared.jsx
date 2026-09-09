@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { decimalKgToParts, partsToDecimalKg, formatWeightKgG } from "../utils/helpers";
@@ -53,14 +54,15 @@ export function handleEnterNextField(e, root) {
   if (i < 0) return;
   e.preventDefault();
   e.stopPropagation();
-  const next = fields[i + 1] || fields[0];
+  const next = fields[i + 1];
   if (!next || next === t) return;
   focusField(next);
 }
 
-export function focusField(el) {
+export function focusField(el, { preventScroll = false } = {}) {
   if (!el) return;
-  el.focus();
+  el.focus({ preventScroll });
+  if (preventScroll) return;
   if (typeof el.select === "function" && el.tagName === "INPUT" && !["checkbox", "radio", "date", "color", "range"].includes(el.type)) {
     try { el.select(); } catch { /* ignore */ }
   }
@@ -69,14 +71,31 @@ export function focusField(el) {
 export function focusFirstField(root) {
   if (!root) return;
   const first = [...root.querySelectorAll(FIELD_SEL)].find(fieldVisible);
-  focusField(first);
+  focusField(first, { preventScroll: true });
 }
 
 export function focusNextField(fromEl, root) {
   if (!root || !fromEl) return;
   const fields = [...root.querySelectorAll(FIELD_SEL)].filter(fieldVisible);
   const i = fields.indexOf(fromEl);
-  focusField(fields[i + 1] || fields[0]);
+  if (i < 0) return;
+  const next = fields[i + 1];
+  if (next) focusField(next);
+}
+
+export function getModalScroller(fromEl) {
+  const box = fromEl?.closest?.("[data-modal-box]") || document.querySelector("[data-modal-box]");
+  return box?.querySelector("[data-modal-scroll]") || box || null;
+}
+
+export function snapshotModalScroll(fromEl) {
+  const scroller = getModalScroller(fromEl);
+  return scroller ? scroller.scrollTop : 0;
+}
+
+export function restoreModalScroll(fromEl, top) {
+  const scroller = getModalScroller(fromEl);
+  if (scroller) scroller.scrollTop = top;
 }
 
 export function clickModalSave(root) {
@@ -116,8 +135,13 @@ export function useTypeaheadNav(items, onPick) {
 
   useEffect(() => {
     if (!open) return;
-    const el = listRef.current?.querySelector(`[data-nav-i="${hi}"]`);
-    el?.scrollIntoView({ block: "nearest" });
+    const list = listRef.current;
+    const el = list?.querySelector(`[data-nav-i="${hi}"]`);
+    if (!list || !el) return;
+    const top = el.offsetTop;
+    const bottom = top + el.offsetHeight;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
   }, [hi, open]);
 
   const onKeyDown = (e) => {
@@ -201,8 +225,13 @@ export function Modal({ title, onClose, children, wide, xl, layer = 50, headerRi
   const boxRef = useRef(null);
   const maxW = xl ? "min(1360px, calc(100vw - 16px))" : wide ? 760 : 500;
   useEffect(() => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     const t = setTimeout(() => focusFirstField(boxRef.current), 40);
-    return () => clearTimeout(t);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      clearTimeout(t);
+    };
   }, []);
   const onKeys = (e) => {
     if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || String(e.key).toLowerCase() === "s"))) {
@@ -221,25 +250,26 @@ export function Modal({ title, onClose, children, wide, xl, layer = 50, headerRi
     }
     handleEnterNextField(e, boxRef.current);
   };
-  return (
-    <div style={{position:"fixed",inset:0,zIndex:layer,display:"flex",alignItems:isMobile?"flex-end":"center",justifyContent:"center",padding:isMobile?0:16}}>
+  return createPortal(
+    <div style={{position:"fixed",inset:0,zIndex:Math.max(layer, 200),display:"flex",alignItems:isMobile?"flex-end":"center",justifyContent:"center",padding:isMobile?0:16}}>
       <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.7)",backdropFilter:"blur(4px)"}} onClick={onClose}/>
       <div
         ref={boxRef}
         data-modal-box="1"
         onKeyDownCapture={onKeys}
-        style={{position:"relative",width:"100%",maxWidth:maxW,borderRadius:isMobile?"20px 20px 0 0":20,border:`1px solid ${th.border}`,overflow:"hidden",background:th.bgModal,boxShadow:th.modalShadow,maxHeight:isMobile?"94vh": xl ? "94vh" : "90vh",overflowY:"auto"}}
+        style={{position:"relative",width:"100%",maxWidth:maxW,borderRadius:isMobile?"20px 20px 0 0":20,border:`1px solid ${th.border}`,overflow:"hidden",background:th.bgModal,boxShadow:th.modalShadow,maxHeight:isMobile?"94vh": xl ? "94vh" : "90vh",display:"flex",flexDirection:"column"}}
       >
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,padding:isMobile?"14px 18px": xl ? "14px 20px" : "16px 24px",borderBottom:`1px solid ${th.border}`,position:"sticky",top:0,background:th.bgModal,zIndex:1}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,padding:isMobile?"14px 18px": xl ? "14px 20px" : "16px 24px",borderBottom:`1px solid ${th.border}`,background:th.bgModal,zIndex:1,flexShrink:0}}>
           <h3 style={{color:th.text,fontWeight:700,fontSize:isMobile?16:18,margin:0,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{title}</h3>
           <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0,flexWrap:"wrap",justifyContent:"flex-end"}}>
             {headerRight}
             <button type="button" onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",color:th.textDim,padding:4}}><Icon path={ICONS.close} size={20}/></button>
           </div>
         </div>
-        <div style={{padding:isMobile?"16px 18px": xl ? "16px 20px" : "20px 24px"}}>{children}</div>
+        <div data-modal-scroll="1" style={{padding:isMobile?"16px 18px": xl ? "16px 20px" : "20px 24px",overflowY:"auto",flex:1,minHeight:0,overflowAnchor:"none"}}>{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

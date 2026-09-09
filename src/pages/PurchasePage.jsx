@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useRef, useLayoutEffect } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table, WeightKgGInput, useTypeaheadNav, focusNextField, DateFilterBar } from "../components/shared";
+import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table, WeightKgGInput, useTypeaheadNav, DateFilterBar } from "../components/shared";
 import { api } from "../utils/api";
 import { savePurchaseReturn, removePurchaseReturn } from "../utils/returnsStore";
 import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, inDateFilter, formatDateTime, printThermalOrA4 } from "../utils/helpers";
@@ -581,18 +581,17 @@ function PurchaseEntryTable({ category, rows, setRows, productPrice, product }) 
 function ProductBlock({ index, products, block, onChange, onRemove, canRemove }) {
   const th = useTheme();
   const { t } = useLang();
+  const wrapRef = useRef(null);
+  const keepInViewRef = useRef(false);
   const [open,         setOpen]         = useState(true);
   const [searchQuery,  setSearchQuery]  = useState("");
   const makeEmptyRow = (product) => prefillPurchaseRow(product.category, product);
 
   const handleSelectProduct = (product) => {
+    keepInViewRef.current = true;
     setSearchQuery(product.name);
     setShowDropdown(false);
     onChange({ ...block, productId: product._id, rows: [makeEmptyRow(product)] });
-    requestAnimationFrame(() => {
-      const root = document.querySelector("[data-modal-box]");
-      focusNextField(document.activeElement, root);
-    });
   };
 
   const filteredProducts = products.filter(p =>
@@ -600,6 +599,12 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
     p.category.toLowerCase().includes(searchQuery.toLowerCase())
   );
   const { open: showDropdown, setOpen: setShowDropdown, hi, setHi, onKeyDown: navKeys, listRef } = useTypeaheadNav(filteredProducts, handleSelectProduct);
+
+  useLayoutEffect(() => {
+    if (!keepInViewRef.current) return;
+    keepInViewRef.current = false;
+    wrapRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [block.productId]);
 
   const selectedProduct = products.find(p => p._id === block.productId);
   const category        = selectedProduct?.category || "";
@@ -629,7 +634,7 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
     : null;
 
   return (
-    <div style={{ borderRadius: 12, border: `1.5px solid ${th.border}`, overflow: "visible", background: th.bgCard }}>
+    <div ref={wrapRef} style={{ borderRadius: 12, border: `1.5px solid ${th.border}`, overflow: "visible", background: th.bgCard }}>
       <div style={{ padding: "8px 12px", background: th.thHead, borderBottom: open ? `1px solid ${th.border}` : "none", display: "flex", alignItems: "center", gap: 8, borderRadius: open ? "10px 10px 0 0" : 10 }}>
         <button onClick={() => setOpen(o => !o)} style={{ background: "none", border: "none", cursor: "pointer", color: th.textMuted, padding: 0, fontSize: 14, lineHeight: 1 }}>{open ? "▾" : "▸"}</button>
         <span style={{ color: th.text, fontWeight: 700, fontSize: 13 }}>🛒 Product {index + 1}</span>
@@ -667,7 +672,7 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
               />
               {showDropdown && (
                 <>
-                  <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 998 }} onMouseDown={() => setShowDropdown(false)} />
+                  <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 998 }} onMouseDown={(e) => { e.preventDefault(); setShowDropdown(false); }} />
                   <div ref={listRef} style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 999, background: th.bgModal || th.bgCard, border: `1px solid ${th.border}`, borderRadius: 10, maxHeight: 200, overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.18)" }}>
                     {filteredProducts.length === 0
                       ? <div style={{ padding: "12px", textAlign: "center", color: th.textDim, fontSize: 13 }}>No products found</div>
@@ -675,7 +680,7 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
                         <div
                           key={p._id}
                           data-nav-i={i}
-                          onMouseDown={() => handleSelectProduct(p)}
+                          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleSelectProduct(p); }}
                           onMouseEnter={() => setHi(i)}
                           style={{ padding: "9px 13px", cursor: "pointer", borderBottom: `1px solid ${th.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 14, color: th.text, background: i === hi ? "rgba(26,188,156,0.16)" : "transparent" }}
                         >

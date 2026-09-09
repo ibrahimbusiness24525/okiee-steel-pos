@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useRef, useLayoutEffect } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS, Modal, StatCard, Table, WeightKgGInput, useTypeaheadNav, focusNextField } from "../components/shared";
+import { useResponsive, Icon, ICONS, Modal, StatCard, Table, WeightKgGInput, useTypeaheadNav } from "../components/shared";
 import { api } from "../utils/api";
 import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, printThermalOrA4 } from "../utils/helpers";
 import { convertQuantity, convertPrice, getUnitLabel, canConvert, unitOptions, productUnitOf } from "../utils/unitConversion";
@@ -1193,6 +1193,8 @@ function HwBillingRows({ rows, onChange, purchasePrice, purchaseUnit, productSal
 // ─── BILLING PRODUCT BLOCK ────────────────────────────────────────────────────
 function BillingProductBlock({ index, products, block, onChange, onRemove, canRemove, isUrdu }) {
   const th = useTheme();
+  const wrapRef = useRef(null);
+  const keepInViewRef = useRef(false);
   const [open, setOpen] = useState(true);
   const [search, setSearch] = useState(() => {
     const found = products.find(p => (p._id || p.id) === block.productId);
@@ -1221,18 +1223,21 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
         ? (Number(product.price) || Number(product.purchasePrice) || 0)
         : (Number(product.purchasePrice) || Number(product.price) || 0);
     const productId = product._id || product.id;
+    keepInViewRef.current = true;
     setSearch(productDisplayName(product));
     setShowDrop(false);
     onChange({ ...block, productId, pipeRows:[makeDefaultRow("Pipe",pp, product)], chaderRows:[makeDefaultRow("Chader",pp, product)], netRows:[makeDefaultRow("Net",pp, product)], hwRows:[makeDefaultRow("Hardware",pp, product)] });
-    requestAnimationFrame(() => {
-      const root = document.querySelector("[data-modal-box]");
-      focusNextField(document.activeElement, root);
-    });
   };
   const { open: showDrop, setOpen: setShowDrop, hi, setHi, onKeyDown: navKeys, listRef } = useTypeaheadNav(filtered, handleSelectProduct);
 
+  useLayoutEffect(() => {
+    if (!keepInViewRef.current) return;
+    keepInViewRef.current = false;
+    wrapRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [block.productId]);
+
   return (
-    <div style={{ borderRadius:12, border:`1.5px solid ${stockError?"rgba(248,113,113,0.5)":th.border}`, overflow:"visible", background:th.bgCard }}>
+    <div ref={wrapRef} style={{ borderRadius:12, border:`1.5px solid ${stockError?"rgba(248,113,113,0.5)":th.border}`, overflow:"visible", background:th.bgCard }}>
       <div style={{ padding:"7px 10px", background:th.thHead, borderBottom:open?`1px solid ${th.border}`:"none", display:"flex", alignItems:"center", gap:8, borderRadius:open?"10px 10px 0 0":10 }}>
         <button onClick={()=>setOpen(o=>!o)} style={{background:"none",border:"none",cursor:"pointer",color:th.textMuted,padding:0,fontSize:14}}>{open?"▾":"▸"}</button>
         <span style={{color:th.text,fontWeight:700,fontSize:13}}>🛒 Product {index+1}</span>
@@ -1257,7 +1262,7 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
                 placeholder="🔍 Search product..." style={inpS} autoComplete="off"/>
               {showDrop && (
                 <>
-                  <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:998}} onMouseDown={()=>setShowDrop(false)}/>
+                  <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:998}} onMouseDown={(e)=>{ e.preventDefault(); setShowDrop(false); }}/>
                   <div ref={listRef} style={{position:"absolute",top:"100%",left:0,right:0,zIndex:999,background:th.bgModal||th.bgCard,border:`1px solid ${th.border}`,borderRadius:10,maxHeight:180,overflowY:"auto",boxShadow:"0 4px 16px rgba(0,0,0,0.25)"}}>
                     {filtered.length===0
                       ? <div style={{padding:"10px",textAlign:"center",color:th.textDim,fontSize:13}}>{isUrdu?"کوئی product نہیں ملا":"No products found"}</div>
@@ -1265,7 +1270,7 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
                           const displayPrice = (p.category==="Pipe" || p.category==="Hardware") ? (Number(p.price)||Number(p.purchasePrice)||0) : (Number(p.purchasePrice)||Number(p.price)||0);
                           const displayUnit  = stockUnitLabel(p.category, p);
                           return (
-                          <div key={p._id||p.id} data-nav-i={i} onMouseDown={()=>handleSelectProduct(p)} onMouseEnter={()=>setHi(i)}
+                          <div key={p._id||p.id} data-nav-i={i} onMouseDown={(e)=>{ e.preventDefault(); e.stopPropagation(); handleSelectProduct(p); }} onMouseEnter={()=>setHi(i)}
                             style={{padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${th.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:14,color:th.text,background:i===hi?"rgba(26,188,156,0.16)":"transparent"}}>
                             <span>{productDisplayName(p)}</span>
                             <div style={{display:"flex",alignItems:"center",gap:6}}>
