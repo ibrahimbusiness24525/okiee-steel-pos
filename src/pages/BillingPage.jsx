@@ -1,11 +1,15 @@
 import { useState } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS, Modal, StatCard, Table, WeightKgGInput } from "../components/shared";
+import { useResponsive, Icon, ICONS, Modal, StatCard, Table, WeightKgGInput, useTypeaheadNav, focusNextField } from "../components/shared";
 import { api } from "../utils/api";
-import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, pxToPageHeightMM } from "../utils/helpers";
-import { shortenPipeName } from "../components/InvoiceComponents";
+import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, printThermalOrA4 } from "../utils/helpers";
+import { convertQuantity, convertPrice, getUnitLabel, canConvert, unitOptions, productUnitOf } from "../utils/unitConversion";
+import { shortenPipeName, OkiieeBrandFooter } from "../components/InvoiceComponents";
 import { productDisplayName } from "../utils/constants";
+import PaymentTerms, { useAccounts, derivePayment, isPayValid } from "../components/PaymentTerms";
+import { recordTradeFinance } from "../utils/tradeFinance";
+import PartyNamePicker from "../components/PartyNamePicker";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BILLING PAGE — COMPLETE UPDATE
@@ -76,6 +80,15 @@ const hwBillCalc = (salePricePerPc, qty) => {
   const sp = Number(salePricePerPc)||0; const q = Number(qty)||0;
   return { salePricePerPc: sp, total: sp * q };
 };
+const roundUnitAmt = (n) => {
+  const x = Math.round((Number(n) || 0) * 100) / 100;
+  return String(x);
+};
+const stockUnitLabel = (cat, product) => {
+  if (cat === "Chader") return "kg";
+  if (cat === "Net" || cat === "Pipe") return "ft";
+  return getUnitLabel(productUnitOf(product));
+};
 const getBillingBlockSubtotal = (block, products) => {
   const prod = products.find(p => (p._id || p.id) === block.productId);
   if (!prod) return 0;
@@ -95,9 +108,15 @@ const getBillingBlockStockError = (block, products, isUrdu) => {
   if (cat === "Pipe")   entered = (block.pipeRows||[]).reduce((s,r) => s + (Number(r.qty)||0), 0);
   else if (cat === "Chader") entered = (block.chaderRows||[]).reduce((s,r) => s + (Number(r.weight)||0), 0);
   else if (cat === "Net")    entered = (block.netRows||[]).reduce((s,r) => s + (Number(r.feet)||0), 0);
-  else                        entered = (block.hwRows||[]).reduce((s,r) => s + (Number(r.qty)||0), 0);
+  else {
+    const pUnit = productUnitOf(prod);
+    entered = (block.hwRows||[]).reduce((s, r) => {
+      const saleUnit = r.unit || pUnit;
+      return s + convertQuantity(Number(r.qty) || 0, saleUnit, pUnit);
+    }, 0);
+  }
   if (entered > 0 && entered > stock) {
-    const unit = cat === "Chader" ? "kg" : cat === "Net" ? "ft" : "pcs";
+    const unit = cat === "Chader" ? "kg" : cat === "Net" ? "ft" : getUnitLabel(productUnitOf(prod));
     return isUrdu
       ? `🚫 Stock صرف ${stock} ${unit} ہے — آپ نے ${entered} ${unit} داخل کیا`
       : `🚫 Only ${stock} ${unit} in stock — you entered ${entered} ${unit}`;
@@ -105,19 +124,20 @@ const getBillingBlockStockError = (block, products, isUrdu) => {
   return null;
 };
 
-const BILLING_BANKS = ["HBL","MCB","UBL","Meezan Bank","Allied Bank","Bank Alfalah","NBP","Faysal Bank",
-  "Standard Chartered","Askari Bank","Silk Bank","JS Bank","Soneri Bank","Bank Al Habib","Other"];
-
 const getPaymentLabel = (paymentMethod, bankName, isUrdu) => {
+  if (paymentMethod === "credit")    return isUrdu ? "ادھار (Credit)" : "Credit";
   if (paymentMethod === "bank")      return `Bank: ${bankName || (isUrdu ? "بینک" : "Bank")}`;
   if (paymentMethod === "jazzcash")  return `JazzCash${bankName ? ` (${bankName})` : ""}`;
   if (paymentMethod === "easypaisa") return `Easypaisa${bankName ? ` (${bankName})` : ""}`;
-  return isUrdu ? "نقد (Cash)" : "Cash";
+  if (paymentMethod === "wallet")    return bankName ? `Wallet: ${bankName}` : (isUrdu ? "والٹ" : "Wallet");
+  return bankName ? (isUrdu ? `نقد: ${bankName}` : `Cash: ${bankName}`) : (isUrdu ? "نقد (Cash)" : "Cash");
 };
 const getPaymentBadgeStyle = (paymentMethod) => {
+  if (paymentMethod === "credit")    return { background:"rgba(248,113,113,0.15)", color:"#f87171" };
   if (paymentMethod === "bank")      return { background:"rgba(96,165,250,0.15)",  color:"#60a5fa" };
   if (paymentMethod === "jazzcash")  return { background:"rgba(232,67,147,0.15)", color:"#e84393" };
   if (paymentMethod === "easypaisa") return { background:"rgba(0,166,81,0.15)",   color:"#00a651" };
+  if (paymentMethod === "wallet")    return { background:"rgba(167,139,250,0.15)", color:"#a78bfa" };
   return { background:"rgba(52,211,153,0.15)", color:"#34d399" };
 };
 
@@ -129,45 +149,46 @@ const getPaymentBadgeStyle = (paymentMethod) => {
 // invoice — that mismatch was the actual bug being reported.
 const thermalPrintStyles = `
 @page {
-  margin:0;
+  size: 65mm 297mm;
+  margin: 4mm 3mm;
 }
 
 @media print {
 
 html,
 body{
-    width:65mm !important;
     margin:0 !important;
     padding:0 !important;
-
+    background:#fff !important;
     font-family:Arial, sans-serif;
     font-size:14px;
 }
 
 body *{
-    visibility:hidden;
+    visibility:hidden !important;
 }
 
+#print-portal-overlay,
+#print-portal-overlay *,
+#thermal-invoice-print,
+#thermal-invoice-print *,
 #thermal-invoice,
 #thermal-invoice *{
-    visibility:visible;
+    visibility:visible !important;
+    color:#000 !important;
 }
 
+#thermal-invoice-print,
 #thermal-invoice{
-    position:absolute;
-    left:0;
-    top:0;
-
-    width:65mm !important;
-
-    padding:8px;
-
+    position:relative !important;
+    left:0 !important;
+    top:0 !important;
+    width:100% !important;
+    padding:0 !important;
     background:#fff;
-
     box-sizing:border-box;
-
-    font-size:14px;
-    line-height:1.5;
+    font-size:12px;
+    line-height:1.35;
 }
 
 /* HEADER */
@@ -270,7 +291,7 @@ function BillingSaleInvoice({ invoiceData, onClose, isUrdu }) {
   const th = useTheme();
   const {
     invoice, date, customer, items, grandTotal,
-    paymentMethod, bankName,
+    paymentMethod, bankName, accountName,
     paidAmount, remainingAmount, isPartial,
     loaderName, loaderFee, bindingFee
   } = invoiceData;
@@ -463,68 +484,7 @@ const COL_AMT = "20%";
   //    set to Courier New + font-weight 900 on every element, which is why
   //    the printed receipt looked different from the preview (different
   //    font, everything bold). That override is removed below.
-  const handlePrint = () => {
-    const existingOverlay = document.getElementById("print-portal-overlay");
-    if (existingOverlay) existingOverlay.remove();
-    const existingStyle = document.getElementById("print-portal-style");
-    if (existingStyle) existingStyle.remove();
-
-    const inv = document.getElementById("thermal-invoice");
-    if (!inv) return;
-
-    const portal = document.createElement("div");
-    portal.id = "print-portal-overlay";
-    // Visible-but-offscreen in normal flow during screen view; this avoids
-    // the zero-height print bug while not disturbing the page visually.
-    portal.style.position = "absolute";
-    portal.style.left = "-9999px";
-    portal.style.top = "0";
-    portal.style.width = "65mm";
-
-    // Clone exactly as rendered — same fonts/weights/colors as the preview.
-    // No font-family / font-weight overrides here on purpose.
-    const clone = inv.cloneNode(true);
-    clone.id = "thermal-invoice-print";
-    clone.style.width = "65mm";
-    clone.style.maxWidth = "65mm";
-    clone.style.margin = "0";
-    clone.style.boxSizing = "border-box";
-    portal.appendChild(clone);
-    document.body.appendChild(portal);
-
-    // Measure the actual rendered receipt height (now that it's in the DOM)
-    // and give the @page rule an explicit height in mm. "65mm auto" is not
-    // valid CSS, so browsers fell back to their default page size and long
-    // invoices (many line items) got cut off after roughly one default page.
-    const pageHeightMM = pxToPageHeightMM(clone);
-
-    const styleEl = document.createElement("style");
-    styleEl.id = "print-portal-style";
-    styleEl.innerHTML = `
-      @page { size: 65mm ${pageHeightMM}mm; margin: 0; }
-      @media print {
-        html, body { width:65mm !important; max-width:65mm !important; margin:0 !important; padding:0 !important; }
-        body * { visibility:hidden !important; }
-        #thermal-invoice-print, #thermal-invoice-print * { visibility:visible !important; }
-        #print-portal-overlay {
-          position:fixed !important; left:0 !important; top:0 !important;
-          width:65mm !important; max-width:65mm !important; height:auto !important;
-          z-index:99999 !important; box-sizing:border-box !important;
-        }
-        #thermal-invoice-print { width:65mm !important; margin:0 !important; }
-        #thermal-invoice-print * { box-sizing:border-box !important; max-width:100% !important; }
-        button { display:none !important; }
-      }
-    `;
-    document.head.appendChild(styleEl);
-
-    window.print();
-
-    setTimeout(() => {
-      portal.remove();
-      styleEl.remove();
-    }, 1000);
-  };
+  const handlePrint = () => printThermalOrA4("thermal");
 
   return (
     <>
@@ -599,7 +559,7 @@ letterSpacing:"0.3px"
                  fix each computed their own widths independently, which is
                  what caused the column "stretching"/misalignment). ── */}
           {/* ITEMS TABLE */}
-<table style={{ ...tbl, marginTop: 2 }}>
+<table className="inv-items" style={{ ...tbl, marginTop: 2 }}>
 
 <colgroup>
 <col style={{width:COL_SN}}/>
@@ -803,26 +763,10 @@ padding:"6px 3px",
 whiteSpace:"nowrap"
 }}
 >
-{getPaymentLabel(paymentMethod, bankName, isUrdu)}
+{getPaymentLabel(paymentMethod, accountName || bankName, isUrdu)}
 </td>
 
 </tr>
-
-{paymentMethod==="jazzcash" && (
-<tr>
-<td colSpan={5} style={{...tdS("left"),textAlign:"center"}}>
-JazzCash: 03057903867
-</td>
-</tr>
-)}
-
-{paymentMethod==="easypaisa" && (
-<tr>
-<td colSpan={5} style={{...tdS("left"),textAlign:"center"}}>
-Easypaisa: 03057903867
-</td>
-</tr>
-)}
 
 {loaderName && (
 <tr>
@@ -914,31 +858,7 @@ minute:"2-digit"
 
             <div style={dash}/>
 
-            {/* Footer — plain, matching sample ("Thank You" centered) */}
-          <div
-style={{
-...center,
-fontWeight:700,
-fontSize:"12px",
-letterSpacing:"0.8px",
-lineHeight:"18px",
-marginTop:"4px"
-}}
->
-OKIIEE SOFTWARE COMPANY
-</div>
-
-<div
-style={{
-...center,
-fontWeight:700,
-fontSize:"11px",
-letterSpacing:"0.5px",
-marginTop:"2px"
-}}
->
-{L.softPhone}
-</div>
+            <OkiieeBrandFooter />
 
           </div>
         </div>
@@ -1143,57 +1063,123 @@ function NetBillingRows({ rows, onChange, purchasePrice, availStock, isUrdu }) {
 }
 
 // ─── HW/CUSTOM BILLING ROWS ───────────────────────────────────────────────────
-function HwBillingRows({ rows, onChange, purchasePrice, catLabel, catColor, catBg, availStock, isUrdu }) {
+function HwBillingRows({ rows, onChange, purchasePrice, purchaseUnit, productSalePrice, catLabel, catColor, catBg, availStock, isUrdu }) {
   const th = useTheme();
   const color      = catColor || "#fbbf24";
   const bgTint     = catBg    || "rgba(251,191,36,0.08)";
   const borderTint = catBg ? catBg.replace("0.08","0.2") : "rgba(251,191,36,0.2)";
   const inpS = { background:th.input, border:`1px solid ${th.inputBorder}`, color:th.text, borderRadius:10, padding:"9px 11px", fontSize:14, outline:"none", width:"100%", boxSizing:"border-box" };
-  // Sale price is only pre-filled once when the product is first selected (see makeDefaultRow).
-  // It is NOT re-forced from purchasePrice on every render, so the user can freely clear it
-  // and type their own custom sale price without it snapping back.
-  const row = rows[0] || { _id:Date.now()+Math.random(), qty:"", salePrice:"" };
-  const update = (k, v) => onChange([{ ...row, [k]: v }]);
-  const c = hwBillCalc(row.salePrice, row.qty);
+  const pUnit = purchaseUnit || "piece";
+  const row = rows[0] || { _id:Date.now()+Math.random(), unit: pUnit, qty:"", salePrice:"" };
+  const saleUnit = row.unit || pUnit;
+  const matchedUnits = unitOptions.filter((opt) => canConvert(pUnit, opt.value));
+  
+  const update = (k, v) => {
+    const newRow = { ...row, [k]: v };
+    if (k === "unit") {
+      const from = saleUnit;
+      const to = v;
+      if (from !== to && canConvert(from, to)) {
+        const currentPrice = Number(row.salePrice) || 0;
+        const baseSale = Number(productSalePrice) || 0;
+        if (currentPrice > 0) newRow.salePrice = roundUnitAmt(convertPrice(currentPrice, from, to));
+        else if (baseSale > 0) newRow.salePrice = roundUnitAmt(convertPrice(baseSale, pUnit, to));
+        else if (purchasePrice > 0) newRow.salePrice = roundUnitAmt(convertPrice(purchasePrice, pUnit, to));
+        if (Number(row.qty) > 0) newRow.qty = roundUnitAmt(convertQuantity(row.qty, from, to));
+      }
+    }
+    onChange([newRow]);
+  };
+  
   const enteredQty = Number(row.qty) || 0;
-  const stockErr   = enteredQty > 0 && enteredQty > availStock;
-  const ppZero     = !purchasePrice || purchasePrice === 0;
+  const qtyInStockUnit = canConvert(saleUnit, pUnit)
+    ? convertQuantity(enteredQty, saleUnit, pUnit)
+    : enteredQty;
+  const stockErr = qtyInStockUnit > 0 && qtyInStockUnit > availStock;
+  
+  const c = hwBillCalc(row.salePrice, enteredQty);
+  const ppZero = !purchasePrice || purchasePrice === 0;
+  const costInSaleUnit = canConvert(pUnit, saleUnit) && purchasePrice > 0
+    ? convertPrice(purchasePrice, pUnit, saleUnit)
+    : purchasePrice;
+  
+  // Display purchase info with unit and related unit price
+  const purchaseInfo = ppZero
+    ? (isUrdu ? "⚠️ خریداری قیمت سیٹ نہیں — Sale price نیچے خود داخل کریں" : "⚠️ Purchase price not set — enter sale price manually below")
+    : saleUnit !== pUnit && canConvert(pUnit, saleUnit)
+      ? (isUrdu
+        ? `خریداری: Rs ${purchasePrice}/${getUnitLabel(pUnit)} → cost Rs ${Math.round(costInSaleUnit * 100) / 100}/${getUnitLabel(saleUnit)}`
+        : `Purchase: Rs ${purchasePrice}/${getUnitLabel(pUnit)} → cost Rs ${Math.round(costInSaleUnit * 100) / 100}/${getUnitLabel(saleUnit)}`)
+      : (isUrdu
+        ? `خریداری قیمت: Rs ${purchasePrice}/${getUnitLabel(pUnit)}`
+        : `Purchase Price: Rs ${purchasePrice}/${getUnitLabel(pUnit)}`);
+  const maxInSaleUnit = canConvert(pUnit, saleUnit)
+    ? convertQuantity(availStock, pUnit, saleUnit)
+    : availStock;
+  
   return (
     <div style={{display:"flex",flexDirection:"column",gap:8}}>
       <div style={{padding:"7px 11px",borderRadius:8,background:ppZero?"rgba(251,191,36,0.08)":bgTint,border:ppZero?"1px solid rgba(251,191,36,0.3)":`1px solid ${borderTint}`,fontSize:13,color:ppZero?"#fbbf24":color,fontWeight:600}}>
-        🔧 {ppZero
-          ? (isUrdu ? "⚠️ خریداری قیمت سیٹ نہیں — Sale price نیچے خود داخل کریں" : "⚠️ Purchase price not set — enter sale price/pc manually below")
-          : (isUrdu ? `خریداری قیمت: Rs ${purchasePrice}/pc — Sale price نیچے تبدیل کریں` : `Purchase Price: Rs ${purchasePrice}/pc — Sale price editable below`)
-        }
+        🔧 {purchaseInfo}
       </div>
       <div style={{padding:"6px 11px",borderRadius:8,background:availStock===0?"rgba(248,113,113,0.1)":bgTint,border:`1px solid ${availStock===0?"rgba(248,113,113,0.3)":borderTint}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <span style={{fontSize:12,color:th.textMuted}}>{isUrdu?"دستیاب Stock:":"Available Stock:"}</span>
         <span style={{fontWeight:900,fontSize:14,color:availStock===0?"#f87171":availStock<10?"#fbbf24":color}}>
-          {availStock} pcs {availStock===0?"🚫":availStock<10?"⚠️":""}
+          {availStock} {getUnitLabel(pUnit)} {availStock===0?"🚫":availStock<10?"⚠️":""}
         </span>
       </div>
       <div style={{padding:10,borderRadius:10,border:`1px solid ${stockErr?"rgba(248,113,113,0.5)":th.border}`,background:th.bgCard}}>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+          <div>
+            <label style={{color:th.textMuted,fontSize:11,display:"block",marginBottom:3,fontWeight:400}}>
+              Sale Unit
+            </label>
+            <select
+              value={saleUnit}
+              onChange={e => update("unit", e.target.value)}
+              style={{...inpS,padding:"9px 8px"}}
+            >
+              {matchedUnits.map(opt => (
+                <option key={opt.value} value={opt.value} style={{ background: th.bgModal }}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
           <div>
             <label style={{color:stockErr?"#f87171":th.textMuted,fontSize:11,display:"block",marginBottom:3,fontWeight:stockErr?700:400}}>
-              Qty (pcs) {availStock>0&&<span style={{color:th.textDim,fontWeight:400}}>(max: {availStock})</span>}
+              Qty {availStock>0&&<span style={{color:th.textDim,fontWeight:400}}>(max: {maxInSaleUnit} {getUnitLabel(saleUnit)})</span>}
             </label>
             <input type="text" inputMode="decimal" value={row.qty} onChange={e=>update("qty",e.target.value)} placeholder="0"
               style={{...inpS,border:stockErr?"2px solid rgba(248,113,113,0.7)":inpS.border}}/>
           </div>
           <div>
-            <label style={{color:th.textMuted,fontSize:11,display:"block",marginBottom:3}}>Sale Price/pc (Rs)</label>
-            <input type="text" inputMode="decimal" value={row.salePrice} onChange={e=>update("salePrice",e.target.value)} placeholder={String(purchasePrice)} style={{...inpS,border:`2px solid ${borderTint}`}}/>
+            <label style={{color:th.textMuted,fontSize:11,display:"block",marginBottom:3}}>
+              Sale Price/{getUnitLabel(saleUnit)} (Rs)
+              {canConvert(pUnit, saleUnit) && purchasePrice > 0 && (
+                <span style={{color:"#34d399",fontSize:10,marginLeft:4,fontWeight:600}}>
+                  (Cost: {Math.round(costInSaleUnit * 100) / 100})
+                </span>
+              )}
+            </label>
+            <input 
+              type="text" 
+              inputMode="decimal" 
+              value={row.salePrice} 
+              onChange={e=>update("salePrice",e.target.value)} 
+              placeholder={canConvert(pUnit, saleUnit) && purchasePrice > 0 ? String(Math.round(costInSaleUnit * 100) / 100) : String(purchasePrice)} 
+              style={{...inpS,border:`2px solid ${borderTint}`}}
+            />
           </div>
         </div>
         {stockErr && (
           <div style={{marginTop:8,padding:"7px 10px",borderRadius:8,background:"rgba(248,113,113,0.12)",border:"1px solid rgba(248,113,113,0.4)",color:"#f87171",fontSize:13,fontWeight:700}}>
-            🚫 {isUrdu?`Stock صرف ${availStock} pcs ہے`:`Only ${availStock} pcs in stock`}
+            🚫 {isUrdu?`Stock صرف ${availStock} ${getUnitLabel(pUnit)} ہے`:`Only ${availStock} ${getUnitLabel(pUnit)} in stock`}
           </div>
         )}
         {c.total > 0 && !stockErr && (
           <div style={{marginTop:8,padding:"5px 10px",borderRadius:8,background:bgTint,display:"flex",justifyContent:"space-between",fontSize:13}}>
-            <span style={{color:th.textMuted}}>{row.qty}pc × Rs{Number(row.salePrice).toFixed(0)}/pc</span>
+            <span style={{color:th.textMuted}}>{enteredQty} {getUnitLabel(saleUnit)} × Rs{Number(row.salePrice).toFixed(0)}/{getUnitLabel(saleUnit)}</span>
             <span style={{color,fontWeight:700}}>{formatPKR(c.total)}</span>
           </div>
         )}
@@ -1216,7 +1202,6 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
     const found = products.find(p => (p._id || p.id) === block.productId);
     return found ? productDisplayName(found) : "";
   });
-  const [showDrop, setShowDrop] = useState(false);
   const selectedProduct = products.find(p => (p._id || p.id) === block.productId);
   const category   = selectedProduct?.category || "";
   const availStock = Number(selectedProduct?.stock) || 0;
@@ -1227,23 +1212,28 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
   const stockError = getBillingBlockStockError(block, products, isUrdu);
   const inpS = { background:th.input, border:`1px solid ${th.inputBorder}`, color:th.text, borderRadius:10, padding:"9px 11px", fontSize:14, outline:"none", width:"100%", boxSizing:"border-box" };
 
-  const makeDefaultRow = (cat, pp) => {
+  const makeDefaultRow = (cat, pp, product) => {
     if (cat === "Pipe")   return { _id:Date.now()+Math.random(), length:"", qty:"", percentage:"" };
     if (cat === "Chader") return { _id:Date.now()+Math.random(), weight:"", salePrice: pp };
     if (cat === "Net")    return { _id:Date.now()+Math.random(), feet:"", width:"", salePrice: pp };
-    return { _id:Date.now()+Math.random(), qty:"", salePrice: pp };
+    return { _id:Date.now()+Math.random(), unit: productUnitOf(product), qty:"", salePrice: pp };
   };
   const handleSelectProduct = (product) => {
-    // Chader/Net/Hardware/Custom store their rate in purchasePrice; Pipe uses price.
     const pp = product.category === "Pipe"
       ? (Number(product.price) || 0)
       : product.category === "Hardware"
         ? (Number(product.price) || Number(product.purchasePrice) || 0)
         : (Number(product.purchasePrice) || Number(product.price) || 0);
     const productId = product._id || product.id;
-    setSearch(productDisplayName(product)); setShowDrop(false);
-    onChange({ ...block, productId, pipeRows:[makeDefaultRow("Pipe",pp)], chaderRows:[makeDefaultRow("Chader",pp)], netRows:[makeDefaultRow("Net",pp)], hwRows:[makeDefaultRow("Hardware",pp)] });
+    setSearch(productDisplayName(product));
+    setShowDrop(false);
+    onChange({ ...block, productId, pipeRows:[makeDefaultRow("Pipe",pp, product)], chaderRows:[makeDefaultRow("Chader",pp, product)], netRows:[makeDefaultRow("Net",pp, product)], hwRows:[makeDefaultRow("Hardware",pp, product)] });
+    requestAnimationFrame(() => {
+      const root = document.querySelector("[data-modal-box]");
+      focusNextField(document.activeElement, root);
+    });
   };
+  const { open: showDrop, setOpen: setShowDrop, hi, setHi, onKeyDown: navKeys, listRef } = useTypeaheadNav(filtered, handleSelectProduct);
 
   return (
     <div style={{ borderRadius:12, border:`1.5px solid ${stockError?"rgba(248,113,113,0.5)":th.border}`, overflow:"visible", background:th.bgCard }}>
@@ -1263,22 +1253,24 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
             </label>
             <div style={{position:"relative"}}>
               <input type="text" value={search}
-                onChange={e=>{ setSearch(e.target.value); setShowDrop(true); if(block.productId) onChange({...block,productId:""}); }}
-                onFocus={()=>setShowDrop(true)} placeholder="🔍 Search product..." style={inpS}/>
+                data-product-search="1"
+                data-suggest-open={showDrop ? "1" : "0"}
+                onChange={e=>{ setSearch(e.target.value); setShowDrop(true); setHi(0); if(block.productId) onChange({...block,productId:""}); }}
+                onFocus={()=>setShowDrop(true)}
+                onKeyDown={navKeys}
+                placeholder="🔍 Search product..." style={inpS} autoComplete="off"/>
               {showDrop && (
                 <>
                   <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:998}} onMouseDown={()=>setShowDrop(false)}/>
-                  <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:999,background:th.bgModal||th.bgCard,border:`1px solid ${th.border}`,borderRadius:10,maxHeight:180,overflowY:"auto",boxShadow:"0 4px 16px rgba(0,0,0,0.25)"}}>
+                  <div ref={listRef} style={{position:"absolute",top:"100%",left:0,right:0,zIndex:999,background:th.bgModal||th.bgCard,border:`1px solid ${th.border}`,borderRadius:10,maxHeight:180,overflowY:"auto",boxShadow:"0 4px 16px rgba(0,0,0,0.25)"}}>
                     {filtered.length===0
                       ? <div style={{padding:"10px",textAlign:"center",color:th.textDim,fontSize:13}}>{isUrdu?"کوئی product نہیں ملا":"No products found"}</div>
-                      : filtered.map(p=>{
+                      : filtered.map((p, i)=>{
                           const displayPrice = (p.category==="Pipe" || p.category==="Hardware") ? (Number(p.price)||Number(p.purchasePrice)||0) : (Number(p.purchasePrice)||Number(p.price)||0);
-                          const displayUnit  = p.category==="Chader"?"kg":p.category==="Net"?"ft":p.category==="Pipe"?"ft":"pc";
+                          const displayUnit  = stockUnitLabel(p.category, p);
                           return (
-                          <div key={p._id||p.id} onMouseDown={()=>handleSelectProduct(p)}
-                            style={{padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${th.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:14,color:th.text}}
-                            onMouseEnter={e=>e.currentTarget.style.background=th.rowHover}
-                            onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                          <div key={p._id||p.id} data-nav-i={i} onMouseDown={()=>handleSelectProduct(p)} onMouseEnter={()=>setHi(i)}
+                            style={{padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${th.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:14,color:th.text,background:i===hi?"rgba(26,188,156,0.16)":"transparent"}}>
                             <span>{productDisplayName(p)}</span>
                             <div style={{display:"flex",alignItems:"center",gap:6}}>
                               <span style={{fontSize:11,color:Number(p.stock)===0?"#f87171":Number(p.stock)<10?"#fbbf24":"#34d399",fontWeight:700}}>Stock: {p.stock||0}</span>
@@ -1297,7 +1289,7 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
           </div>
           {selectedProduct && (() => {
             const displayPrice = (selectedProduct.category==="Pipe" || selectedProduct.category==="Hardware") ? (Number(selectedProduct.price)||Number(selectedProduct.purchasePrice)||0) : (Number(selectedProduct.purchasePrice)||Number(selectedProduct.price)||0);
-            const displayUnit  = category==="Chader"?"kg":category==="Net"?"ft":category==="Pipe"?"ft":"pc";
+            const displayUnit  = stockUnitLabel(category, selectedProduct);
             return (
             <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderRadius:8,background:catBgs[category]||"transparent",border:`1px solid ${(catColors[category]||"#aaa")}40`}}>
               <span style={{color:catColors[category],fontSize:12,fontWeight:700}}>{category}</span>
@@ -1311,8 +1303,8 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
           {category==="Pipe"     && <PipeBillingRows    rows={block.pipeRows||[]}   onChange={rows=>onChange({...block,pipeRows:rows})}   purchasePrice={Number(selectedProduct?.price)||Number(selectedProduct?.purchasePrice)||0} availStock={availStock} isUrdu={isUrdu}/>}
           {category==="Chader"   && <ChaderBillingRows  rows={block.chaderRows||[]} onChange={rows=>onChange({...block,chaderRows:rows})} purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu}/>}
           {category==="Net"      && <NetBillingRows     rows={block.netRows||[]}    onChange={rows=>onChange({...block,netRows:rows})}    purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu}/>}
-          {category==="Hardware" && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} catLabel="Hardware Total" catColor="#fbbf24" catBg="rgba(251,191,36,0.08)"/>}
-          {category==="Custom"   && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} catLabel="Custom Total"   catColor="#a78bfa" catBg="rgba(167,139,250,0.08)"/>}
+          {category==="Hardware" && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} catLabel="Hardware Total" catColor="#fbbf24" catBg="rgba(251,191,36,0.08)"/>}
+          {category==="Custom"   && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} catLabel="Custom Total"   catColor="#a78bfa" catBg="rgba(167,139,250,0.08)"/>}
           {!category && (
             <div style={{padding:"12px",textAlign:"center",color:th.textDim,fontSize:13,borderRadius:8,border:`1px dashed ${th.border}`}}>
               {isUrdu ? "👆 Product منتخب کریں billing شروع کریں" : "👆 Select a product to start billing"}
@@ -1455,93 +1447,6 @@ function LoaderSection({ loaderForm, setLoaderForm, isUrdu, loaders=[] }) {
   );
 }
 
-// ─── PARTIAL PAYMENT SECTION ──────────────────────────────────────────────────
-function PartialPaymentSection({ finalTotal, partialForm, setPartialForm, isUrdu }) {
-  const th = useTheme();
-  const inpS = { background:th.input, border:`1px solid ${th.inputBorder}`, color:th.text, borderRadius:10, padding:"9px 12px", fontSize:14, outline:"none", width:"100%", boxSizing:"border-box" };
-  const { isPartial, paidAmount } = partialForm;
-  const paid      = Number(paidAmount) || 0;
-  const remaining = isPartial ? Math.max(0, finalTotal - paid) : 0;
-  const paidError = isPartial && paid > 0 && paid > finalTotal
-    ? (isUrdu?"ادا کردہ رقم کل سے زیادہ نہیں ہو سکتی":"Paid amount cannot exceed total") : null;
-  return (
-    <div style={{ borderRadius:12, border:`1px solid ${isPartial?"rgba(251,191,36,0.4)":th.border}`, background:isPartial?"rgba(251,191,36,0.05)":"transparent", overflow:"hidden" }}>
-      <div style={{ padding:"10px 14px", display:"flex", alignItems:"center", justifyContent:"space-between", background:isPartial?"rgba(251,191,36,0.08)":th.thHead, borderBottom:isPartial?"1px solid rgba(251,191,36,0.2)":"none", cursor:"pointer" }}
-        onClick={()=>setPartialForm(p=>({...p,isPartial:!p.isPartial,paidAmount:""}))}>
-        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-          <span style={{ fontSize:18 }}>💰</span>
-          <div>
-            <div style={{ color:isPartial?"#fbbf24":th.text, fontWeight:700, fontSize:14 }}>{isUrdu?"ادھار / جزوی ادائیگی":"Partial / Credit Payment"}</div>
-            <div style={{ color:th.textDim, fontSize:11, marginTop:1 }}>{isUrdu?"گاہک ابھی کچھ دے، باقی بعد میں":"Customer pays part now, rest later"}</div>
-          </div>
-        </div>
-        <div style={{ width:44, height:24, borderRadius:12, background:isPartial?"#fbbf24":th.border, position:"relative" }}>
-          <div style={{ position:"absolute", top:3, left:isPartial?23:3, width:18, height:18, borderRadius:"50%", background:"#fff", boxShadow:"0 1px 4px rgba(0,0,0,0.3)" }}/>
-        </div>
-      </div>
-      {isPartial && (
-        <div style={{ padding:12, display:"flex", flexDirection:"column", gap:10 }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 12px", borderRadius:8, background:"rgba(52,211,153,0.08)", border:"1px solid rgba(52,211,153,0.2)" }}>
-            <span style={{ color:th.textMuted, fontSize:13 }}>{isUrdu?"کل Bill:":"Total Bill:"}</span>
-            <span style={{ color:"#34d399", fontWeight:900, fontSize:16 }}>{formatPKR(finalTotal)}</span>
-          </div>
-          <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-            <span style={{ color:th.textDim, fontSize:11, width:"100%", marginBottom:2 }}>{isUrdu?"فوری انتخاب:":"Quick select:"}</span>
-            {[
-              { label:isUrdu?"آدھا":"Half", value:Math.floor(finalTotal/2) },
-              { label:isUrdu?"چوتھائی":"1/4", value:Math.floor(finalTotal/4) },
-              { label:"500", value:500 },{ label:"1000", value:1000 },
-              { label:"2000", value:2000 },{ label:"5000", value:5000 },
-            ].filter(b=>b.value>0&&b.value<finalTotal).map((btn,i)=>(
-              <button key={i} onClick={()=>setPartialForm(p=>({...p,paidAmount:String(btn.value)}))}
-                style={{ padding:"5px 10px", borderRadius:8, border:"1px solid rgba(251,191,36,0.3)", background:Number(paidAmount)===btn.value?"rgba(251,191,36,0.25)":"rgba(251,191,36,0.08)", color:"#fbbf24", fontSize:12, fontWeight:600, cursor:"pointer" }}>
-                {btn.label}
-              </button>
-            ))}
-          </div>
-          <div>
-            <label style={{ color:"#fbbf24", fontSize:11, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:4, display:"block", fontWeight:700 }}>
-              {isUrdu?"ابھی ادا کردہ رقم (Rs) *":"Amount Paid Now (Rs) *"}
-            </label>
-            <input type="text" inputMode="decimal" value={paidAmount} onChange={e=>setPartialForm(p=>({...p,paidAmount:e.target.value}))}
-              placeholder={isUrdu?"مثلاً 1500":"e.g. 1500"}
-              style={{ ...inpS, border:paidError?"2px solid #f87171":"2px solid rgba(251,191,36,0.5)", fontSize:16, fontWeight:700 }}/>
-            {paidError && <div style={{ color:"#f87171", fontSize:11, marginTop:4 }}>{paidError}</div>}
-          </div>
-          {paid > 0 && !paidError && (
-            <div style={{ borderRadius:10, overflow:"hidden", border:`1px solid ${remaining>0?"rgba(248,113,113,0.3)":"rgba(52,211,153,0.3)"}` }}>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", background:remaining>0?"rgba(248,113,113,0.08)":"rgba(52,211,153,0.08)" }}>
-                <div style={{ padding:"10px 14px", borderRight:`1px solid ${remaining>0?"rgba(248,113,113,0.2)":"rgba(52,211,153,0.2)"}` }}>
-                  <div style={{ color:th.textMuted, fontSize:11, marginBottom:3 }}>✅ {isUrdu?"ادا کردہ":"Paid"}</div>
-                  <div style={{ color:"#34d399", fontWeight:900, fontSize:17 }}>{formatPKR(paid)}</div>
-                </div>
-                <div style={{ padding:"10px 14px" }}>
-                  <div style={{ color:th.textMuted, fontSize:11, marginBottom:3 }}>{remaining>0?`⏳ ${isUrdu?"باقی":"Remaining"}`:`✅ ${isUrdu?"مکمل":"Cleared"}`}</div>
-                  <div style={{ color:remaining>0?"#f87171":"#34d399", fontWeight:900, fontSize:17 }}>{formatPKR(remaining)}</div>
-                </div>
-              </div>
-              {remaining > 0 && (
-                <div style={{ padding:"8px 14px", background:"rgba(248,113,113,0.05)", borderTop:"1px solid rgba(248,113,113,0.15)", display:"flex", alignItems:"center", gap:6 }}>
-                  <span style={{ fontSize:14 }}>⚠️</span>
-                  <span style={{ color:"#f87171", fontSize:12, fontWeight:600 }}>
-                    {isUrdu?`${formatPKR(remaining)} ادھار باقی رہے گا`:`${formatPKR(remaining)} will remain as credit/due`}
-                  </span>
-                </div>
-              )}
-              {remaining===0 && paid===finalTotal && (
-                <div style={{ padding:"8px 14px", background:"rgba(52,211,153,0.05)", borderTop:"1px solid rgba(52,211,153,0.15)", display:"flex", alignItems:"center", gap:6 }}>
-                  <span style={{ fontSize:14 }}>🎉</span>
-                  <span style={{ color:"#34d399", fontSize:12, fontWeight:600 }}>{isUrdu?"مکمل ادائیگی!":"Full payment!"}</span>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── TODAY LOADERS SUMMARY ────────────────────────────────────────────────────
 function TodayLoadersSummary({ sales, isUrdu }) {
   const th = useTheme();
@@ -1661,31 +1566,32 @@ function TodayBindingFeeSummary({ sales, isUrdu }) {
 }
 
 // ─── NEW SALE MODAL ───────────────────────────────────────────────────────────
-function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loaders=[] }) {
+function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loaders=[], extraNames=[] }) {
   const th = useTheme();
+  const accounts = useAccounts();
   const [customer,      setCustomer]      = useState(prefill?.customer || "");
   const [invoiceNum,    setInvoiceNum]    = useState(prefill?.invoice  || `INV-${Date.now().toString().slice(-4)}`);
   const [date,          setDate]          = useState(prefill?.date     || todayStr());
-  const [paymentMethod, setPaymentMethod] = useState(prefill?.paymentMethod || "cash");
-  const [bankName,      setBankName]      = useState(prefill?.bankName || "");
   const [saving,        setSaving]        = useState(false);
   const [invoiceData,   setInvoiceData]   = useState(null);
-  const [partialForm,   setPartialForm]   = useState(
-    prefill?.isPartial
-      ? { isPartial:true, paidAmount:String(prefill.paidAmount||0) }
-      : { isPartial:false, paidAmount:"" }
-  );
+  const [payForm, setPayForm] = useState(() => {
+    const s = prefill?.settlement
+      || (prefill?.isPartial ? ((Number(prefill.paidAmount) || 0) === 0 ? "credit" : "partial") : "full");
+    return {
+      settlement: s,
+      accountId: prefill?.accountId || "",
+      paidAmount: s === "partial" ? String(prefill?.paidAmount || "") : "",
+    };
+  });
   const [loaderForm, setLoaderForm] = useState({ selectedId:"", customName:"", fee:"" });
   const [bindingFee, setBindingFee] = useState("");
-
-  const handlePaymentMethodChange = (method) => { setPaymentMethod(method); setBankName(""); };
 
   const newBlock = () => ({
     _id: Date.now()+Math.random(), productId:"",
     pipeRows:   [{ _id:Date.now()+Math.random(), length:"", qty:"", percentage:"" }],
     chaderRows: [{ _id:Date.now()+Math.random(), weight:"", salePrice:"" }],
     netRows:    [{ _id:Date.now()+Math.random(), feet:"", width:"", salePrice:"" }],
-    hwRows:     [{ _id:Date.now()+Math.random(), qty:"", salePrice:"" }],
+    hwRows:     [{ _id:Date.now()+Math.random(), unit:"piece", qty:"", salePrice:"" }],
   });
   const [blocks, setBlocks] = useState([newBlock()]);
 
@@ -1700,18 +1606,18 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
   const bindingFeeAmt = hasChaderItem ? (Number(bindingFee) || 0) : 0;
   const grandTotal = productsTotal + loaderFeeAmt + bindingFeeAmt; // full bill total shown/charged to customer
   const finalTotal = grandTotal;
-  const paid       = partialForm.isPartial ? (Number(partialForm.paidAmount)||0) : finalTotal;
-  const remaining  = partialForm.isPartial ? Math.max(0, finalTotal - paid) : 0;
-  const paidError  = partialForm.isPartial && paid > finalTotal;
+  const pay = derivePayment(finalTotal, payForm, accounts);
+  const paid       = pay.paidAmount;
+  const remaining  = pay.remainingAmount;
+  const paidError  = pay.paidError;
   const anyStockError = blocks.some(b => getBillingBlockStockError(b, products, isUrdu) !== null);
 
   const canSave = customer.trim()
     && blocks.every(b => b.productId)
-    && (paymentMethod !== "bank" || bankName)
     && productsTotal > 0
     && !paidError
     && !anyStockError
-    && (!partialForm.isPartial || (Number(partialForm.paidAmount)||0) > 0);
+    && isPayValid(finalTotal, payForm, accounts);
 
   const handleSave = async () => {
     if (!canSave) return;
@@ -1719,7 +1625,9 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
     const items = blocks.map(block => {
       const prod = products.find(p => (p._id||p.id) === block.productId);
       const cat  = prod?.category || "";
-      const pp   = (cat === "Pipe") ? (Number(prod?.price) || Number(prod?.purchasePrice) || 0) : (Number(prod?.purchasePrice) || Number(prod?.price) || 0); // purchase/cost price
+      const pp   = (cat === "Pipe")
+        ? (Number(prod?.price) || Number(prod?.purchasePrice) || 0)
+        : (Number(prod?.purchasePrice) || 0);
       let rows   = [];
       let costTotal = 0; // total cost for this item (purchase price × qty)
       if (cat === "Pipe") {
@@ -1752,10 +1660,14 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
         costTotal = pp * (Number(r.feet)||0) * (Number(r.width)||1);
       } else {
         const r  = block.hwRows[0] || {};
-        const sp = r.salePrice !== undefined && r.salePrice !== "" ? r.salePrice : pp;
+        const pUnit = productUnitOf(prod);
+        const saleUnit = r.unit || pUnit;
+        const sp = r.salePrice !== undefined && r.salePrice !== "" ? r.salePrice : (Number(prod?.price) || 0);
         const c  = hwBillCalc(sp, r.qty);
-        rows = [{ desc:`${r.qty||0}pc × Rs${Number(sp).toFixed(0)}/pc`, amount:c.total }];
-        costTotal = pp * (Number(r.qty)||0);
+        const uLbl = getUnitLabel(saleUnit);
+        rows = [{ desc:`${r.qty||0} ${uLbl} × Rs${Number(sp).toFixed(0)}/${uLbl}`, amount:c.total, unit: saleUnit }];
+        const costPerSaleUnit = canConvert(pUnit, saleUnit) ? convertPrice(pp, pUnit, saleUnit) : pp;
+        costTotal = costPerSaleUnit * (Number(r.qty)||0);
       }
       const subtotal = rows.reduce((s,r) => s + r.amount, 0);
       // itemQty = actual stock-unit quantity being sold for THIS product (pc/kg/ft),
@@ -1764,7 +1676,14 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
       if (cat === "Pipe")        itemQty = Number(block.pipeRows[0]?.qty)   || 0;
       else if (cat === "Chader") itemQty = Number(block.chaderRows[0]?.weight) || 0;
       else if (cat === "Net")    itemQty = Number(block.netRows[0]?.feet)   || 0;
-      else                       itemQty = Number(block.hwRows[0]?.qty)    || 0;
+      else {
+        const r = block.hwRows[0] || {};
+        const pUnit = productUnitOf(prod);
+        const saleUnit = r.unit || pUnit;
+        itemQty = canConvert(saleUnit, pUnit)
+          ? convertQuantity(Number(r.qty) || 0, saleUnit, pUnit)
+          : (Number(r.qty) || 0);
+      }
       return {
         productName: productDisplayName(prod), category: cat, rows, subtotal, costPrice: pp, costTotal,
         productId: block.productId || (prod?._id || prod?.id || ""),
@@ -1776,11 +1695,14 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
       ? (loaderForm.customName || "")
       : (loaders.find(l=>(l._id||l.id)===loaderForm.selectedId)?.name || "");
     const payload = {
-      invoice:invoiceNum, date, customer, paymentMethod, bankName, items, grandTotal,
+      invoice:invoiceNum, date, customer,
+      paymentMethod: pay.paymentMethod, bankName: pay.bankName,
+      accountId: pay.accountId, accountName: pay.accountName, settlement: pay.settlement,
+      items, grandTotal,
       total: grandTotal,
-      isPartial:       partialForm.isPartial,
-      paidAmount:      partialForm.isPartial ? paid : finalTotal,
-      remainingAmount: partialForm.isPartial ? remaining : 0,
+      isPartial:       pay.isPartial,
+      paidAmount:      pay.paidAmount,
+      remainingAmount: pay.remainingAmount,
       loaderName: resolvedLoaderName,
       loaderFee:  loaderFeeAmt,
       bindingFee: bindingFeeAmt,
@@ -1788,7 +1710,20 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
 
     const res = await onSave(payload);
     setSaving(false);
-    if (res && res.success) { setInvoiceData(payload); }
+    if (res && res.success) {
+      if (!prefill?.isEdit) {
+        await recordTradeFinance({
+          kind: "sale",
+          partyName: customer,
+          invoice: invoiceNum,
+          date,
+          paid: pay.paidAmount,
+          remaining: pay.remainingAmount,
+          accountId: pay.accountId,
+        });
+      }
+      setInvoiceData(payload);
+    }
     else { alert(res?.message || "Error saving"); }
   };
 
@@ -1809,7 +1744,14 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
         <div><Lbl c="Date"/><input type="date" value={date} onChange={e=>setDate(e.target.value)} style={inpS}/></div>
         <div style={{gridColumn:"1/-1"}}>
           <Lbl c={isUrdu?"گاہک کا نام":"Customer"} req/>
-          <input value={customer} onChange={e=>setCustomer(e.target.value)} placeholder={isUrdu?"گاہک کا نام...":"Customer name..."} style={inpS}/>
+          <PartyNamePicker
+            type="customer"
+            value={customer}
+            onChange={setCustomer}
+            extraNames={extraNames}
+            isUrdu={isUrdu}
+            inputStyle={inpS}
+          />
         </div>
       </div>
 
@@ -1834,65 +1776,24 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
       )}
 
       {/* Add product button */}
-      <button onClick={()=>setBlocks(bs=>[...bs,newBlock()])}
+      <button data-add-product="1" type="button" onClick={()=>setBlocks(bs=>[...bs,newBlock()])}
         style={{width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:6,padding:"9px",borderRadius:10,border:`2px dashed ${th.border}`,background:"transparent",color:th.textMuted,fontSize:13,fontWeight:600,cursor:"pointer"}}
         onMouseEnter={e=>{e.currentTarget.style.borderColor="#1abc9c";e.currentTarget.style.color="#1abc9c";}}
         onMouseLeave={e=>{e.currentTarget.style.borderColor=th.border;e.currentTarget.style.color=th.textMuted;}}>
         <Icon path={ICONS.plus} size={14}/> + {isUrdu?"Product شامل کریں":"Add Product"}
+        <span style={{ fontSize: 11, fontWeight: 600, opacity: 0.75 }}>(Ctrl+A)</span>
       </button>
 
-      {/* Payment method */}
-      <div>
-        <label style={{color:th.textMuted,fontSize:12,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8,display:"block"}}>
-          {isUrdu?"ادائیگی کا طریقہ *":"Payment Method *"}
-        </label>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-          {[
-            { key:"cash",      label:isUrdu?"💵 نقد":"💵 Cash",   color:"#34d399" },
-            { key:"bank",      label:"🏦 Bank",                   color:"#60a5fa" },
-            { key:"jazzcash",  label:"🎵 JazzCash",               color:"#e84393" },
-            { key:"easypaisa", label:"📱 Easypaisa",              color:"#00a651" },
-          ].map(pm => (
-            <button key={pm.key} onClick={()=>handlePaymentMethodChange(pm.key)}
-              style={{padding:"12px",borderRadius:12,border:`2px solid ${paymentMethod===pm.key?pm.color:th.border}`,background:paymentMethod===pm.key?`${pm.color}1a`:"transparent",color:paymentMethod===pm.key?pm.color:th.textMuted,cursor:"pointer",fontWeight:700,fontSize:14}}>
-              {pm.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Bank / JazzCash / Easypaisa fields */}
-      {paymentMethod==="bank" && (
-        <div>
-          <label style={{color:th.textMuted,fontSize:12,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:5,display:"block"}}>{isUrdu?"Bank کا نام *":"Bank Name *"}</label>
-          <select value={bankName} onChange={e=>setBankName(e.target.value)} style={{...inpS,borderRadius:12,padding:"11px 14px"}}>
-            <option value="">{isUrdu?"-- Bank منتخب کریں --":"-- Select Bank --"}</option>
-            {BILLING_BANKS.map(b=><option key={b} value={b} style={{background:th.bgModal}}>{b}</option>)}
-          </select>
-        </div>
-      )}
-      {paymentMethod==="jazzcash" && (
-        <div>
-          <label style={{color:th.textMuted,fontSize:12,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:5,display:"block"}}>{isUrdu?"JazzCash Account نمبر (اختیاری)":"JazzCash Account # (Optional)"}</label>
-          <input value={bankName} onChange={e=>setBankName(e.target.value)} placeholder="03xx-xxxxxxx" style={{...inpS,border:"2px solid rgba(232,67,147,0.4)"}}/>
-          <div style={{marginTop:6,padding:"8px 12px",borderRadius:8,background:"rgba(232,67,147,0.08)",border:"1px solid rgba(232,67,147,0.2)",fontSize:12,color:"#e84393"}}>
-            🎵 {isUrdu?"دکان JazzCash:":"Shop JazzCash:"} <strong>03057903867</strong>
-          </div>
-        </div>
-      )}
-      {paymentMethod==="easypaisa" && (
-        <div>
-          <label style={{color:th.textMuted,fontSize:12,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:5,display:"block"}}>{isUrdu?"Easypaisa Account نمبر (اختیاری)":"Easypaisa Account # (Optional)"}</label>
-          <input value={bankName} onChange={e=>setBankName(e.target.value)} placeholder="03xx-xxxxxxx" style={{...inpS,border:"2px solid rgba(0,166,81,0.4)"}}/>
-          <div style={{marginTop:6,padding:"8px 12px",borderRadius:8,background:"rgba(0,166,81,0.08)",border:"1px solid rgba(0,166,81,0.2)",fontSize:12,color:"#00a651"}}>
-            📱 {isUrdu?"دکان Easypaisa:":"Shop Easypaisa:"} <strong>03057903867</strong>
-          </div>
-        </div>
-      )}
-
-      {/* Partial payment toggle */}
+      {/* Payment: full / credit / partial + cash or bank account */}
       {grandTotal > 0 && (
-        <PartialPaymentSection finalTotal={finalTotal} partialForm={partialForm} setPartialForm={setPartialForm} isUrdu={isUrdu}/>
+        <PaymentTerms
+          total={finalTotal}
+          form={payForm}
+          setForm={setPayForm}
+          accounts={accounts}
+          isUrdu={isUrdu}
+          partyKind="customer"
+        />
       )}
 
       {/* Grand total summary */}
@@ -1918,7 +1819,7 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
             <span style={{color:th.text,fontWeight:700,fontSize:15}}>{isUrdu?"کل رقم:":"Grand Total:"}</span>
             <span style={{color:"#34d399",fontWeight:900,fontSize:21}}>{formatPKR(grandTotal)}</span>
           </div>
-          {partialForm.isPartial && paid > 0 && !paidError && (
+          {pay.isPartial && paid > 0 && !paidError && (
             <>
               <div style={{borderTop:"1px dashed rgba(26,188,156,0.3)",paddingTop:6,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <span style={{color:th.textMuted,fontSize:13}}>💰 {isUrdu?"ابھی ادا:":"Paying now:"}</span>
@@ -1926,14 +1827,20 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
               </div>
               {remaining > 0 && (
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <span style={{color:th.textMuted,fontSize:13}}>⏳ {isUrdu?"باقی ادھار:":"Remaining due:"}</span>
+                  <span style={{color:th.textMuted,fontSize:13}}>⏳ {isUrdu?"قابل وصول:":"Receivable:"}</span>
                   <span style={{color:"#f87171",fontWeight:800,fontSize:15}}>{formatPKR(remaining)}</span>
                 </div>
               )}
             </>
           )}
+          {pay.settlement === "credit" && (
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{color:th.textMuted,fontSize:13}}>⏳ {isUrdu?"قابل وصول:":"Receivable:"}</span>
+              <span style={{color:"#f87171",fontWeight:800,fontSize:15}}>{formatPKR(remaining)}</span>
+            </div>
+          )}
           <div style={{fontSize:12,color:th.textMuted,fontStyle:"italic",marginTop:2}}>
-            {numberToWords(partialForm.isPartial && paid > 0 ? paid : grandTotal)}
+            {numberToWords(pay.settlement === "full" ? grandTotal : (paid > 0 ? paid : grandTotal))}
           </div>
         </div>
       )}
@@ -1947,7 +1854,7 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
       <LoaderSection loaderForm={loaderForm} setLoaderForm={setLoaderForm} isUrdu={isUrdu} loaders={loaders}/>
 
       {/* Save button */}
-      <button onClick={handleSave} disabled={!canSave||saving}
+      <button data-save="1" onClick={handleSave} disabled={!canSave||saving}
         style={{padding:"14px",borderRadius:12,border:"none",cursor:canSave&&!saving?"pointer":"not-allowed",background:canSave&&!saving?"linear-gradient(135deg,#1abc9c,#2980b9)":"rgba(26,188,156,0.3)",color:"white",fontWeight:700,fontSize:15,opacity:canSave&&!saving?1:0.7}}>
         {saving ? "..." : (isUrdu ? "محفوظ کریں اور Invoice Print کریں" : "Save & Print Invoice")}
       </button>
@@ -1970,6 +1877,15 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
     s.staff?.email === currentUser.email ||
     s.staff === currentUser.id
   );
+  const saleRecency = (s) => {
+    const t = Date.parse(s?.createdAt || s?.updatedAt || "");
+    if (Number.isFinite(t)) return t;
+    const id = String(s?._id || s?.id || "");
+    if (/^[a-fA-F0-9]{24}$/.test(id)) return parseInt(id.slice(0, 8), 16) * 1000;
+    const d = Date.parse(s?.date || "");
+    return Number.isFinite(d) ? d : 0;
+  };
+  const recentSales = [...mySales].sort((a, b) => saleRecency(b) - saleRecency(a));
   const today2       = todayStr();
   const todaySales   = mySales.filter(s => s.date === today2);
   const todayRevenue = todaySales.reduce((s,x) => s + (x.total||0), 0);
@@ -2027,6 +1943,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
     const res = await api.addSale({
       invoice:payload.invoice, date:payload.date, customer:payload.customer,
       paymentMethod:payload.paymentMethod, bankName:payload.bankName,
+      accountId:payload.accountId||"", accountName:payload.accountName||"", settlement:payload.settlement||"full",
       total:payload.total, grandTotal:payload.grandTotal,
       loaderName: payload.loaderName || "",
       loaderFee:  payload.loaderFee  || 0,
@@ -2049,9 +1966,11 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
     setReprintData({
       invoice:s.invoice, date:s.date, customer:s.customer,
       items: s.items || [{ productName:s.productName||safeProductName(s.product), category:"", rows:[{ desc:`1pc × Rs${s.total}/pc`, amount:s.total }], subtotal:s.total }],
-      grandTotal:s.grandTotal||s.total, paymentMethod:s.paymentMethod||"cash", bankName:s.bankName||"",
+      grandTotal:s.grandTotal||s.total, paymentMethod:s.paymentMethod||"cash", bankName:s.accountName||s.bankName||"",
       loaderName:s.loaderName||"", loaderFee:s.loaderFee||0, bindingFee:s.bindingFee||0,
-      isPartial:s.isPartial||false, paidAmount:s.paidAmount||s.total, remainingAmount:s.remainingAmount||0,
+      isPartial:s.isPartial||false,
+      paidAmount: (s.isPartial || s.settlement === "credit") ? (Number(s.paidAmount)||0) : (Number(s.paidAmount)||s.total),
+      remainingAmount:s.remainingAmount||0,
     });
   };
 
@@ -2082,7 +2001,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       {/* Sales table */}
       <Table
         cols={[t.invoiceNum, t.date, t.customer, t.products, t.totalLabel, "💳", "💰", "🖨️"]}
-        rows={[...mySales].reverse().map(s=>({
+        rows={recentSales.map(s=>({
           data:s,
           cells:[
             <span style={{fontFamily:"monospace",color:"#34d399",fontSize:13}}>{s.invoice}</span>,
@@ -2091,7 +2010,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
             s.productName || safeProductName(s.product) || s.items?.[0]?.productName || "—",
             <span style={{fontWeight:700,color:th.text}}>{formatPKR(s.total)}</span>,
             <span style={{ fontSize:12, padding:"2px 8px", borderRadius:20, fontWeight:600, ...getPaymentBadgeStyle(s.paymentMethod) }}>
-              {s.paymentMethod==="bank"?`🏦 ${s.bankName||"Bank"}`:s.paymentMethod==="jazzcash"?"🎵 JazzCash":s.paymentMethod==="easypaisa"?"📱 Easypaisa":"💵 Cash"}
+              {s.paymentMethod==="credit"?(isUrdu?"ادھار":"Credit"):s.paymentMethod==="bank"?`🏦 ${s.accountName||s.bankName||"Bank"}`:s.paymentMethod==="jazzcash"?"🎵 JazzCash":s.paymentMethod==="easypaisa"?"📱 Easypaisa":s.paymentMethod==="wallet"?`📱 ${s.accountName||s.bankName||"Wallet"}`:(s.accountName?`💵 ${s.accountName}`:"💵 Cash")}
             </span>,
             s.isPartial
               ? <span style={{fontSize:11,padding:"2px 7px",borderRadius:20,background:"rgba(248,113,113,0.15)",color:"#f87171",fontWeight:700}}>⏳ {formatPKR(s.remainingAmount||0)} {isUrdu?"باقی":"due"}</span>
@@ -2107,7 +2026,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       {/* New sale modal */}
       {showSaleModal && (
         <Modal title={isUrdu?"نئی Sale — Invoice بنائیں":"New Sale — Create Invoice"} onClose={()=>setShowSaleModal(false)} wide>
-          <BillingNewSaleModal products={products} onSave={handleSave} onClose={()=>setShowSaleModal(false)} isUrdu={isUrdu} loaders={loaders}/>
+          <BillingNewSaleModal products={products} onSave={handleSave} onClose={()=>setShowSaleModal(false)} isUrdu={isUrdu} loaders={loaders} extraNames={sales.map(s=>s.customer)}/>
         </Modal>
       )}
 

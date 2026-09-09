@@ -1,33 +1,1063 @@
 import { CombinedSaleInvoice } from "../components/InvoiceComponents";
-import { useState } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS, Modal, StatCard } from "../components/shared";
-import { formatPKR, todayStr, loadShopProfile } from "../utils/helpers";
+import { useResponsive, Icon, ICONS, Modal, Table } from "../components/shared";
+import { formatPKR, formatDateTime, printThermalOrA4, downloadInvoicePdf, sharePdfOnWhatsApp, loadShopProfile, inDateFilter } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
+import InventoryStockTable, { inventoryStats } from "../components/InventoryStockTable";
+
+function groupByInvoice(list) {
+  const map = new Map();
+  (list || []).forEach((rec) => {
+    const key = `${rec.invoice || rec.invoiceNum || rec._id}|${rec.date || ""}`;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(rec);
+  });
+  return [...map.values()]
+    .map((items) => {
+      const stamp = items.reduce((m, r) => {
+        const s = String(r.createdAt || r.date || "");
+        return s > m ? s : m;
+      }, "");
+      const ordered = items.slice().sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
+      return { items: ordered, head: ordered[0], stamp };
+    })
+    .sort((a, b) => String(b.stamp).localeCompare(String(a.stamp)));
+}
+
+function saleItemLines(group) {
+  const lines = [];
+  (group.items || []).forEach((s) => {
+    if (Array.isArray(s.items) && s.items.length) {
+      s.items.forEach((it) => {
+        lines.push({
+          name: it.productName || "—",
+          extra: it.rows?.[0]?.desc || it.category || "",
+          amount: Number(it.subtotal) || (it.rows || []).reduce((a, r) => a + (Number(r.amount) || 0), 0) || 0,
+        });
+      });
+    } else {
+      lines.push({
+        name: s.productName || safeProductName(s.product) || "—",
+        extra: s.category || "",
+        amount: Number(s.total) || 0,
+      });
+    }
+  });
+  return lines;
+}
+
+function purchaseItemLines(group) {
+  return (group.items || []).map((p) => ({
+    name: p.productName || safeProductName(p.product) || "—",
+    extra: p.category || "",
+    qty: p.qty,
+    cost: Number(p.rate) || Number(p.productPrice) || 0,
+    amount: Number(p.total) || 0,
+  }));
+}
+
+function DateTimeLine({ date, createdAt, locale, th, dateColor }) {
+  const full = formatDateTime(date, createdAt, locale);
+  const parts = String(full).split(" · ");
+  const day = parts[0] || date || "—";
+  const time = parts[1] || "";
+  return (
+    <span style={{ fontSize: 12, color: th.textDim, whiteSpace: "nowrap" }}>
+      <span style={{ color: dateColor || th.textMuted, fontWeight: 600 }}>{day}</span>
+      {time ? <> · {time}</> : null}
+    </span>
+  );
+}
+
+function findProduct(products, id, name) {
+  const wantId = typeof id === "object" && id ? String(id._id || id.id || "") : String(id || "");
+  const wantName = String(name || "").trim().toLowerCase();
+  return (products || []).find((p) =>
+    (wantId && String(p._id) === wantId) ||
+    (wantName && String(p.name || "").trim().toLowerCase() === wantName)
+  );
+}
+
+function resolveCategory(rec, prod) {
+  const type = String(rec?.category || prod?.category || "").trim();
+  const hw = rec?.hwCategory || prod?.hwCategory || rec?.subType || prod?.subType
+    || rec?.subCategory || prod?.subCategory || "";
+  const isHw = /^hardware$/i.test(type);
+  const v = isHw ? (hw || type) : (type || hw);
+  return String(v).trim() || "—";
+}
+
+function flattenPurchases(list, products) {
+  return (list || []).map((p) => {
+    const name = p.productName || (typeof p.product === "object" ? p.product?.name : "") || "—";
+    const prod = findProduct(products, p.productId || p.product, name);
+    return {
+      date: p.date || "",
+      invoice: p.invoice || p.invoiceNum || "—",
+      supplier: p.supplier || p.supplierName || "—",
+      name,
+      category: resolveCategory(p, prod),
+      qty: Number(p.qty) || 0,
+      amount: Number(p.total) || Number(p.grandTotal) || Number(p.totalAmount) || 0,
+    };
+  });
+}
+
+function flattenSales(list, products) {
+  const lines = [];
+  (list || []).forEach((s) => {
+    const invoice = s.invoice || s.invoiceNum || "—";
+    const date = s.date || "";
+    const customer = s.customer || "—";
+    if (Array.isArray(s.items) && s.items.length) {
+      s.items.forEach((it) => {
+        const name = it.productName || "—";
+        const prod = findProduct(products, it.productId || it.product, name);
+        const category = resolveCategory({ ...it, category: it.category || s.category }, prod);
+        const saleAmt = Number(it.subtotal) || (it.rows || []).reduce((a, r) => a + (Number(r.amount) || 0), 0) || 0;
+        let qty = Number(it.qty) || 0;
+        if (!qty && it.rows?.[0]?.desc) {
+          const m = String(it.rows[0].desc).match(/^(\d+\.?\d*)/);
+          if (m) qty = parseFloat(m[1]) || 0;
+        }
+        let costAmt = Number(it.costTotal) || 0;
+        if (costAmt <= 0) {
+          costAmt = (Number(prod?.purchasePrice) || 0) * (qty || 1);
+        }
+        lines.push({ date, invoice, customer, name, category, qty, saleAmt, costAmt, profit: saleAmt - costAmt });
+      });
+    } else {
+      const name = s.productName || (typeof s.product === "object" ? s.product?.name : "") || "—";
+      const saleAmt = Number(s.total) || Number(s.grandTotal) || 0;
+      const qty = Number(s.qty) || 0;
+      const prod = findProduct(products, s.product, name);
+      const costAmt = Number(s.costTotal) || (Number(s.purchasePrice) || Number(prod?.purchasePrice) || 0) * (qty || 1);
+      lines.push({ date, invoice, customer, name, category: resolveCategory(s, prod), qty, saleAmt, costAmt, profit: saleAmt - costAmt });
+    }
+  });
+  return lines;
+}
+
+function groupByKey(rows, keyFn) {
+  const map = new Map();
+  rows.forEach((r) => {
+    const k = String(keyFn(r) || "—").trim() || "—";
+    if (!map.has(k)) map.set(k, { key: k, count: 0, qty: 0, amount: 0, saleAmt: 0, costAmt: 0, profit: 0, invoiceSet: new Set() });
+    const g = map.get(k);
+    g.count += 1;
+    g.qty += Number(r.qty) || 0;
+    g.amount += Number(r.amount) || 0;
+    g.saleAmt += Number(r.saleAmt) || 0;
+    g.costAmt += Number(r.costAmt) || 0;
+    g.profit += Number(r.profit) || 0;
+    if (r.invoice) g.invoiceSet.add(String(r.invoice));
+  });
+  return [...map.values()].map((g) => ({
+    key: g.key,
+    count: g.count,
+    qty: g.qty,
+    amount: g.amount,
+    saleAmt: g.saleAmt,
+    costAmt: g.costAmt,
+    profit: g.profit,
+    invoices: g.invoiceSet.size,
+  })).sort((a, b) => (b.saleAmt || b.amount) - (a.saleAmt || a.amount));
+}
+
+function periodName(period, isUrdu, customFrom = "", customTo = "") {
+  if (period === "today") return isUrdu ? "آج" : "Today";
+  if (period === "yesterday") return isUrdu ? "کل" : "Yesterday";
+  if (period === "week") return isUrdu ? "ہفتہ" : "This Week";
+  if (period === "month") return isUrdu ? "مہینہ" : "This Month";
+  if (period === "custom") {
+    if (customFrom || customTo) return `${customFrom || "…"} → ${customTo || "…"}`;
+    return isUrdu ? "تاریخ" : "Custom dates";
+  }
+  return isUrdu ? "سب" : "All Time";
+}
+
+function reportGroups(isUrdu) {
+  return [
+    {
+      title: isUrdu ? "خریداری" : "Purchases",
+      color: "#f59e0b",
+      items: [
+        { id: "pur-overall", label: isUrdu ? "کل خریداری رپورٹ" : "Overall purchases report" },
+        { id: "pur-item", label: isUrdu ? "آئٹم وار خریداری" : "Item wise purchases report" },
+        { id: "pur-cat", label: isUrdu ? "کیٹیگری وار خریداری" : "Category wise purchases report" },
+        { id: "pur-sup", label: isUrdu ? "سپلائر وار خریداری" : "Supplier wise purchases report" },
+      ],
+    },
+    {
+      title: isUrdu ? "فروخت" : "Sales",
+      color: "#10b981",
+      items: [
+        { id: "sale-overall", label: isUrdu ? "کل فروخت رپورٹ" : "Overall sales report" },
+        { id: "sale-item", label: isUrdu ? "آئٹم وار فروخت و منافع" : "Item wise sales and profit" },
+        { id: "sale-cat", label: isUrdu ? "کیٹیگری وار فروخت و منافع" : "Category wise sales report" },
+        { id: "sale-cust", label: isUrdu ? "گاہک وار فروخت رپورٹ" : "Customer wise sales report" },
+        { id: "sale-pl", label: isUrdu ? "کل منافع / نقصان" : "Overall profit / loss report" },
+      ],
+    },
+    {
+      title: isUrdu ? "اخراجات" : "Expenses",
+      color: "#ef4444",
+      items: [
+        { id: "exp-overall", label: isUrdu ? "کل اخراجات رپورٹ" : "Overall expenses report" },
+      ],
+    },
+  ];
+}
+
+function exportActionLabel(mode, isUrdu) {
+  if (mode === "a4") return isUrdu ? "A4 پرنٹ" : "A4 Print";
+  if (mode === "thermal") return isUrdu ? "تھرمل پرنٹ" : "Thermal Print";
+  if (mode === "pdf") return "PDF";
+  if (mode === "whatsapp") return isUrdu ? "WhatsApp PDF" : "WhatsApp PDF";
+  return mode || "—";
+}
+
+function analyticsReportPack(reportKey, isUrdu, d) {
+  const empty = isUrdu ? "اس مدت میں ریکارڈ نہیں" : "No records in this period";
+  const purLines = d.purLines || [];
+  const saleLines = d.saleLines || [];
+  const purItem = d.purItem || [];
+  const purCat = d.purCat || [];
+  const purSup = d.purSup || [];
+  const saleItem = d.saleItem || [];
+  const saleCat = d.saleCat || [];
+  const saleCust = d.saleCust || [];
+  const expenses = d.modalFilteredExpenses || [];
+  const saleProfitTotal = d.saleProfitTotal || 0;
+  const saleCostTotal = d.saleCostTotal || 0;
+  const expAmt = d.totalExpenses || 0;
+  const purAmt = purLines.reduce((s, r) => s + r.amount, 0);
+  const saleAmt = saleLines.reduce((s, r) => s + r.saleAmt, 0);
+  const netPl = saleProfitTotal - expAmt;
+  const titles = {
+    "pur-overall": isUrdu ? "کل خریداری رپورٹ" : "Overall purchases report",
+    "pur-item": isUrdu ? "آئٹم وار خریداری" : "Item wise purchases report",
+    "pur-cat": isUrdu ? "کیٹیگری وار خریداری" : "Category wise purchases report",
+    "pur-sup": isUrdu ? "سپلائر وار خریداری" : "Supplier wise purchases report",
+    "sale-overall": isUrdu ? "کل فروخت رپورٹ" : "Overall sales report",
+    "sale-item": isUrdu ? "آئٹم وار فروخت و منافع" : "Item wise sales and profit",
+    "sale-cat": isUrdu ? "کیٹیگری وار فروخت رپورٹ" : "Category wise sales report",
+    "sale-cust": isUrdu ? "گاہک وار فروخت رپورٹ" : "Customer wise sales report",
+    "sale-pl": isUrdu ? "کل منافع / نقصان" : "Overall profit / loss report",
+    "exp-overall": isUrdu ? "کل اخراجات رپورٹ" : "Overall expenses report",
+  };
+  let cols = [];
+  let rows = [];
+  let footer = null;
+  let extra = null;
+  if (reportKey === "pur-overall") {
+    cols = [isUrdu ? "تاریخ" : "Date", isUrdu ? "انوائس" : "Invoice", isUrdu ? "سپلائر" : "Supplier", isUrdu ? "آئٹم" : "Item", isUrdu ? "قسم" : "Category", isUrdu ? "رقم" : "Amount"];
+    rows = purLines.map((r) => [r.date || "—", r.invoice, r.supplier, r.name, r.category, formatPKR(r.amount)]);
+    footer = purLines.length ? [isUrdu ? "کل" : "Total", "", "", "", `${purLines.length}`, formatPKR(purAmt)] : null;
+  } else if (reportKey === "pur-item") {
+    cols = [isUrdu ? "آئٹم" : "Item", isUrdu ? "تعداد" : "Qty", isUrdu ? "انٹریز" : "Entries", isUrdu ? "رقم" : "Amount"];
+    rows = purItem.map((g) => [g.key, g.qty, g.count, formatPKR(g.amount)]);
+    footer = purItem.length ? [isUrdu ? "کل" : "Total", "", "", formatPKR(purAmt)] : null;
+  } else if (reportKey === "pur-cat") {
+    cols = [isUrdu ? "کیٹیگری" : "Category", isUrdu ? "تعداد" : "Qty", isUrdu ? "انٹریز" : "Entries", isUrdu ? "رقم" : "Amount"];
+    rows = purCat.map((g) => [g.key, g.qty, g.count, formatPKR(g.amount)]);
+    footer = purCat.length ? [isUrdu ? "کل" : "Total", "", "", formatPKR(purAmt)] : null;
+  } else if (reportKey === "pur-sup") {
+    cols = [isUrdu ? "سپلائر" : "Supplier", isUrdu ? "انٹریز" : "Entries", isUrdu ? "رقم" : "Amount"];
+    rows = purSup.map((g) => [g.key, g.count, formatPKR(g.amount)]);
+    footer = purSup.length ? [isUrdu ? "کل" : "Total", "", formatPKR(purAmt)] : null;
+  } else if (reportKey === "sale-overall") {
+    cols = [isUrdu ? "تاریخ" : "Date", isUrdu ? "انوائس" : "Invoice", isUrdu ? "گاہک" : "Customer", isUrdu ? "آئٹم" : "Item", isUrdu ? "فروخت" : "Sale", isUrdu ? "منافع" : "Profit"];
+    rows = saleLines.map((r) => [r.date || "—", r.invoice, r.customer, r.name, formatPKR(r.saleAmt), formatPKR(r.profit)]);
+    footer = saleLines.length ? [isUrdu ? "کل" : "Total", "", "", `${saleLines.length}`, formatPKR(saleAmt), formatPKR(saleProfitTotal)] : null;
+  } else if (reportKey === "sale-item") {
+    cols = [isUrdu ? "آئٹم" : "Item", isUrdu ? "فروخت" : "Sales", isUrdu ? "لاگت" : "Cost", isUrdu ? "منافع" : "Profit"];
+    rows = saleItem.map((g) => [g.key, formatPKR(g.saleAmt), formatPKR(g.costAmt), formatPKR(g.profit)]);
+    footer = saleItem.length ? [isUrdu ? "کل" : "Total", formatPKR(saleAmt), formatPKR(saleCostTotal), formatPKR(saleProfitTotal)] : null;
+  } else if (reportKey === "sale-cat") {
+    cols = [isUrdu ? "کیٹیگری" : "Category", isUrdu ? "تعداد" : "Qty", isUrdu ? "فروخت" : "Sales", isUrdu ? "لاگت" : "Cost", isUrdu ? "منافع" : "Profit"];
+    rows = saleCat.map((g) => [g.key, g.qty, formatPKR(g.saleAmt), formatPKR(g.costAmt), formatPKR(g.profit)]);
+    footer = saleCat.length ? [isUrdu ? "کل" : "Total", "", formatPKR(saleAmt), formatPKR(saleCostTotal), formatPKR(saleProfitTotal)] : null;
+  } else if (reportKey === "sale-cust") {
+    cols = [isUrdu ? "گاہک" : "Customer", isUrdu ? "انوائس" : "Invoices", isUrdu ? "فروخت" : "Sales", isUrdu ? "لاگت" : "Cost", isUrdu ? "منافع" : "Profit"];
+    rows = saleCust.map((g) => [g.key, g.invoices || g.count, formatPKR(g.saleAmt), formatPKR(g.costAmt), formatPKR(g.profit)]);
+    footer = saleCust.length ? [isUrdu ? "کل" : "Total", "", formatPKR(saleAmt), formatPKR(saleCostTotal), formatPKR(saleProfitTotal)] : null;
+  } else if (reportKey === "sale-pl") {
+    cols = [isUrdu ? "تفصیل" : "Particulars", isUrdu ? "رقم" : "Amount"];
+    rows = [
+      [isUrdu ? "کل فروخت" : "Total sales", formatPKR(saleAmt)],
+      [isUrdu ? "کل لاگت" : "Total cost", formatPKR(saleCostTotal)],
+      [isUrdu ? "گراس منافع" : "Gross profit", formatPKR(saleProfitTotal)],
+      [isUrdu ? "کل اخراجات" : "Total expenses", formatPKR(expAmt)],
+      [netPl >= 0 ? (isUrdu ? "خالص منافع" : "Net profit") : (isUrdu ? "خالص نقصان" : "Net loss"), formatPKR(Math.abs(netPl))],
+    ];
+  } else if (reportKey === "exp-overall") {
+    cols = [isUrdu ? "تاریخ" : "Date", isUrdu ? "قسم" : "Type", isUrdu ? "بینک / والٹ" : "Bank / Wallet", isUrdu ? "نوٹ" : "Note", isUrdu ? "رقم" : "Amount"];
+    rows = expenses.map((e) => [e.date || "—", e.type || "—", e.accountName || "—", e.note || "—", formatPKR(e.amount)]);
+    footer = expenses.length ? [isUrdu ? "کل" : "Total", "", "", `${expenses.length}`, formatPKR(expAmt)] : null;
+    const expByType = groupByKey(expenses.map((e) => ({ key: e.type || "—", amount: Number(e.amount) || 0 })), (r) => r.key);
+    extra = expByType.length ? {
+      title: isUrdu ? "قسم کے حساب سے" : "By type",
+      cols: [isUrdu ? "قسم" : "Type", isUrdu ? "انٹریز" : "Entries", isUrdu ? "رقم" : "Amount"],
+      rows: expByType.map((g) => [g.key, g.count, formatPKR(g.amount)]),
+    } : null;
+  }
+  return { title: titles[reportKey] || "", cols, rows, footer, extra, empty, purAmt, saleAmt, expAmt, netPl, saleProfitTotal, saleCostTotal };
+}
+
+function AnalyticsPrintSheet({ shop, periodLabel, actionLabel, packs = [], summary, isUrdu }) {
+  const page = {
+    width: "65mm",
+    maxWidth: "65mm",
+    fontFamily: "'Courier New', Courier, monospace",
+    fontSize: "11px",
+    color: "#000",
+    background: "#fff",
+    padding: "4px",
+    boxSizing: "border-box",
+  };
+  const line = { borderTop: "1px dashed #000", margin: "6px 0" };
+  const thS = { textAlign: "left", fontSize: "9px", fontWeight: 900, borderBottom: "1px solid #000", padding: "2px 2px" };
+  const tdS = { fontSize: "9px", fontWeight: 700, padding: "2px 2px", borderBottom: "1px dotted #000", verticalAlign: "top" };
+  const names = packs.map((p) => p.title).filter(Boolean);
+  const PrintTable = ({ pack }) => (
+    pack.rows.length === 0 ? (
+      <div style={{ textAlign: "center" }}>{pack.empty}</div>
+    ) : (
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>{pack.cols.map((c) => <th key={c} style={thS}>{c}</th>)}</tr>
+        </thead>
+        <tbody>
+          {pack.rows.map((cells, i) => (
+            <tr key={i}>{cells.map((cell, j) => <td key={j} style={tdS}>{cell}</td>)}</tr>
+          ))}
+        </tbody>
+        {pack.footer ? (
+          <tfoot>
+            <tr>{pack.footer.map((cell, i) => <td key={i} style={{ ...tdS, fontWeight: 900, borderBottom: "none" }}>{cell}</td>)}</tr>
+          </tfoot>
+        ) : null}
+      </table>
+    )
+  );
+  return (
+    <div id="thermal-invoice" style={page}>
+      <div style={{ textAlign: "center", fontWeight: 900, fontSize: "14px" }}>{shop?.shopName || "STEELPOS"}</div>
+      <div style={{ textAlign: "center", fontWeight: 900, fontSize: "12px", marginTop: 2 }}>
+        {isUrdu ? "رپورٹ" : "REPORT"}
+      </div>
+      <div style={line} />
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <span>{isUrdu ? "مدت" : "Period"}</span><span style={{ fontWeight: 900 }}>{periodLabel}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <span>{isUrdu ? "بٹن" : "Action"}</span><span style={{ fontWeight: 900 }}>{actionLabel || "—"}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <span>{isUrdu ? "فلٹرز" : "Filters"}</span><span style={{ fontWeight: 900 }}>{names.length}</span>
+      </div>
+      {names.map((n, i) => (
+        <div key={i} style={{ fontSize: "9px" }}>{i + 1}. {n}</div>
+      ))}
+      <div style={line} />
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <span>{isUrdu ? "فروخت" : "Sales"}</span><span>{formatPKR(summary.sales)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <span>{isUrdu ? "خریداری" : "Purchases"}</span><span>{formatPKR(summary.purchases)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <span>{isUrdu ? "اخراجات" : "Expenses"}</span><span>{formatPKR(summary.expenses)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 900 }}>
+        <span>{isUrdu ? "منافع" : "Profit"}</span><span>{formatPKR(summary.profit)}</span>
+      </div>
+      {packs.map((pack, idx) => (
+        <div key={pack.title || idx}>
+          <div style={line} />
+          <div style={{ fontWeight: 900, textAlign: "center", marginBottom: 4 }}>{pack.title}</div>
+          <PrintTable pack={pack} />
+          {pack.extra && pack.extra.rows?.length > 0 && (
+            <>
+              <div style={{ fontWeight: 900, margin: "6px 0 4px" }}>{pack.extra.title}</div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>{pack.extra.cols.map((c) => <th key={c} style={thS}>{c}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {pack.extra.rows.map((cells, i) => (
+                    <tr key={i}>{cells.map((cell, j) => <td key={j} style={tdS}>{cell}</td>)}</tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+        </div>
+      ))}
+      <div style={line} />
+      <div style={{ textAlign: "center", fontSize: "9px" }}>okiiee Software</div>
+    </div>
+  );
+}
+
+function ReportTable({ cols, rows, empty, th, footer, hideFooter }) {
+  if (!rows.length) {
+    return (
+      <div style={{ padding: 18, textAlign: "center", color: th.textDim, border: `1px dashed ${th.border}`, borderRadius: 12, fontSize: 13 }}>
+        {empty}
+      </div>
+    );
+  }
+  const headBg = th.bgModal || th.bgCard || (th.dark ? "#111827" : "#fff");
+  const thS = { textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 800, color: th.textMuted, letterSpacing: "0.04em", textTransform: "uppercase", borderBottom: `1px solid ${th.border}`, whiteSpace: "nowrap", position: "sticky", top: 0, background: headBg, zIndex: 1 };
+  const tdS = { padding: "8px 10px", borderBottom: `1px solid ${th.border}`, fontSize: 13, color: th.text };
+  const showFoot = footer && !hideFooter;
+  return (
+    <div style={{ overflow: "auto", maxHeight: showFoot ? 360 : 420, border: `1px solid ${th.border}`, borderRadius: 12 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            {cols.map((c) => <th key={c} style={thS}>{c}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((cells, i) => (
+            <tr key={i}>
+              {cells.map((cell, j) => <td key={j} style={tdS}>{cell}</td>)}
+            </tr>
+          ))}
+        </tbody>
+        {showFoot ? (
+          <tfoot>
+            <tr>
+              {footer.map((cell, i) => (
+                <td key={i} style={{
+                  ...tdS,
+                  borderBottom: "none",
+                  borderTop: `2px solid ${th.border}`,
+                  fontWeight: 800,
+                  position: "sticky",
+                  bottom: 0,
+                  background: headBg,
+                  boxShadow: th.dark ? "0 -8px 16px rgba(0,0,0,0.35)" : "0 -8px 16px rgba(0,0,0,0.08)",
+                }}>{cell}</td>
+              ))}
+            </tr>
+          </tfoot>
+        ) : null}
+      </table>
+    </div>
+  );
+}
+
+function ReportTotalsBar({ packs, th, isUrdu }) {
+  const list = (packs || []).filter((p) => p.footer && p.footer.length);
+  if (!list.length) return null;
+  const bg = th.bgModal || th.bgCard || (th.dark ? "#111827" : "#fff");
+  return (
+    <div style={{
+      flexShrink: 0,
+      marginTop: 10,
+      padding: "10px 14px",
+      border: `1px solid ${th.border}`,
+      borderRadius: 12,
+      background: bg,
+      boxShadow: th.dark ? "0 -10px 24px rgba(0,0,0,0.4)" : "0 -10px 24px rgba(0,0,0,0.08)",
+    }}>
+      {list.map((pack, idx) => (
+        <div key={pack.title || idx} style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+          padding: list.length > 1 ? "7px 0" : 0,
+          borderTop: idx ? `1px solid ${th.border}` : "none",
+        }}>
+          <span style={{ fontWeight: 800, fontSize: 13, color: th.text }}>
+            {pack.title} — {pack.footer[0] || (isUrdu ? "کل" : "Total")}
+          </span>
+          <span style={{ display: "flex", gap: 14, flexWrap: "wrap", fontWeight: 800, fontSize: 13, color: th.text, fontVariantNumeric: "tabular-nums" }}>
+            {pack.footer.slice(1).filter((c) => String(c || "").trim() !== "").map((c, i) => (
+              <span key={i}>{c}</span>
+            ))}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DAILY ANALYTICS MODAL - Comprehensive daily report
+// ═══════════════════════════════════════════════════════════════════════════
+function DailyAnalyticsModal({ 
+  isUrdu, 
+  th, 
+  onClose, 
+  parties = [],
+  expenses = [],
+  sales = [],
+  purchases = [],
+  products = [],
+  initialFilter = "today",
+  initialFrom = "",
+  initialTo = "",
+}) {
+  const [reportFilter, setReportFilter] = useState(initialFilter || "today");
+  const [customFrom, setCustomFrom] = useState(initialFrom || "");
+  const [customTo, setCustomTo] = useState(initialTo || "");
+  const [reportKeys, setReportKeys] = useState([]);
+  const [multiOn, setMultiOn] = useState(false);
+  const [exportAction, setExportAction] = useState("");
+  const [pendingExport, setPendingExport] = useState(null);
+
+  const dateInp = {
+    background: th.input,
+    border: reportFilter === "custom" ? "2px solid #6366f1" : `1px solid ${th.inputBorder || th.border}`,
+    borderRadius: 8,
+    color: th.text,
+    padding: "5px 8px",
+    fontSize: 13,
+    outline: "none",
+  };
+
+  const inRange = (rec) => inDateFilter(rec?.date, reportFilter, customFrom, customTo, rec?.createdAt);
+
+  const modalFilteredSales = (sales || []).filter(inRange);
+  const modalFilteredPurchases = (purchases || []).filter(inRange);
+  const modalFilteredExpenses = (expenses || []).filter(inRange);
+
+  // Recalculate totals based on filtered data
+  const modalTotalSales = modalFilteredSales.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
+  const modalTotalPurchases = modalFilteredPurchases.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
+  
+  // Recalculate profit for filtered period
+  const calcProfit = () => {
+    let totalSaleAmt = 0;
+    let totalCostAmt = 0;
+    modalFilteredSales.forEach(sale => {
+      if (sale.items && sale.items.length > 0) {
+        sale.items.forEach(item => {
+          if (item.costTotal !== undefined && item.costTotal !== null && Number(item.costTotal) > 0) {
+            totalSaleAmt += Number(item.subtotal) || 0;
+            totalCostAmt += Number(item.costTotal) || 0;
+          }
+        });
+      }
+    });
+    return totalSaleAmt - totalCostAmt;
+  };
+  const modalProfit = calcProfit();
+  const modalHasCost = modalFilteredSales.some(s => s.items?.some(i => i.costTotal > 0))
+    || flattenSales(modalFilteredSales, products).some((l) => l.costAmt > 0);
+
+  const purLines = flattenPurchases(modalFilteredPurchases, products);
+  const saleLines = flattenSales(modalFilteredSales, products);
+  const purItem = groupByKey(purLines, (r) => r.name);
+  const purCat = groupByKey(purLines, (r) => r.category);
+  const purSup = groupByKey(purLines, (r) => r.supplier);
+  const saleItem = groupByKey(saleLines, (r) => r.name);
+  const saleCat = groupByKey(saleLines, (r) => r.category);
+  const saleCust = groupByKey(saleLines, (r) => r.customer);
+  const saleProfitTotal = saleLines.reduce((s, r) => s + (Number(r.profit) || 0), 0);
+  const saleCostTotal = saleLines.reduce((s, r) => s + (Number(r.costAmt) || 0), 0);
+
+  const filterLabel = () => periodName(reportFilter, isUrdu, customFrom, customTo); 
+  const L = isUrdu ? {
+    title: "📊 روزانہ تجزیہ",
+    sales: "آج کی فروخت",
+    purchases: "آج کی خریداری",
+    payable: "کل ادائیگی (سپلائر)",
+    receivable: "کل وصولی (گاہک)",
+    expenses: "کل اخراجات",
+    profit: "کل منافع",
+    netProfit: "خالص رقم",
+    netLoss: "خالص نقصان",
+    remaining: "باقی رقم",
+    count: "تعداد",
+    amount: "رقم",
+  } : {
+    title: "📊 Daily Analytics",
+    sales: "Total Sales",
+    purchases: "Total Purchases",
+    payable: "Total Payable (to suppliers)",
+    receivable: "Total Receivable (from customers)",
+    expenses: "Total Expenses",
+    profit: "Total Profit",
+    netProfit: "Net Profit",
+    netLoss: "Net Loss",
+    remaining: "Net Amount",
+    count: "Count",
+    amount: "Amount",
+  };
+
+  // Calculate totals from parties (payable/receivable)
+  const totalPayable = useMemo(() => {
+    return (parties || []).reduce((s, p) => {
+      const bal = Number(p.balance) || 0;
+      return s + (Number(p.payable) || Math.max(0, -bal));
+    }, 0);
+  }, [parties]);
+
+  const totalReceivable = useMemo(() => {
+    return (parties || []).reduce((s, p) => {
+      const bal = Number(p.balance) || 0;
+      return s + (Number(p.receivable) || Math.max(0, bal));
+    }, 0);
+  }, [parties]);
+
+  // Calculate total expenses from FILTERED expenses
+  const totalExpenses = useMemo(() => {
+    return modalFilteredExpenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  }, [modalFilteredExpenses]);
+
+  const packData = {
+    purLines, saleLines, purItem, purCat, purSup, saleItem, saleCat, saleCust,
+    modalFilteredExpenses, saleProfitTotal, saleCostTotal, totalExpenses,
+  };
+  const selectedKeys = reportKeys;
+  const reportPacks = selectedKeys.map((k) => analyticsReportPack(k, isUrdu, packData));
+  const shop = loadShopProfile();
+
+  const toggleReport = (id) => {
+    if (!multiOn) {
+      setReportKeys((ks) => (ks.includes(id) ? [] : [id]));
+      return;
+    }
+    setReportKeys((ks) => {
+      if (ks.includes(id)) return ks.filter((k) => k !== id);
+      return [...ks, id];
+    });
+  };
+
+  const runExport = (mode) => {
+    setExportAction(mode);
+    setPendingExport(mode);
+  };
+
+  useEffect(() => {
+    if (!pendingExport) return;
+    const mode = pendingExport;
+    const t = setTimeout(async () => {
+      const label = periodName(reportFilter, isUrdu, customFrom, customTo);
+      const names = reportPacks.map((p) => p.title).join(", ");
+      const file = `report-${reportFilter}-${selectedKeys.join("-") || "analytics"}`;
+      const text = `${shop?.shopName || "STEELPOS"} — ${label} — ${exportActionLabel(mode, isUrdu)}\n${names}`;
+      try {
+        if (mode === "a4") printThermalOrA4("a4");
+        else if (mode === "thermal") printThermalOrA4("thermal");
+        else if (mode === "pdf") await downloadInvoicePdf(file);
+        else if (mode === "whatsapp") await sharePdfOnWhatsApp({ filename: file, text });
+      } finally {
+        setPendingExport(null);
+      }
+    }, 80);
+    return () => clearTimeout(t);
+  }, [pendingExport]);
+
+  // Net calculation: profit - expenses
+  const netAmount = modalHasCost ? modalProfit - totalExpenses : 0;
+  const isNetLoss = netAmount < 0;
+
+  const cardStyle = {
+    padding: "16px 18px",
+    borderRadius: 12,
+    border: `1px solid ${th.border}`,
+    background: th.bgCard,
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+  };
+
+  const MetricCard = ({ label, amount, count, color = "#64748b", highlight = false }) => (
+    <div style={{
+      ...cardStyle,
+      borderLeft: `4px solid ${color}`,
+      background: highlight 
+        ? (th.dark ? `${color}15` : `linear-gradient(135deg, ${color}08 0%, ${th.bgCard} 60%)`)
+        : th.bgCard,
+    }}>
+      <div style={{
+        color: th.textMuted,
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: "0.05em",
+        textTransform: "uppercase",
+      }}>
+        {label}
+      </div>
+      <div style={{
+        color: highlight ? color : th.text,
+        fontSize: highlight ? 24 : 20,
+        fontWeight: highlight ? 900 : 800,
+      }}>
+        {formatPKR(amount)}
+      </div>
+      {count !== undefined && (
+        <div style={{ color: th.textDim, fontSize: 12 }}>
+          {count} {L.count}
+        </div>
+      )}
+    </div>
+  );
+
+  const hdrBtn = (mode, label, color) => (
+    <button
+      key={mode}
+      type="button"
+      onClick={() => runExport(mode)}
+      style={{
+        padding: "5px 9px",
+        borderRadius: 8,
+        border: "none",
+        cursor: "pointer",
+        background: color,
+        color: "#fff",
+        fontWeight: 800,
+        fontSize: 11,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <Modal
+      title={isUrdu ? `📊 رپورٹ - ${filterLabel()}` : `📊 Report - ${filterLabel()}`}
+      onClose={onClose}
+      xl
+      headerRight={
+        <>
+          {hdrBtn("a4", isUrdu ? "A4 پرنٹ" : "A4 Print", "#2563eb")}
+          {hdrBtn("thermal", isUrdu ? "تھرمل" : "Thermal", "#0f766e")}
+          {hdrBtn("pdf", "PDF", "#7c3aed")}
+          {hdrBtn("whatsapp", "WhatsApp", "#16a34a")}
+        </>
+      }
+    >
+      <div style={{ display: "flex", flexDirection: "column", maxHeight: "75vh", minHeight: 0 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, flex: 1, minHeight: 0, overflowY: "auto" }}>
+        
+        {/* Date Filter Buttons */}
+        <div style={{
+          display: "flex",
+          gap: 8,
+          padding: "12px 16px",
+          background: th.dark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.02)",
+          borderRadius: 12,
+          border: `1px solid ${th.border}`,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}>
+          <span style={{ color: th.textMuted, fontSize: 13, fontWeight: 600, marginRight: 8 }}>
+            {isUrdu ? "مدت:" : "Period:"}
+          </span>
+          {["today", "yesterday", "week", "month", "all"].map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setReportFilter(f)}
+              style={{
+                padding: "6px 14px",
+                borderRadius: 8,
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: "pointer",
+                border: reportFilter === f ? "2px solid #6366f1" : `1px solid ${th.border}`,
+                background: reportFilter === f ? "rgba(99,102,241,0.15)" : "transparent",
+                color: reportFilter === f ? "#6366f1" : th.textMuted,
+                transition: "all 0.2s",
+              }}
+            >
+              {f === "today" ? (isUrdu ? "آج" : "Today") :
+               f === "yesterday" ? (isUrdu ? "کل" : "Yesterday") :
+               f === "week" ? (isUrdu ? "ہفتہ" : "Week") :
+               f === "month" ? (isUrdu ? "مہینہ" : "Month") :
+               (isUrdu ? "سب" : "All")}
+            </button>
+          ))}
+          <span style={{ width: 1, height: 22, background: th.border, margin: "0 4px" }} />
+          <label style={{ color: th.textMuted, fontSize: 12, fontWeight: 700 }}>
+            {isUrdu ? "سے" : "From"}
+          </label>
+          <input
+            type="date"
+            value={customFrom}
+            onChange={(e) => {
+              setCustomFrom(e.target.value);
+              setReportFilter("custom");
+            }}
+            style={dateInp}
+          />
+          <label style={{ color: th.textMuted, fontSize: 12, fontWeight: 700 }}>
+            {isUrdu ? "تک" : "To"}
+          </label>
+          <input
+            type="date"
+            value={customTo}
+            onChange={(e) => {
+              setCustomTo(e.target.value);
+              setReportFilter("custom");
+            }}
+            style={dateInp}
+          />
+        </div>
+
+        {/* Revenue & Costs Section */}
+        <div>
+          <h4 style={{ 
+            color: th.textMuted, 
+            fontSize: 12, 
+            fontWeight: 700, 
+            letterSpacing: "0.08em", 
+            textTransform: "uppercase", 
+            margin: "0 0 12px 0" 
+          }}>
+            {isUrdu ? "📈 آمدنی و اخراج" : "📈 Revenue & Costs"}
+          </h4>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+            <MetricCard label={L.sales} amount={modalTotalSales} count={modalFilteredSales.length} color="#10b981" />
+            <MetricCard label={L.purchases} amount={modalTotalPurchases} count={modalFilteredPurchases.length} color="#f59e0b" />
+            {modalHasCost && (
+              <MetricCard label={L.profit} amount={modalProfit} color={modalProfit >= 0 ? "#2dd4bf" : "#ef4444"} />
+            )}
+            <MetricCard label={L.expenses} amount={totalExpenses} count={modalFilteredExpenses.length} color="#ef4444" />
+          </div>
+        </div>
+
+        {/* Ledger Section */}
+        <div>
+          <h4 style={{ 
+            color: th.textMuted, 
+            fontSize: 12, 
+            fontWeight: 700, 
+            letterSpacing: "0.08em", 
+            textTransform: "uppercase", 
+            margin: "0 0 12px 0" 
+          }}>
+            {isUrdu ? "📒 کھاتہ" : "📒 Ledger"}
+          </h4>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+            <MetricCard label={L.receivable} amount={totalReceivable} color="#3b82f6" />
+            <MetricCard label={L.payable} amount={totalPayable} color="#f97316" />
+          </div>
+        </div>
+
+        {/* Net Amount - Highlighted */}
+        {modalHasCost && (
+          <div style={{
+            ...cardStyle,
+            borderLeft: `6px solid ${isNetLoss ? "#ef4444" : "#10b981"}`,
+            background: isNetLoss 
+              ? (th.dark ? "rgba(239,68,68,0.15)" : "rgba(239,68,68,0.08)")
+              : (th.dark ? "rgba(16,185,129,0.15)" : "rgba(16,185,129,0.08)"),
+            padding: "20px 24px",
+          }}>
+            <div style={{
+              color: th.textMuted,
+              fontSize: 12,
+              fontWeight: 700,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+            }}>
+              {isNetLoss ? L.netLoss : L.netProfit} ({isUrdu ? "منافع - اخراج" : "Profit - Expenses"})
+            </div>
+            <div style={{
+              color: isNetLoss ? "#ef4444" : "#10b981",
+              fontSize: 32,
+              fontWeight: 900,
+              marginTop: 8,
+            }}>
+              {isNetLoss ? "-" : "+"}{formatPKR(Math.abs(netAmount))}
+            </div>
+            <div style={{
+              color: th.textDim,
+              fontSize: 13,
+              marginTop: 8,
+            }}>
+              {formatPKR(modalProfit)} ({L.profit}) - {formatPKR(totalExpenses)} ({L.expenses})
+            </div>
+          </div>
+        )}
+
+        {!modalHasCost && (
+          <div style={{
+            padding: "16px 20px",
+            background: "rgba(245,158,11,0.08)",
+            borderRadius: 12,
+            border: `1px solid rgba(245,158,11,0.3)`,
+            color: "#f59e0b",
+            fontSize: 13,
+            textAlign: "center",
+          }}>
+            {isUrdu ? "💡 نئی billing سے profit track ہونا شروع ہوگا" : "💡 Profit tracking starts with new billing"}
+          </div>
+        )}
+
+        {(() => {
+          const groups = reportGroups(isUrdu);
+          const chip = (item) => {
+            const on = selectedKeys.includes(item.id);
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => toggleReport(item.id)}
+                style={{
+                  padding: "7px 12px",
+                  borderRadius: 20,
+                  cursor: "pointer",
+                  fontWeight: 700,
+                  fontSize: 12,
+                  textAlign: "left",
+                  border: on ? "none" : `1px solid ${th.border}`,
+                  background: on ? "#0f766e" : "transparent",
+                  color: on ? "#fff" : th.textMuted,
+                }}
+              >
+                {item.label}
+              </button>
+            );
+          };
+          return (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, margin: "8px 0 12px 0", flexWrap: "wrap" }}>
+                <h4 style={{
+                  color: th.textMuted, fontSize: 12, fontWeight: 700, letterSpacing: "0.08em",
+                  textTransform: "uppercase", margin: 0,
+                }}>
+                  {isUrdu ? "رپورٹس" : "Reports"}
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMultiOn((v) => {
+                      const next = !v;
+                      if (!next) setReportKeys((ks) => (ks.length ? [ks[ks.length - 1]] : []));
+                      return next;
+                    });
+                  }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8, padding: "5px 8px 5px 12px",
+                    borderRadius: 20, cursor: "pointer", fontWeight: 800, fontSize: 12,
+                    border: `1px solid ${multiOn ? "#0f766e" : th.border}`,
+                    background: multiOn ? "rgba(15,118,110,0.12)" : "transparent",
+                    color: multiOn ? "#0f766e" : th.textMuted,
+                  }}
+                >
+                  {isUrdu ? "ملٹی فلٹر" : "Multi filter"}
+                  <span style={{
+                    width: 36, height: 20, borderRadius: 20, position: "relative",
+                    background: multiOn ? "#0f766e" : th.border,
+                    display: "inline-block",
+                  }}>
+                    <span style={{
+                      position: "absolute", top: 2, left: multiOn ? 18 : 2,
+                      width: 16, height: 16, borderRadius: "50%", background: "#fff",
+                    }} />
+                  </span>
+                </button>
+              </div>
+              <div style={{ fontSize: 12, color: th.textDim, marginBottom: 10 }}>
+                {multiOn
+                  ? (isUrdu ? "آن: ایک سے زیادہ رپورٹ منتخب کریں — پرنٹ پر نیچے نیچے آئیں گی" : "ON: pick multiple reports — they print one under another")
+                  : (isUrdu ? "آف: صرف ایک رپورٹ" : "OFF: one report at a time")}
+              </div>
+              {groups.map((g) => (
+                <div key={g.title} style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: g.color, marginBottom: 8 }}>{g.title}</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>{g.items.map(chip)}</div>
+                </div>
+              ))}
+              {reportPacks.map((pack) => (
+                <div key={pack.title} style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: th.text, margin: "4px 0 8px" }}>{pack.title}</div>
+                  <ReportTable th={th} empty={pack.empty} cols={pack.cols} rows={pack.rows} footer={pack.footer} hideFooter />
+                  {pack.extra && (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: th.textMuted, marginBottom: 8 }}>{pack.extra.title}</div>
+                      <ReportTable th={th} empty={pack.empty} cols={pack.extra.cols} rows={pack.extra.rows} />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+      </div>
+
+        <ReportTotalsBar packs={reportPacks} th={th} isUrdu={isUrdu} />
+
+        <div style={{ position: "fixed", left: -10000, top: 0, width: 280, pointerEvents: "none" }} aria-hidden="true">
+          <AnalyticsPrintSheet
+            shop={shop}
+            periodLabel={periodName(reportFilter, isUrdu, customFrom, customTo)}
+            actionLabel={exportActionLabel(exportAction || pendingExport, isUrdu)}
+            packs={reportPacks}
+            summary={{
+              sales: modalTotalSales,
+              purchases: modalTotalPurchases,
+              expenses: totalExpenses,
+              profit: saleProfitTotal,
+            }}
+            isUrdu={isUrdu}
+          />
+        </div>
+      </div>
+    </Modal>
+  );
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
-function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=[], purchaseReturns=[] }) {
+function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=[], purchaseReturns=[], parties=[], expenses=[], loadParties, loadExpenses }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
   const isUrdu = lang === "ur";
 
-  const [filter, setFilter] = useState("all");
+  const [filter, setFilter] = useState("today");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [supplierSearch, setSupplierSearch] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
   const [showProfitModal, setShowProfitModal] = useState(false);
+  const [showInvPopup, setShowInvPopup] = useState(false);
+  const [showAnalytics, setShowAnalytics] = useState(false);
+
+  // Load expenses and parties data when component mounts
+  useEffect(() => {
+    console.log("Dashboard mounted, loading expenses and parties...");
+    console.log("Current expenses:", expenses);
+    console.log("Current parties:", parties);
+    if (loadExpenses) {
+      loadExpenses().then(() => console.log("Expenses loaded"));
+    }
+    if (loadParties) {
+      loadParties().then(() => console.log("Parties loaded"));
+    }
+  }, []);
 
   // ─── Two separate modal states ────────────────────────────────────────────────
   const [purchaseModal, setPurchaseModal] = useState(null);
   const [saleModal,     setSaleModal]     = useState(null);
+  const [dashDetail,    setDashDetail]    = useState(null);
+  const invStats = inventoryStats(products);
 
   const today = new Date();
-  const toDateStr = (d) => d.toISOString().split("T")[0];
+  const toDateStr = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
   const todayStr2 = toDateStr(today);
+  const yesterdayStr = (() => { const d = new Date(today); d.setDate(d.getDate() - 1); return toDateStr(d); })();
   const weekStart = (() => { const d = new Date(today); d.setDate(d.getDate() - 6); return toDateStr(d); })();
   const monthStart = (() => { const d = new Date(today); d.setDate(1); return toDateStr(d); })();
 
@@ -42,6 +1072,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   const inRange = (dateStr) => {
     const d = parseDate(dateStr); if (!d) return false;
     if (filter === "today")  return d === todayStr2;
+    if (filter === "yesterday") return d === yesterdayStr;
     if (filter === "week")   return d >= weekStart && d <= todayStr2;
     if (filter === "month")  return d >= monthStart && d <= todayStr2;
     if (filter === "custom") { const from = customFrom || "0000-01-01"; const to = customTo || "9999-12-31"; return d >= from && d <= to; }
@@ -50,8 +1081,11 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
 
   const filteredSales     = sales.filter((s) => inRange(s.date));
   const filteredPurchases = purchases.filter((p) => inRange(p.date));
+  const saleGroups        = groupByInvoice(filteredSales);
+  const purchaseGroups    = groupByInvoice(filteredPurchases);
   const filteredSaleReturns = (saleReturns || []).filter((r) => inRange(r.date));
   const filteredPurchaseReturns = (purchaseReturns || []).filter((r) => inRange(r.date));
+  const filteredExpenses = (expenses || []).filter((e) => inRange(e.date));
 
   const totalSalesCount    = filteredSales.length;
   const totalSalesAmount   = filteredSales.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0)
@@ -165,6 +1199,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
 
   const filterLabel = () => {
     if (filter==="today")  return t.today    || "Today";
+    if (filter==="yesterday") return t.yesterday || "Yesterday";
     if (filter==="week")   return t.thisWeek || "This Week";
     if (filter==="month")  return t.thisMonth|| "This Month";
     if (filter==="custom" && customFrom && customTo) return `${customFrom} → ${customTo}`;
@@ -370,36 +1405,66 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
     ));
   };
 
-  // ─── Styles ───────────────────────────────────────────────────────────────────
-  const cardStyle        = { borderRadius:16, border:`1px solid ${th.border}`, background:th.bgCard, overflow:"hidden" };
-  const headStyle        = { padding:"16px 20px", borderBottom:`1px solid ${th.border}`, display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, flexWrap:"wrap" };
-  const rowStyle         = { padding:"13px 20px", borderBottom:`1px solid ${th.border}`, display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 };
-  const inputStyle       = { background:"transparent", border:`1px solid ${th.border}`, borderRadius:8, color:th.text, padding:"6px 12px", fontSize:13, outline:"none" };
-  const filterBtnStyle   = (active) => ({ padding:"7px 16px", borderRadius:20, fontSize:13, fontWeight:600, cursor:"pointer", border:active?"none":`1px solid ${th.border}`, background:active?"#6366f1":"transparent", color:active?"#fff":th.textMuted });
-  const printBtnStyle    = { padding:"6px 14px", borderRadius:8, fontSize:13, fontWeight:600, cursor:"pointer", border:"1px solid rgba(99,102,241,0.4)", background:"rgba(99,102,241,0.08)", color:"#818cf8", flexShrink:0, display:"flex", alignItems:"center", gap:5 };
-  const printAllBtnStyle = { padding:"8px 18px", borderRadius:10, fontSize:13, fontWeight:700, cursor:"pointer", border:"none", background:"#6366f1", color:"#fff", flexShrink:0, display:"flex", alignItems:"center", gap:6 };
-  const avatarStyle      = (bg, color) => ({ width:40, height:40, borderRadius:"50%", background:bg, color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, flexShrink:0 });
+  const printSaleGroup = (g) => {
+    const inv = g.head.invoice || g.head.invoiceNum || "INV";
+    const data = salesToInvoiceData(g.items, inv, g.head.customer || "—");
+    data.date = g.head.date || data.date;
+    setSaleModal(data);
+  };
+  const printPurchaseGroup = (g) => {
+    const inv = g.head.invoice || g.head.invoiceNum || "PO";
+    const data = purchasesToInvoiceData(g.items, inv, g.head.supplier || g.head.supplierName || "—");
+    data.date = g.head.date || data.date;
+    setPurchaseModal(data);
+  };
 
-  // ─── Summary Card ─────────────────────────────────────────────────────────────
-  const SummaryCard = ({ label, count, countLabel, amount, amountLabel, color, icon, onPrint, printLabel }) => (
-    <div style={{ borderRadius:16, border:`1px solid ${th.border}`, background:th.bgCard, display:"flex", flexDirection:"column", gap:12, overflow:"hidden" }}>
-      <div style={{ padding:"20px 22px 0", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-        <span style={{ color:th.textMuted, fontSize:14, fontWeight:600 }}>{label}</span>
-        <span style={{ width:36, height:36, borderRadius:"50%", background:`${color}20`, display:"flex", alignItems:"center", justifyContent:"center" }}><Icon path={icon} size={18}/></span>
+  // ─── Styles ───────────────────────────────────────────────────────────────────
+  const cardStyle  = { borderRadius:16, border:`1px solid ${th.border}`, background:th.bgCard, overflow:"hidden", boxShadow:th.cardShadow };
+  const headStyle  = { padding:"14px 18px", borderBottom:`1px solid ${th.border}`, display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, flexWrap:"wrap", background:th.thHead };
+  const rowStyle   = { padding:"12px 18px", borderBottom:`1px solid ${th.border}`, display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 };
+  const inputStyle = { background:th.input, border:`1px solid ${th.inputBorder}`, borderRadius:8, color:th.text, padding:"6px 10px", fontSize:13, outline:"none" };
+  const filterBtnStyle = (active) => ({
+    padding:"6px 12px", borderRadius:8, fontSize:13, fontWeight:600, cursor:"pointer",
+    border: active ? "1px solid #1abc9c" : `1px solid ${th.border}`,
+    background: active ? "rgba(26,188,156,0.12)" : "transparent",
+    color: active ? (th.dark ? "#2dd4bf" : "#0f766e") : th.textMuted,
+  });
+  const printBtnStyle = {
+    padding:"5px 10px", borderRadius:8, fontSize:12, fontWeight:600, cursor:"pointer",
+    border:`1px solid ${th.border}`, background:"transparent", color:th.textMuted,
+    flexShrink:0, display:"flex", alignItems:"center", gap:5,
+  };
+  const avatarStyle = (tint) => ({
+    width:34, height:34, borderRadius:8, background: tint ? `${tint}18` : th.thHead, color: tint || th.textMuted,
+    display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, fontWeight:700, flexShrink:0,
+    border:`1px solid ${tint ? `${tint}33` : th.border}`,
+  });
+
+  const KpiCard = ({ label, amount, sub, onPrint, printLabel, onClick, color = "#1abc9c" }) => (
+    <div
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      style={{
+        ...cardStyle, padding:"16px 18px", cursor: onClick ? "pointer" : "default",
+        display:"flex", flexDirection:"column", gap:8,
+        borderLeft: `3px solid ${color}`,
+        background: th.dark ? th.bgCard : `linear-gradient(180deg, ${color}0f 0%, ${th.bgCard} 48%)`,
+      }}
+    >
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
+        <div style={{ color:th.textMuted, fontSize:11, fontWeight:700, letterSpacing:"0.06em", textTransform:"uppercase" }}>{label}</div>
+        <span style={{ width:8, height:8, borderRadius:"50%", background:color, flexShrink:0 }} />
       </div>
-      <div style={{ padding:"0 22px", display:"flex", alignItems:"baseline", justifyContent:"space-between" }}>
-        <span style={{ color:th.textDim, fontSize:13 }}>{countLabel}</span>
-        <span style={{ color:th.text, fontSize:26, fontWeight:700 }}>{count}</span>
-      </div>
-      <div style={{ margin:"0 22px", borderTop:`1px dashed ${th.border}` }}/>
-      <div style={{ padding:"0 22px", display:"flex", alignItems:"baseline", justifyContent:"space-between" }}>
-        <span style={{ color:th.textDim, fontSize:13 }}>{amountLabel}</span>
-        <span style={{ color, fontSize:20, fontWeight:700 }}>{formatPKR(amount)}</span>
-      </div>
+      <div style={{ color, fontSize:20, fontWeight:800 }}>{amount}</div>
+      {sub && <div style={{ color:th.textDim, fontSize:12 }}>{sub}</div>}
       {onPrint && (
-        <div style={{ padding:"0 22px 18px" }}>
-          <button style={printAllBtnStyle} onClick={onPrint}><Icon path={ICONS.print} size={15}/> {printLabel}</button>
-        </div>
+        <button
+          type="button"
+          style={{ ...printBtnStyle, alignSelf:"flex-start", marginTop:4, color, borderColor: `${color}55` }}
+          onClick={(e) => { e.stopPropagation(); onPrint(); }}
+        >
+          <Icon path={ICONS.print} size={13}/> {printLabel}
+        </button>
       )}
     </div>
   );
@@ -566,171 +1631,323 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   // ─── Profit Summary Card (clickable) ──────────────────────────────────────────
   const ProfitCard = () => {
     const isLoss   = hasAnyCostData && overallProfit < 0;
-    const isProfit = hasAnyCostData && overallProfit >= 0;
-    const color    = !hasAnyCostData ? "#6b7280" : isLoss ? "#ef4444" : "#10b981";
-    const border   = !hasAnyCostData ? "rgba(107,114,128,0.3)" : isLoss ? "rgba(239,68,68,0.35)" : "rgba(16,185,129,0.35)";
-    const bg       = !hasAnyCostData ? "rgba(107,114,128,0.05)" : isLoss ? "rgba(239,68,68,0.05)" : "rgba(16,185,129,0.05)";
-    const iconPath = isLoss ? ICONS.trend_down : ICONS.trend_up;
+    const color    = !hasAnyCostData ? th.text : isLoss ? (th.dark ? "#f87171" : "#b91c1c") : (th.dark ? "#2dd4bf" : "#0f766e");
     const label    = !hasAnyCostData ? (isUrdu ? "منافع / نقصان" : "Profit / Loss")
                    : isLoss          ? (isUrdu ? "نقصان" : "Loss")
                    :                   (isUrdu ? "منافع" : "Profit");
     const valueStr = !hasAnyCostData
-      ? (isUrdu ? "نئی billing کریں" : "Make a sale to track")
-      : (isLoss ? "-" : "+") + formatPKR(Math.abs(overallProfit));
+      ? "—"
+      : (isLoss ? "-" : "") + formatPKR(Math.abs(overallProfit));
 
     return (
-      <div
+      <KpiCard
+        label={label}
+        amount={valueStr}
+        sub={`${filteredSales.length} ${isUrdu ? "فروخت" : "sales"}`}
         onClick={() => filteredSales.length > 0 && setShowProfitModal(true)}
-        style={{ borderRadius:16, border:`1px solid ${border}`, background:bg, display:"flex", flexDirection:"column", gap:12, overflow:"hidden", cursor: filteredSales.length > 0 ? "pointer" : "default", transition:"box-shadow 0.15s" }}
-        onMouseEnter={e => { if(filteredSales.length > 0) e.currentTarget.style.boxShadow = `0 0 0 2px ${color}40`; }}
-        onMouseLeave={e => { e.currentTarget.style.boxShadow = "none"; }}
-      >
-        <div style={{ padding:"20px 22px 0", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-          <span style={{ color:th.textMuted, fontSize:14, fontWeight:600 }}>{label}</span>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            {filteredSales.length > 0 && (
-              <span style={{ fontSize:10, color:th.textDim, border:`1px solid ${th.border}`, borderRadius:6, padding:"2px 7px" }}>
-                {isUrdu ? "تفصیل دیکھیں" : "View Detail"}
-              </span>
-            )}
-            <span style={{ width:36, height:36, borderRadius:"50%", background:`${color}20`, display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <Icon path={iconPath} size={18} color={color}/>
-            </span>
-          </div>
-        </div>
-        <div style={{ padding:"0 22px", display:"flex", alignItems:"baseline", justifyContent:"space-between" }}>
-          <span style={{ color:th.textDim, fontSize:13 }}>{isUrdu ? "فروخت ۔ لاگت" : "Sale − Cost"}</span>
-          <span style={{ color, fontSize:26, fontWeight:700 }}>{valueStr}</span>
-        </div>
-        <div style={{ margin:"0 22px", borderTop:`1px dashed ${border}` }}/>
-        <div style={{ padding:"0 22px 18px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-          <span style={{ color:th.textDim, fontSize:12 }}>{filteredSales.length} {isUrdu ? "فروخت" : "sales"}</span>
-          {hasAnyCostData && (
-            <span style={{ fontSize:11, padding:"2px 10px", borderRadius:16, background:`${color}15`, color, fontWeight:700 }}>
-              {isLoss
-                ? (isUrdu ? "⚠️ قیمتیں چیک کریں" : "⚠️ Check prices")
-                : (isUrdu ? "✓ فائدہ میں ہیں" : "✓ In profit")}
-            </span>
-          )}
-        </div>
-      </div>
+        color={color === th.text ? "#64748b" : color}
+      />
     );
   };
 
   // ─── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:20 }}>
+    <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
 
       {showProfitModal && <ProfitDetailModal/>}
 
+      {showAnalytics && (
+        <DailyAnalyticsModal
+          isUrdu={isUrdu}
+          th={th}
+          onClose={() => setShowAnalytics(false)}
+          filteredSales={filteredSales}
+          filteredPurchases={filteredPurchases}
+          totalSalesAmount={totalSalesAmount}
+          totalPurchaseAmt={totalPurchaseAmt}
+          overallProfit={overallProfit}
+          hasAnyCostData={hasAnyCostData}
+          parties={parties}
+          expenses={expenses}
+          sales={sales}
+          purchases={purchases}
+          products={products}
+          initialFilter={filter}
+          initialFrom={customFrom}
+          initialTo={customTo}
+        />
+      )}
+
       {purchaseModal && (
-        <Modal title={isUrdu ? "🖨️ خریداری رسید" : "🖨️ Purchase Invoice"} onClose={() => setPurchaseModal(null)}>
+        <Modal title={isUrdu ? "خریداری رسید" : "Purchase Invoice"} onClose={() => setPurchaseModal(null)}>
           <CombinedSaleInvoice invoiceData={purchaseModal} onClose={() => setPurchaseModal(null)} isUrdu={isUrdu}/>
         </Modal>
       )}
 
       {saleModal && (
-        <Modal title={isUrdu ? "🖨️ فروخت رسید" : "🖨️ Sale Invoice"} onClose={() => setSaleModal(null)}>
+        <Modal title={isUrdu ? "فروخت رسید" : "Sale Invoice"} onClose={() => setSaleModal(null)}>
           <CombinedSaleInvoice invoiceData={saleModal} onClose={() => setSaleModal(null)} isUrdu={isUrdu}/>
         </Modal>
       )}
 
-      {/* Filter Bar */}
-      <div style={{ ...cardStyle, padding:"14px 20px", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
-        <span style={{ color:th.textMuted, fontSize:13, fontWeight:600, marginRight:4 }}><Icon path={ICONS.calendar} size={15}/> {t.period||"Period"}:</span>
-        {["all","today","week","month","custom"].map(f => (
-          <button key={f} style={filterBtnStyle(filter===f)} onClick={() => setFilter(f)}>
-            {f==="all"?"All Time":f==="today"?"Today":f==="week"?"This Week":f==="month"?"This Month":"Custom"}
+      {dashDetail && (
+        <Modal
+          title={
+            dashDetail.kind === "sale"
+              ? `${dashDetail.group.head.invoice || dashDetail.group.head.invoiceNum || "INV"} · ${isUrdu ? "فروخت" : "Sale"}`
+              : `${dashDetail.group.head.invoice || dashDetail.group.head.invoiceNum || "PO"} · ${isUrdu ? "خریداری" : "Purchase"}`
+          }
+          onClose={() => setDashDetail(null)}
+          xl
+        >
+          {(() => {
+            const g = dashDetail.group;
+            const h = g.head;
+            const isSale = dashDetail.kind === "sale";
+            const lines = isSale ? saleItemLines(g) : purchaseItemLines(g);
+            const total = isSale
+              ? (g.items.length === 1 ? (Number(h.grandTotal) || Number(h.total) || 0) : lines.reduce((s, l) => s + l.amount, 0))
+              : lines.reduce((s, l) => s + l.amount, 0);
+            const party = isSale ? (h.customer || "—") : (h.supplier || h.supplierName || "—");
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "10px 12px", borderRadius: 12, border: `1px solid ${th.border}`, background: th.bgCard }}>
+                  <div>
+                    <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>{isUrdu ? "انوائس" : "Invoice"}</div>
+                    <div style={{ fontFamily: "monospace", color: isSale ? "#059669" : "#b45309", fontWeight: 800, fontSize: 15 }}>{h.invoice || h.invoiceNum || "—"}</div>
+                  </div>
+                  <div>
+                    <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>{isSale ? (isUrdu ? "کسٹمر" : "Customer") : (isUrdu ? "سپلائر" : "Supplier")}</div>
+                    <div style={{ color: th.text, fontWeight: 800, fontSize: 15 }}>{party}</div>
+                  </div>
+                  <div>
+                    <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>{isUrdu ? "تاریخ / وقت" : "Date / Time"}</div>
+                    <DateTimeLine date={h.date} createdAt={h.createdAt} locale={isUrdu ? "ur-PK" : "en-PK"} th={th} />
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>{isUrdu ? "کل رقم" : "Total"}</div>
+                    <div style={{ color: isSale ? "#059669" : "#b45309", fontWeight: 900, fontSize: 16 }}>{formatPKR(total)}</div>
+                  </div>
+                </div>
+                <Table
+                  compact
+                  cols={isSale
+                    ? [t.name || "Name", isUrdu ? "تفصیل" : "Detail", t.totalLabel || "Total"]
+                    : [t.name || "Name", t.category || "Category", t.quantity || "Qty", isUrdu ? "لاگت" : "Cost", t.totalLabel || "Total"]}
+                  rows={lines.map((ln) => ({
+                    data: ln,
+                    cells: isSale
+                      ? [
+                          <div style={{ fontWeight: 700, color: th.text }}>{ln.name}</div>,
+                          <span style={{ color: th.textMuted, fontSize: 12 }}>{ln.extra || "—"}</span>,
+                          <span style={{ fontWeight: 800, color: "#059669", whiteSpace: "nowrap" }}>{formatPKR(ln.amount)}</span>,
+                        ]
+                      : [
+                          <div style={{ fontWeight: 700, color: th.text }}>{ln.name}</div>,
+                          <span style={{ fontSize: 12, color: th.textMuted }}>{ln.extra || "—"}</span>,
+                          <span style={{ fontWeight: 700 }}>{ln.qty ?? "—"}</span>,
+                          <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{ln.cost ? formatPKR(ln.cost) : "—"}</span>,
+                          <span style={{ fontWeight: 800, color: "#b45309", whiteSpace: "nowrap" }}>{formatPKR(ln.amount)}</span>,
+                        ],
+                  }))}
+                />
+                <button
+                  type="button"
+                  onClick={() => { const group = g; setDashDetail(null); isSale ? printSaleGroup(group) : printPurchaseGroup(group); }}
+                  style={{ padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "#fff", fontWeight: 700, fontSize: 13 }}
+                >
+                  🖨️ {isUrdu ? "پرنٹ رسید" : "Print invoice"}
+                </button>
+              </div>
+            );
+          })()}
+        </Modal>
+      )}
+
+      {showInvPopup && (
+        <Modal title={isUrdu ? "اسٹاک لسٹ" : "Stock List"} onClose={() => setShowInvPopup(false)} xl>
+          <InventoryStockTable products={products} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} />
+        </Modal>
+      )}
+
+      <div style={{ ...cardStyle, padding:"12px 16px", display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+        <span style={{ color:th.textMuted, fontSize:13, fontWeight:600 }}>{t.period||"Period"}</span>
+        {["today","yesterday","week","month","custom"].map(f => (
+          <button key={f} type="button" style={filterBtnStyle(filter===f)} onClick={() => setFilter(f)}>
+            {f==="today"?(isUrdu?"آج":"Today"):f==="yesterday"?(isUrdu?"کل":"Yesterday"):f==="week"?(isUrdu?"ہفتہ":"Week"):f==="month"?(isUrdu?"مہینہ":"Month"):(isUrdu?"تاریخ":"Date")}
           </button>
         ))}
-        {filter==="custom" && (
-          <>
-            <input type="date" style={inputStyle} value={customFrom} onChange={e => setCustomFrom(e.target.value)}/>
-            <span style={{ color:th.textMuted, fontSize:13 }}>→</span>
-            <input type="date" style={inputStyle} value={customTo} onChange={e => setCustomTo(e.target.value)}/>
-          </>
-        )}
-        <span style={{ marginLeft:"auto", fontSize:13, padding:"4px 12px", borderRadius:20, background:"rgba(99,102,241,0.12)", color:"#818cf8", fontWeight:600 }}>{filterLabel()}</span>
+        <input
+          type="date"
+          style={{ ...inputStyle, border: filter === "custom" ? "2px solid #6366f1" : inputStyle.border }}
+          value={customFrom}
+          onChange={e => { setCustomFrom(e.target.value); setFilter("custom"); }}
+        />
+        <span style={{ color:th.textMuted, fontSize:13 }}>–</span>
+        <input
+          type="date"
+          style={{ ...inputStyle, border: filter === "custom" ? "2px solid #6366f1" : inputStyle.border }}
+          value={customTo}
+          onChange={e => { setCustomTo(e.target.value); setFilter("custom"); }}
+        />
+        <span style={{ marginLeft:"auto", color:th.textDim, fontSize:12 }}>{filterLabel()}</span>
+        <button
+          type="button"
+          onClick={async () => {
+            // Refresh data before opening analytics
+            if (loadExpenses) await loadExpenses();
+            if (loadParties) await loadParties();
+            setShowAnalytics(true);
+          }}
+          style={{
+            padding: "8px 16px",
+            borderRadius: 10,
+            border: "none",
+            cursor: "pointer",
+            background: "linear-gradient(135deg,#6366f1,#8b5cf6)",
+            color: "#fff",
+            fontWeight: 700,
+            fontSize: 13,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          📊 {isUrdu ? "تجزیہ دیکھیں" : "View Analytics"}
+        </button>
       </div>
 
-      {/* Summary Cards */}
-      <div style={{ display:"grid", gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit,minmax(220px,1fr))", gap:14 }}>
-        <SummaryCard
-          label={t.totalPurchases||"Total Purchases"} count={totalPurchaseCount}
-          countLabel={t.numberOfOrders||"No. of Orders"} amount={totalPurchaseAmt}
-          amountLabel={t.purchaseAmount||"Purchase Amount"} color="#3b82f6"
-          icon={ICONS.purchase} onPrint={handlePrintAllPurchases}
-          printLabel={t.printAllPurchases||"Print All Purchases"}
+      <div style={{ display:"grid", gridTemplateColumns:isMobile?"1fr 1fr":"repeat(4,minmax(0,1fr))", gap:12 }}>
+        <KpiCard
+          label={t.totalPurchases||"Purchases"}
+          amount={formatPKR(totalPurchaseAmt)}
+          sub={`${totalPurchaseCount} ${t.numberOfOrders||"orders"}`}
+          onPrint={handlePrintAllPurchases}
+          printLabel={t.print||"Print"}
+          color="#3b82f6"
         />
-        <SummaryCard
-          label={t.totalSales||"Total Sales"} count={totalSalesCount}
-          countLabel={t.numberOfSales||"No. of Sales"} amount={totalSalesAmount}
-          amountLabel={t.saleAmount||"Sale Amount"} color="#10b981"
-          icon={ICONS.trend_up} onPrint={handlePrintAllSales}
-          printLabel={t.printAllSales||"Print All Sales"}
+        <KpiCard
+          label={t.totalSales||"Sales"}
+          amount={formatPKR(totalSalesAmount)}
+          sub={`${totalSalesCount} ${t.numberOfSales||"invoices"}`}
+          onPrint={handlePrintAllSales}
+          printLabel={t.print||"Print"}
+          color="#10b981"
         />
         <ProfitCard/>
+        <KpiCard
+          label={isUrdu ? "اسٹاک لسٹ" : "Stock List"}
+          amount={formatPKR(invStats.inventoryAmount)}
+          sub={`${invStats.stockedCount} ${isUrdu ? "آئٹمز" : "in stock"}`}
+          onClick={() => setShowInvPopup(true)}
+          color="#d97706"
+        />
       </div>
 
-      {/* Recent Sales + Purchases */}
-      <div style={{ display:"grid", gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit,minmax(300px,1fr))", gap:20 }}>
-        <div style={cardStyle}>
+      <div style={{ display:"grid", gridTemplateColumns:isMobile?"1fr":"1fr 1fr", gap:12 }}>
+        <div style={{ ...cardStyle, borderTop: "2px solid #10b981" }}>
           <div style={headStyle}>
-            <h3 style={{ color:th.text, fontWeight:700, fontSize:16, margin:0 }}>{t.recentSales||"Recent Sales"}</h3>
-            <span style={{ fontSize:13, padding:"4px 12px", borderRadius:20, background:"rgba(16,185,129,0.12)", color:"#10b981", fontWeight:600 }}>{filteredSales.length}</span>
+            <h3 style={{ color:th.text, fontWeight:700, fontSize:14, margin:0 }}>{t.recentSales||"Recent Sales"}</h3>
+            <span style={{ color:"#059669", fontSize:12, fontWeight:700 }}>{saleGroups.length}</span>
           </div>
-          {filteredSales.length === 0
-            ? <p style={{ textAlign:"center", padding:32, color:th.textDim, fontSize:14 }}>{t.noSalesYet}</p>
-            : filteredSales.slice(-5).reverse().map((s, i) => (
-              <div key={i} style={rowStyle}>
+          {saleGroups.length === 0
+            ? <p style={{ textAlign:"center", padding:"28px 16px", color:th.textDim, fontSize:13, margin:0 }}>{t.noSalesYet}</p>
+            : saleGroups.slice(0, 5).map((g, i) => {
+              const names = saleItemLines(g).map((l) => l.name).filter(Boolean);
+              const total = g.items.length === 1
+                ? (Number(g.head.grandTotal) || Number(g.head.total) || 0)
+                : names.length ? saleItemLines(g).reduce((s, l) => s + l.amount, 0) : g.items.reduce((s, r) => s + (Number(r.total) || 0), 0);
+              const label = names.length > 1 ? `${names[0]} +${names.length - 1}` : (names[0] || "—");
+              const inv = g.head.invoice || g.head.invoiceNum || "—";
+              return (
+              <div key={i} style={{ ...rowStyle, cursor: "pointer" }}
+                onClick={() => setDashDetail({ kind: "sale", group: g })}
+                onMouseEnter={(e) => { e.currentTarget.style.background = th.rowHover; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
                 <div style={{ flex:1, minWidth:0 }}>
-                  <p style={{ color:th.text, fontSize:14, fontWeight:600, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{s.customer}</p>
-                  <p style={{ color:th.textDim, fontSize:12, margin:0, marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{s.productName||safeProductName(s.product)} · {s.date}</p>
+                  <div style={{ display:"flex", alignItems:"baseline", gap:8, minWidth:0 }}>
+                    <span style={{ fontFamily:"ui-monospace,monospace", color: th.dark ? "#34d399" : "#059669", fontSize:12, fontWeight:600, flexShrink:0 }}>{inv}</span>
+                    <span style={{ color:th.text, fontSize:13, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{g.head.customer || "—"}</span>
+                  </div>
+                  <p style={{ color:th.textDim, fontSize:12, margin:"3px 0 0", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={names.join(", ")}>{label}</p>
+                  <div style={{ marginTop: 3 }}>
+                    <DateTimeLine date={g.head.date} createdAt={g.head.createdAt} locale={isUrdu ? "ur-PK" : "en-PK"} th={th} dateColor={th.dark ? "#5eead4" : "#0f766e"} />
+                  </div>
                 </div>
-                <span style={{ color:"#34d399", fontWeight:700, fontSize:14, flexShrink:0 }}>{formatPKR(s.total)}</span>
+                <div style={{ display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
+                  <span style={{ color: th.dark ? "#34d399" : "#059669", fontWeight:700, fontSize:13, whiteSpace:"nowrap" }}>{formatPKR(total)}</span>
+                  <button type="button" style={{ ...printBtnStyle, color: th.dark ? "#34d399" : "#059669", borderColor:"rgba(5,150,105,0.35)" }} onClick={(e) => { e.stopPropagation(); printSaleGroup(g); }}>
+                    <Icon path={ICONS.print} size={13}/> {t.print||"Print"}
+                  </button>
+                </div>
               </div>
-            ))
+              );
+            })
           }
         </div>
 
-        <div style={cardStyle}>
+        <div style={{ ...cardStyle, borderTop: "2px solid #d97706" }}>
           <div style={headStyle}>
-            <h3 style={{ color:th.text, fontWeight:700, fontSize:16, margin:0 }}>{t.recentPurchases||"Recent Purchases"}</h3>
-            <span style={{ fontSize:13, padding:"4px 12px", borderRadius:20, background:"rgba(59,130,246,0.12)", color:"#3b82f6", fontWeight:600 }}>{filteredPurchases.length}</span>
+            <h3 style={{ color:th.text, fontWeight:700, fontSize:14, margin:0 }}>{t.recentPurchases||"Recent Purchases"}</h3>
+            <span style={{ color:"#d97706", fontSize:12, fontWeight:700 }}>{purchaseGroups.length}</span>
           </div>
-          {filteredPurchases.length === 0
-            ? <p style={{ textAlign:"center", padding:32, color:th.textDim, fontSize:14 }}>{t.noPurchasesYet||"No purchases found"}</p>
-            : filteredPurchases.slice(-5).reverse().map((p, i) => (
-              <div key={i} style={rowStyle}>
+          {purchaseGroups.length === 0
+            ? <p style={{ textAlign:"center", padding:"28px 16px", color:th.textDim, fontSize:13, margin:0 }}>{t.noPurchasesYet||"No purchases found"}</p>
+            : purchaseGroups.slice(0, 5).map((g, i) => {
+              const names = purchaseItemLines(g).map((l) => l.name).filter(Boolean);
+              const total = purchaseItemLines(g).reduce((s, l) => s + l.amount, 0);
+              const label = names.length > 1 ? `${names[0]} +${names.length - 1}` : (names[0] || "—");
+              const inv = g.head.invoice || g.head.invoiceNum || "—";
+              return (
+              <div key={i} style={{ ...rowStyle, cursor: "pointer" }}
+                onClick={() => setDashDetail({ kind: "purchase", group: g })}
+                onMouseEnter={(e) => { e.currentTarget.style.background = th.rowHover; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
                 <div style={{ flex:1, minWidth:0 }}>
-                  <p style={{ color:th.text, fontSize:14, fontWeight:600, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.supplier||p.supplierName||"—"}</p>
-                  <p style={{ color:th.textDim, fontSize:12, margin:0, marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.productName||safeProductName(p.product)} · {p.date}</p>
+                  <div style={{ display:"flex", alignItems:"baseline", gap:8, minWidth:0 }}>
+                    <span style={{ fontFamily:"ui-monospace,monospace", color: th.dark ? "#fbbf24" : "#b45309", fontSize:12, fontWeight:600, flexShrink:0 }}>{inv}</span>
+                    <span style={{ color:th.text, fontSize:13, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{g.head.supplier||g.head.supplierName||"—"}</span>
+                  </div>
+                  <p style={{ color:th.textDim, fontSize:12, margin:"3px 0 0", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={names.join(", ")}>{label}</p>
+                  <div style={{ marginTop: 3 }}>
+                    <DateTimeLine date={g.head.date} createdAt={g.head.createdAt} locale={isUrdu ? "ur-PK" : "en-PK"} th={th} dateColor={th.dark ? "#fbbf24" : "#b45309"} />
+                  </div>
                 </div>
-                <span style={{ color:"#60a5fa", fontWeight:700, fontSize:14, flexShrink:0 }}>{formatPKR(p.total)}</span>
+                <div style={{ display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
+                  <span style={{ color: th.dark ? "#fbbf24" : "#b45309", fontWeight:700, fontSize:13, whiteSpace:"nowrap" }}>{formatPKR(total)}</span>
+                  <button type="button" style={{ ...printBtnStyle, color: th.dark ? "#fbbf24" : "#b45309", borderColor:"rgba(217,119,6,0.35)" }} onClick={(e) => { e.stopPropagation(); printPurchaseGroup(g); }}>
+                    <Icon path={ICONS.print} size={13}/> {t.print||"Print"}
+                  </button>
+                </div>
               </div>
-            ))
+              );
+            })
           }
         </div>
       </div>
 
-      {/* Supplier + Customer wise */}
-      <div style={{ display:"grid", gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit,minmax(300px,1fr))", gap:20 }}>
+      <div style={{ display:"grid", gridTemplateColumns:isMobile?"1fr":"1fr 1fr", gap:12 }}>
         <div style={cardStyle}>
           <div style={headStyle}>
-            <h3 style={{ color:th.text, fontWeight:700, fontSize:16, margin:0 }}>{t.supplierWisePurchases||"Supplier-wise Purchases"}</h3>
-            <input style={{ ...inputStyle, width:130 }} placeholder={t.search||"Search..."} value={supplierSearch} onChange={e => setSupplierSearch(e.target.value)}/>
+            <h3 style={{ color:th.text, fontWeight:700, fontSize:14, margin:0 }}>{t.supplierWisePurchases||"Suppliers"}</h3>
+            <input style={{ ...inputStyle, width:140 }} placeholder={t.search||"Search..."} value={supplierSearch} onChange={e => setSupplierSearch(e.target.value)}/>
           </div>
           {filteredSuppliers.length === 0
-            ? <p style={{ textAlign:"center", padding:32, color:th.textDim, fontSize:14 }}>{t.noData||"No data"}</p>
+            ? <p style={{ textAlign:"center", padding:"28px 16px", color:th.textDim, fontSize:13, margin:0 }}>{t.noData||"No data"}</p>
             : filteredSuppliers.map((sup, i) => (
-              <div key={i} style={rowStyle}>
-                <div style={avatarStyle("rgba(99,102,241,0.15)", "#818cf8")}>{sup.name.charAt(0).toUpperCase()}</div>
-                <div style={{ flex:1, minWidth:0, marginLeft:12 }}>
-                  <p style={{ color:th.text, fontSize:14, fontWeight:600, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sup.name}</p>
-                  <p style={{ color:th.textDim, fontSize:12, margin:0, marginTop:2 }}>{sup.count} {t.invoices||"invoices"} · {formatPKR(sup.total)}</p>
+              <div key={i} style={rowStyle}
+                onMouseEnter={(e) => { e.currentTarget.style.background = th.rowHover; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                <div style={avatarStyle("#3b82f6")}>{sup.name.charAt(0).toUpperCase()}</div>
+                <div style={{ flex:1, minWidth:0, marginLeft:10 }}>
+                  <p style={{ color:th.text, fontSize:13, fontWeight:600, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sup.name}</p>
+                  <p style={{ color:th.textDim, fontSize:12, margin:"2px 0 0" }}>{sup.count} {t.invoices||"invoices"} · {formatPKR(sup.total)}</p>
                 </div>
-                <button style={printBtnStyle} onClick={() => handlePrintSupplier(sup)}>
-                  <Icon path={ICONS.print} size={15}/> {t.print||"Print"}
+                <button type="button" style={printBtnStyle} onClick={() => handlePrintSupplier(sup)}>
+                  <Icon path={ICONS.print} size={13}/> {t.print||"Print"}
                 </button>
               </div>
             ))
@@ -739,20 +1956,23 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
 
         <div style={cardStyle}>
           <div style={headStyle}>
-            <h3 style={{ color:th.text, fontWeight:700, fontSize:16, margin:0 }}>{t.customerWiseSales||"Customer-wise Sales"}</h3>
-            <input style={{ ...inputStyle, width:130 }} placeholder={t.search||"Search..."} value={customerSearch} onChange={e => setCustomerSearch(e.target.value)}/>
+            <h3 style={{ color:th.text, fontWeight:700, fontSize:14, margin:0 }}>{t.customerWiseSales||"Customers"}</h3>
+            <input style={{ ...inputStyle, width:140 }} placeholder={t.search||"Search..."} value={customerSearch} onChange={e => setCustomerSearch(e.target.value)}/>
           </div>
           {filteredCustomers.length === 0
-            ? <p style={{ textAlign:"center", padding:32, color:th.textDim, fontSize:14 }}>{t.noData||"No data"}</p>
+            ? <p style={{ textAlign:"center", padding:"28px 16px", color:th.textDim, fontSize:13, margin:0 }}>{t.noData||"No data"}</p>
             : filteredCustomers.map((cus, i) => (
-              <div key={i} style={rowStyle}>
-                <div style={avatarStyle("rgba(16,185,129,0.15)", "#10b981")}>{cus.name.charAt(0).toUpperCase()}</div>
-                <div style={{ flex:1, minWidth:0, marginLeft:12 }}>
-                  <p style={{ color:th.text, fontSize:14, fontWeight:600, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{cus.name}</p>
-                  <p style={{ color:th.textDim, fontSize:12, margin:0, marginTop:2 }}>{cus.count} {t.invoices||"invoices"} · {formatPKR(cus.total)}</p>
+              <div key={i} style={rowStyle}
+                onMouseEnter={(e) => { e.currentTarget.style.background = th.rowHover; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                <div style={avatarStyle("#10b981")}>{cus.name.charAt(0).toUpperCase()}</div>
+                <div style={{ flex:1, minWidth:0, marginLeft:10 }}>
+                  <p style={{ color:th.text, fontSize:13, fontWeight:600, margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{cus.name}</p>
+                  <p style={{ color:th.textDim, fontSize:12, margin:"2px 0 0" }}>{cus.count} {t.invoices||"invoices"} · {formatPKR(cus.total)}</p>
                 </div>
-                <button style={printBtnStyle} onClick={() => handlePrintCustomer(cus)}>
-                  <Icon path={ICONS.print} size={15}/> {t.print||"Print"}
+                <button type="button" style={printBtnStyle} onClick={() => handlePrintCustomer(cus)}>
+                  <Icon path={ICONS.print} size={13}/> {t.print||"Print"}
                 </button>
               </div>
             ))
@@ -779,8 +1999,14 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
 // ═══════════════════════════════════════════════════════════════════════════
 function BindingFeeDashboardReport({ sales, isUrdu, th, filter, customFrom, customTo, filterLabel }) {
   const today = new Date();
-  const toDateStr = (d) => d.toISOString().split("T")[0];
+  const toDateStr = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
   const todayStr2 = toDateStr(today);
+  const yesterdayStr = (() => { const d = new Date(today); d.setDate(d.getDate() - 1); return toDateStr(d); })();
   const weekStart = (() => { const d = new Date(today); d.setDate(d.getDate() - 6); return toDateStr(d); })();
   const monthStart = (() => { const d = new Date(today); d.setDate(1); return toDateStr(d); })();
 
@@ -795,6 +2021,7 @@ function BindingFeeDashboardReport({ sales, isUrdu, th, filter, customFrom, cust
   const inRange = (dateStr) => {
     const d = parseDate(dateStr); if (!d) return false;
     if (filter === "today")  return d === todayStr2;
+    if (filter === "yesterday") return d === yesterdayStr;
     if (filter === "week")   return d >= weekStart && d <= todayStr2;
     if (filter === "month")  return d >= monthStart && d <= todayStr2;
     if (filter === "custom") { const from = customFrom || "0000-01-01"; const to = customTo || "9999-12-31"; return d >= from && d <= to; }
@@ -865,8 +2092,14 @@ function BindingFeeDashboardReport({ sales, isUrdu, th, filter, customFrom, cust
 function LoaderDashboardReport({ sales, loaders, isUrdu, th, filter, customFrom, customTo, filterLabel }) {
   const { isMobile } = useResponsive();
   const today = new Date();
-  const toDateStr = (d) => d.toISOString().split("T")[0];
+  const toDateStr = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
   const todayStr2 = toDateStr(today);
+  const yesterdayStr = (() => { const d = new Date(today); d.setDate(d.getDate() - 1); return toDateStr(d); })();
   const weekStart = (() => { const d = new Date(today); d.setDate(d.getDate() - 6); return toDateStr(d); })();
   const monthStart = (() => { const d = new Date(today); d.setDate(1); return toDateStr(d); })();
 
@@ -881,6 +2114,7 @@ function LoaderDashboardReport({ sales, loaders, isUrdu, th, filter, customFrom,
   const inRange = (dateStr) => {
     const d = parseDate(dateStr); if (!d) return false;
     if (filter === "today")  return d === todayStr2;
+    if (filter === "yesterday") return d === yesterdayStr;
     if (filter === "week")   return d >= weekStart && d <= todayStr2;
     if (filter === "month")  return d >= monthStart && d <= todayStr2;
     if (filter === "custom") { const from = customFrom || "0000-01-01"; const to = customTo || "9999-12-31"; return d >= from && d <= to; }

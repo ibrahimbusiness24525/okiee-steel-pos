@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useLayoutEffect } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { decimalKgToParts, partsToDecimalKg, formatWeightKgG } from "../utils/helpers";
@@ -18,6 +18,146 @@ export const Icon = ({path,size=20}) => (
     <path d={path}/>
   </svg>
 );
+
+const FIELD_SEL = 'input:not([type="hidden"]):not([disabled]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="file"]), select:not([disabled]), textarea:not([disabled])';
+
+function fieldVisible(el) {
+  if (!el || el.tabIndex < 0) return false;
+  if (el.getAttribute("aria-hidden") === "true") return false;
+  const st = window.getComputedStyle(el);
+  if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+  const r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+
+/** Enter in a popup field moves focus to the next field instead of submitting. */
+export function handleEnterNextField(e, root) {
+  if (!root || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "s")) return;
+  if (e.key !== "Enter" || e.shiftKey) return;
+  const t = e.target;
+  if (!(t instanceof HTMLElement) || !root.contains(t)) return;
+  if (t.tagName === "TEXTAREA") return;
+  if (t.tagName === "BUTTON" || t.getAttribute("role") === "button") return;
+  if (t.tagName === "A") return;
+  if (t.getAttribute("data-suggest-open") === "1") return;
+  const fields = [...root.querySelectorAll(FIELD_SEL)].filter((el) => {
+    if (!fieldVisible(el)) return false;
+    if (el.type === "radio" && el.name) {
+      const checked = root.querySelector(`input[type="radio"][name="${CSS.escape(el.name)}"]:checked`);
+      return el === t || el === checked;
+    }
+    return true;
+  });
+  const i = fields.indexOf(t);
+  if (i < 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const next = fields[i + 1] || fields[0];
+  if (!next || next === t) return;
+  focusField(next);
+}
+
+export function focusField(el) {
+  if (!el) return;
+  el.focus();
+  if (typeof el.select === "function" && el.tagName === "INPUT" && !["checkbox", "radio", "date", "color", "range"].includes(el.type)) {
+    try { el.select(); } catch { /* ignore */ }
+  }
+}
+
+export function focusFirstField(root) {
+  if (!root) return;
+  const first = [...root.querySelectorAll(FIELD_SEL)].find(fieldVisible);
+  focusField(first);
+}
+
+export function focusNextField(fromEl, root) {
+  if (!root || !fromEl) return;
+  const fields = [...root.querySelectorAll(FIELD_SEL)].filter(fieldVisible);
+  const i = fields.indexOf(fromEl);
+  focusField(fields[i + 1] || fields[0]);
+}
+
+export function clickModalSave(root) {
+  const btn = root?.querySelector("[data-save='1']:not([disabled])");
+  if (btn) btn.click();
+}
+
+export function clickModalAddProduct(root) {
+  const btn = root?.querySelector("[data-add-product='1']:not([disabled])");
+  if (!btn) return;
+  btn.click();
+  setTimeout(() => {
+    const inputs = root?.querySelectorAll("[data-product-search]");
+    const last = inputs?.[inputs.length - 1];
+    if (last) {
+      last.focus();
+      if (typeof last.select === "function") {
+        try { last.select(); } catch { /* ignore */ }
+      }
+    }
+  }, 50);
+}
+
+/** Arrow keys + Enter for search dropdowns. */
+export function useTypeaheadNav(items, onPick) {
+  const [open, setOpen] = useState(false);
+  const [hi, setHi] = useState(0);
+  const openRef = useRef(false);
+  const hiRef = useRef(0);
+  const itemsRef = useRef(items);
+  const pickRef = useRef(onPick);
+  const listRef = useRef(null);
+  openRef.current = open;
+  hiRef.current = hi;
+  itemsRef.current = items;
+  pickRef.current = onPick;
+
+  useEffect(() => {
+    if (!open) return;
+    const el = listRef.current?.querySelector(`[data-nav-i="${hi}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [hi, open]);
+
+  const onKeyDown = (e) => {
+    const list = itemsRef.current || [];
+    const n = list.length;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      e.stopPropagation();
+      const was = openRef.current;
+      setOpen(true);
+      setHi((h) => (!n ? 0 : was ? (h + 1) % n : 0));
+      return true;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      e.stopPropagation();
+      const was = openRef.current;
+      setOpen(true);
+      setHi((h) => (!n ? 0 : was ? (h - 1 + n) % n : Math.max(n - 1, 0)));
+      return true;
+    }
+    if (e.key === "Enter" && openRef.current && n) {
+      e.preventDefault();
+      e.stopPropagation();
+      const item = list[hiRef.current] ?? list[0];
+      if (item) pickRef.current?.(item);
+      setOpen(false);
+      return true;
+    }
+    if (e.key === "Escape" && openRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+      return true;
+    }
+    return false;
+  };
+
+  return { open, setOpen, hi, setHi, onKeyDown, listRef };
+}
 
 export const ICONS = {
   print:     "M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2 M6 14h12v8H6z",
@@ -55,18 +195,49 @@ export const ICONS = {
   menu:      "M3 12h18 M3 6h18 M3 18h18",
 };
 
-export function Modal({ title, onClose, children, wide }) {
+export function Modal({ title, onClose, children, wide, xl, layer = 50, headerRight }) {
   const th = useTheme();
   const { isMobile } = useResponsive();
+  const boxRef = useRef(null);
+  const maxW = xl ? "min(1360px, calc(100vw - 16px))" : wide ? 760 : 500;
+  useEffect(() => {
+    const t = setTimeout(() => focusFirstField(boxRef.current), 40);
+    return () => clearTimeout(t);
+  }, []);
+  const onKeys = (e) => {
+    if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || String(e.key).toLowerCase() === "s"))) {
+      e.preventDefault();
+      e.stopPropagation();
+      clickModalSave(boxRef.current);
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "a") {
+      if (boxRef.current?.querySelector("[data-add-product='1']")) {
+        e.preventDefault();
+        e.stopPropagation();
+        clickModalAddProduct(boxRef.current);
+        return;
+      }
+    }
+    handleEnterNextField(e, boxRef.current);
+  };
   return (
-    <div style={{position:"fixed",inset:0,zIndex:50,display:"flex",alignItems:isMobile?"flex-end":"center",justifyContent:"center",padding:isMobile?0:16}}>
+    <div style={{position:"fixed",inset:0,zIndex:layer,display:"flex",alignItems:isMobile?"flex-end":"center",justifyContent:"center",padding:isMobile?0:16}}>
       <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.7)",backdropFilter:"blur(4px)"}} onClick={onClose}/>
-      <div style={{position:"relative",width:"100%",maxWidth:wide?760:500,borderRadius:isMobile?"20px 20px 0 0":20,border:`1px solid ${th.border}`,overflow:"hidden",background:th.bgModal,boxShadow:th.modalShadow,maxHeight:isMobile?"92vh":"90vh",overflowY:"auto"}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:isMobile?"14px 18px":"16px 24px",borderBottom:`1px solid ${th.border}`,position:"sticky",top:0,background:th.bgModal,zIndex:1}}>
-          <h3 style={{color:th.text,fontWeight:700,fontSize:isMobile?16:18,margin:0}}>{title}</h3>
-          <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",color:th.textDim,padding:4}}><Icon path={ICONS.close} size={20}/></button>
+      <div
+        ref={boxRef}
+        data-modal-box="1"
+        onKeyDownCapture={onKeys}
+        style={{position:"relative",width:"100%",maxWidth:maxW,borderRadius:isMobile?"20px 20px 0 0":20,border:`1px solid ${th.border}`,overflow:"hidden",background:th.bgModal,boxShadow:th.modalShadow,maxHeight:isMobile?"94vh": xl ? "94vh" : "90vh",overflowY:"auto"}}
+      >
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,padding:isMobile?"14px 18px": xl ? "14px 20px" : "16px 24px",borderBottom:`1px solid ${th.border}`,position:"sticky",top:0,background:th.bgModal,zIndex:1}}>
+          <h3 style={{color:th.text,fontWeight:700,fontSize:isMobile?16:18,margin:0,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{title}</h3>
+          <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0,flexWrap:"wrap",justifyContent:"flex-end"}}>
+            {headerRight}
+            <button type="button" onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",color:th.textDim,padding:4}}><Icon path={ICONS.close} size={20}/></button>
+          </div>
         </div>
-        <div style={{padding:isMobile?"16px 18px":"20px 24px"}}>{children}</div>
+        <div style={{padding:isMobile?"16px 18px": xl ? "16px 20px" : "20px 24px"}}>{children}</div>
       </div>
     </div>
   );
@@ -173,7 +344,7 @@ export function WeightKgGInput({ value, onChange, isUrdu, compact }) {
 
 export function SaveBtn({ label, onClick, loading, color, disabled }) {
   return (
-    <button onClick={onClick} disabled={loading||disabled} style={{width:"100%",padding:"13px",borderRadius:12,border:"none",cursor:(loading||disabled)?"not-allowed":"pointer",background:(loading||disabled)?"rgba(26,188,156,0.4)":color||"linear-gradient(135deg,#1abc9c,#2980b9)",boxShadow:(loading||disabled)?"none":"0 4px 15px rgba(26,188,156,0.3)",color:"#fff",fontWeight:700,fontSize:14,letterSpacing:"0.05em"}}>
+    <button data-save="1" onClick={onClick} disabled={loading||disabled} style={{width:"100%",padding:"13px",borderRadius:12,border:"none",cursor:(loading||disabled)?"not-allowed":"pointer",background:(loading||disabled)?"rgba(26,188,156,0.4)":color||"linear-gradient(135deg,#1abc9c,#2980b9)",boxShadow:(loading||disabled)?"none":"0 4px 15px rgba(26,188,156,0.3)",color:"#fff",fontWeight:700,fontSize:14,letterSpacing:"0.05em"}}>
       {loading ? "..." : label}
     </button>
   );
@@ -181,30 +352,91 @@ export function SaveBtn({ label, onClick, loading, color, disabled }) {
 
 export function StatCard({ label, value, icon, color, sub, onClick }) {
   const th = useTheme();
+  const valueStr = value == null ? "" : String(value);
+  const wrapRef = useRef(null);
+  const valRef = useRef(null);
+  const [valueSize, setValueSize] = useState(20);
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    const el = valRef.current;
+    if (!wrap || !el) return;
+    const fit = () => {
+      let s = 20;
+      el.style.fontSize = s + "px";
+      while (s > 10 && el.scrollWidth > wrap.clientWidth) {
+        s -= 0.5;
+        el.style.fontSize = s + "px";
+      }
+      setValueSize(s);
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [valueStr]);
+
   return (
     <div
       onClick={onClick}
       role={onClick ? "button" : undefined}
-      style={{borderRadius:16,padding:"16px 18px",border:`1px solid ${th.border}`,display:"flex",alignItems:"flex-start",justifyContent:"space-between",background:th.bgCard,boxShadow:th.cardShadow,cursor:onClick?"pointer":"default",transition:"border-color .15s, transform .15s"}}
+      style={{borderRadius:16,padding:"14px 14px",border:`1px solid ${th.border}`,display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,background:th.bgCard,boxShadow:th.cardShadow,cursor:onClick?"pointer":"default",transition:"border-color .15s, transform .15s",overflow:"hidden"}}
       onMouseEnter={onClick ? (e) => { e.currentTarget.style.borderColor = color; e.currentTarget.style.transform = "translateY(-1px)"; } : undefined}
       onMouseLeave={onClick ? (e) => { e.currentTarget.style.borderColor = th.border; e.currentTarget.style.transform = "none"; } : undefined}
     >
-      <div style={{flex:1,minWidth:0}}>
-        <p style={{color:th.textMuted,fontSize:11,textTransform:"uppercase",letterSpacing:"0.08em",margin:"0 0 4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</p>
-        <p style={{fontSize:20,fontWeight:900,color:th.text,margin:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{value}</p>
-        {sub&&<p style={{fontSize:11,marginTop:4,color,margin:"4px 0 0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sub}</p>}
+      <div ref={wrapRef} style={{flex:1,minWidth:0}}>
+        <p style={{color:th.textMuted,fontSize:10,textTransform:"uppercase",letterSpacing:"0.03em",margin:"0 0 4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</p>
+        <p ref={valRef} title={valueStr} style={{fontSize:valueSize,fontWeight:800,color:th.text,margin:0,lineHeight:1.15,whiteSpace:"nowrap",letterSpacing:"-0.03em",fontVariantNumeric:"tabular-nums"}}>{value}</p>
+        {sub&&<p style={{fontSize:11,marginTop:4,color,margin:"4px 0 0",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{sub}</p>}
       </div>
-      <div style={{width:38,height:38,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",background:`${color}22`,color,flexShrink:0,marginLeft:8}}>
-        <Icon path={icon} size={18}/>
+      <div style={{width:32,height:32,borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",background:`${color}22`,color,flexShrink:0}}>
+        <Icon path={icon} size={15}/>
       </div>
     </div>
   );
 }
 
-export function Table({ cols, rows, onEdit, onDelete }) {
+export function DateFilterBar({ filter, setFilter, customFrom, setCustomFrom, customTo, setCustomTo, extra }) {
+  const th = useTheme();
+  const { lang } = useLang();
+  const isUrdu = lang === "ur";
+  const labels = {
+    today: isUrdu ? "آج" : "Today",
+    yesterday: isUrdu ? "کل" : "Yesterday",
+    week: isUrdu ? "ایک ہفتہ" : "1 Week",
+    month: isUrdu ? "ایک مہینہ" : "1 Month",
+    custom: isUrdu ? "تاریخ" : "Date",
+  };
+  const btn = (active) => ({
+    padding: "7px 12px", borderRadius: 10, border: "none", cursor: "pointer",
+    fontWeight: 700, fontSize: 12, fontFamily: "'Segoe UI',sans-serif",
+    background: active ? "linear-gradient(135deg,#1abc9c,#2980b9)" : th.thHead,
+    color: active ? "#fff" : th.textMuted,
+  });
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      {["today", "yesterday", "week", "month", "custom"].map((f) => (
+        <button key={f} type="button" style={btn(filter === f)} onClick={() => setFilter(f)}>{labels[f]}</button>
+      ))}
+      {filter === "custom" && (
+        <>
+          <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)}
+            style={{ padding: "7px 10px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.text, fontSize: 13, outline: "none" }} />
+          <span style={{ color: th.textMuted }}>→</span>
+          <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)}
+            style={{ padding: "7px 10px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.text, fontSize: 13, outline: "none" }} />
+        </>
+      )}
+      {extra}
+    </div>
+  );
+}
+
+export function Table({ cols, rows, onEdit, onDelete, onRowClick, compact }) {
   const th = useTheme();
   const {t} = useLang();
   const { isMobile } = useResponsive();
+  const cellPad = compact ? "8px 10px" : "12px 16px";
   if (isMobile) {
     return (
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -212,7 +444,7 @@ export function Table({ cols, rows, onEdit, onDelete }) {
           <div style={{textAlign:"center",padding:"40px",color:th.textDim,borderRadius:16,border:`1px solid ${th.border}`,background:th.bgCard}}>{t.noRecords}</div>
         )}
         {rows.map((row, i) => (
-          <div key={i} style={{borderRadius:14,border:`1px solid ${th.border}`,background:th.bgCard,padding:"14px 16px",boxShadow:th.cardShadow}}>
+          <div key={i} onClick={onRowClick ? () => onRowClick(row.data) : undefined} style={{borderRadius:14,border:`1px solid ${th.border}`,background:th.bgCard,padding:"14px 16px",boxShadow:th.cardShadow,cursor:onRowClick?"pointer":"default"}}>
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
               {cols.map((col, j) => (
                 <div key={j} style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:13}}>
@@ -222,7 +454,7 @@ export function Table({ cols, rows, onEdit, onDelete }) {
               ))}
             </div>
             {(onEdit || onDelete) && (
-              <div style={{display:"flex",gap:8,marginTop:12,paddingTop:10,borderTop:`1px solid ${th.border}`}}>
+              <div style={{display:"flex",gap:8,marginTop:12,paddingTop:10,borderTop:`1px solid ${th.border}`}} onClick={(e) => e.stopPropagation()}>
                 {onEdit && <button onClick={()=>onEdit(row.data)} style={{flex:1,padding:"8px",borderRadius:10,border:"1px solid rgba(59,130,246,0.3)",background:"rgba(59,130,246,0.08)",color:"#60a5fa",cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"'Segoe UI',sans-serif"}}>✏️ {t.edit}</button>}
                 {onDelete && <button onClick={()=>onDelete(row.data)} style={{flex:1,padding:"8px",borderRadius:10,border:"1px solid rgba(239,68,68,0.3)",background:"rgba(239,68,68,0.08)",color:"#f87171",cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"'Segoe UI',sans-serif"}}>🗑️ {t.delete}</button>}
               </div>
@@ -235,22 +467,23 @@ export function Table({ cols, rows, onEdit, onDelete }) {
   return (
     <div style={{borderRadius:16,border:`1px solid ${th.border}`,overflow:"hidden",background:th.bgCard,boxShadow:th.cardShadow}}>
       <div style={{overflowX:"auto"}}>
-        <table style={{width:"100%",fontSize:14,borderCollapse:"collapse"}}>
+        <table style={{width:"100%",fontSize:compact?13:14,borderCollapse:"collapse"}}>
           <thead>
             <tr style={{borderBottom:`1px solid ${th.border}`,background:th.thHead}}>
-              {cols.map(c=><th key={c} style={{textAlign:"left",padding:"12px 16px",color:th.textMuted,fontSize:11,textTransform:"uppercase",letterSpacing:"0.08em",fontWeight:700,whiteSpace:"nowrap"}}>{c}</th>)}
-              {(onEdit||onDelete)&&<th style={{textAlign:"right",padding:"12px 16px",color:th.textMuted,fontSize:11,textTransform:"uppercase",fontWeight:600}}>{t.actions}</th>}
+              {cols.map(c=><th key={c} style={{textAlign:"left",padding:cellPad,color:th.textMuted,fontSize:11,textTransform:"uppercase",letterSpacing:"0.08em",fontWeight:700,whiteSpace:"nowrap"}}>{c}</th>)}
+              {(onEdit||onDelete)&&<th style={{textAlign:"right",padding:cellPad,color:th.textMuted,fontSize:11,textTransform:"uppercase",fontWeight:600}}>{t.actions}</th>}
             </tr>
           </thead>
           <tbody>
             {rows.length===0&&<tr><td colSpan={cols.length+1} style={{textAlign:"center",padding:"48px",color:th.textDim}}>{t.noRecords}</td></tr>}
             {rows.map((row,i)=>(
-              <tr key={i} style={{borderBottom:`1px solid ${th.border}`,transition:"background 0.15s"}}
+              <tr key={i} style={{borderBottom:`1px solid ${th.border}`,transition:"background 0.15s",cursor:onRowClick?"pointer":"default"}}
+                onClick={onRowClick ? () => onRowClick(row.data) : undefined}
                 onMouseEnter={e=>e.currentTarget.style.background=th.rowHover}
-                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                {row.cells.map((cell,j)=><td key={j} style={{padding:"12px 16px",color:th.text}}>{cell}</td>)}
+                onMouseLeave={e=>{e.currentTarget.style.background="transparent"}}>
+                {row.cells.map((cell,j)=><td key={j} style={{padding:cellPad,color:th.text,verticalAlign:"middle"}}>{cell}</td>)}
                 {(onEdit||onDelete)&&(
-                  <td style={{padding:"12px 16px",textAlign:"right"}}>
+                  <td style={{padding:"12px 16px",textAlign:"right"}} onClick={(e) => e.stopPropagation()}>
                     <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:8}}>
                       {onEdit&&<button onClick={()=>onEdit(row.data)} style={{padding:"6px",borderRadius:8,border:"none",cursor:"pointer",background:"transparent",color:th.textDim}}
                         onMouseEnter={e=>{e.currentTarget.style.background="rgba(59,130,246,0.15)";e.currentTarget.style.color="#60a5fa"}}

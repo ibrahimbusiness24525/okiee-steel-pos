@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS } from "./shared";
+import { useResponsive, Icon, ICONS, handleEnterNextField, focusFirstField, clickModalSave } from "./shared";
 import { api } from "../utils/api";
 import { formatPKR, todayStr } from "../utils/helpers";
+import { hardwareSalePrice } from "../utils/productPrices";
+import { getUnitLabel, unitOptions } from "../utils/unitConversion";
 
 const LS = {
   brands: "steelpos_hw_brands",
@@ -13,7 +15,6 @@ const LS = {
 };
 const DEFAULT_CATS = ["Nuts", "Bolts", "Screws", "Washers", "Hinges", "Locks", "Tools", "Fittings", "Valves", "Other"];
 const DEFAULT_LOCS = ["Rack A", "Rack B", "Shop Floor", "Godown"];
-const UNITS = ["piece", "kg", "set", "bundle", "box", "dozen", "pair", "packet", "meter", "feet"];
 const TAXES = ["", "GST 0%", "GST 5%", "GST 17%", "GST 18%"];
 
 const EMPTY = {
@@ -95,9 +96,9 @@ function ManageSelect({ value, onChange, options, onAdd, onRemove, inp, th }) {
   );
 }
 
-function ActionBtn({ label, color, icon, onClick, disabled, isMobile }) {
+function ActionBtn({ label, color, icon, onClick, disabled, isMobile, save }) {
   return (
-    <button type="button" onClick={onClick} disabled={disabled}
+    <button type="button" onClick={onClick} disabled={disabled} data-save={save ? "1" : undefined}
       style={{
         minWidth: isMobile ? 0 : 140, flex: isMobile ? 1 : "0 0 auto",
         padding: isMobile ? "12px 10px" : "14px 18px", borderRadius: 10, border: "none",
@@ -112,14 +113,14 @@ function ActionBtn({ label, color, icon, onClick, disabled, isMobile }) {
   );
 }
 
-function fromProduct(p) {
+function fromProduct(p, purchases = []) {
   if (!p) return { ...EMPTY, barcode: genBarcode() };
   return {
     name: p.name || "",
     barcode: p.barcode || "",
     autoBarcode: !p.barcode,
     purchasePrice: p.purchasePrice != null && p.purchasePrice !== "" ? String(p.purchasePrice) : "",
-    price: p.price != null && p.price !== "" ? String(p.price) : "",
+    price: String(hardwareSalePrice(p, purchases) || p.price || ""),
     brand: p.brand || "",
     hwCategory: p.subType || p.hwCategory || "",
     subCategory: p.subCategory || "",
@@ -130,7 +131,7 @@ function fromProduct(p) {
     isComposite: !!p.isComposite,
     photo: p.photo || "",
     suppliers: Array.isArray(p.suppliers) ? p.suppliers.map(s => ({ ...s })) : [],
-    unit: p.unit || "piece",
+    unit: p.stockUnit || p.unit || "piece",
     secondaryUnit: p.secondaryUnit || "",
     tax: p.tax || "",
     taxInclusive: p.taxInclusive !== false,
@@ -138,16 +139,17 @@ function fromProduct(p) {
   };
 }
 
-export default function HardwareManageModal({ products, loadProducts, loadPurchases, seed, onClose }) {
+export default function HardwareManageModal({ products, purchases = [], loadProducts, loadPurchases, seed, onClose }) {
   const th = useTheme();
   const { lang } = useLang();
   const { isMobile, width } = useResponsive();
   const isUrdu = lang === "ur";
   const fileRef = useRef(null);
   const saveRef = useRef(null);
+  const panelRef = useRef(null);
 
   const [tab, setTab] = useState("create");
-  const [form, setForm] = useState(() => fromProduct(seed));
+  const [form, setForm] = useState(() => fromProduct(seed, purchases));
   const [editingId, setEditingId] = useState(seed?._id || null);
   const [origStock, setOrigStock] = useState(Number(seed?.stock) || 0);
   const [saving, setSaving] = useState(false);
@@ -171,7 +173,7 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
     lowStock: "کم اسٹاک ویلیو", location: "لوکیشن / ریک", composite: "کمپوزٹ ہے",
     picture: "تصویر (اختیاری)", upload: "اپلوڈ", clear: "صاف",
     addVar: "ویری ایشن شامل کریں", suppliers: "سپلائرز", setMain: "مین بنائیں",
-    unit: "اکائی", baseUnit: "بنیادی اکائی", secUnit: "ثانوی اکائی",
+    unit: "اکائی",
     tax: "ٹیکس", selectTax: "ٹیکس منتخب کریں", included: "فروخت قیمت میں شامل",
     addTax: "فروخت قیمت پر شامل کریں", save: "محفوظ (F5)", update: "ترمیم / اپڈیٹ",
     del: "حذف", clearFields: "فیلڈز صاف کریں", searchBy: "تلاش",
@@ -190,7 +192,7 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
     lowStock: "Low Stock Value", location: "Location / Rack", composite: "Is Composite",
     picture: "Picture (Optional)", upload: "Upload", clear: "Clear",
     addVar: "Add Variations", suppliers: "Suppliers", setMain: "Set As Main",
-    unit: "Unit", baseUnit: "Base Unit", secUnit: "Secondary Unit",
+    unit: "Unit",
     tax: "Tax", selectTax: "Select Tax", included: "Already included in the Sales Price",
     addTax: "Add to the Sales Price", save: "Save (F5)", update: "Edit/Update",
     del: "Delete", clearFields: "Clear Fields", searchBy: "Search by",
@@ -203,7 +205,7 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
   };
 
   useEffect(() => {
-    setForm(fromProduct(seed));
+    setForm(fromProduct(seed, purchases));
     setEditingId(seed?._id || null);
     setOrigStock(Number(seed?.stock) || 0);
   }, [seed]);
@@ -257,7 +259,7 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
   };
 
   const loadRow = (p) => {
-    setForm(fromProduct(p));
+    setForm(fromProduct(p, purchases));
     setEditingId(p._id);
     setOrigStock(Number(p.stock) || 0);
     setTab("create");
@@ -283,6 +285,7 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
       photo: form.photo || "",
       suppliers: form.suppliers,
       unit: form.unit || "piece",
+      stockUnit: form.unit || "piece",
       secondaryUnit: form.secondaryUnit || "",
       tax: form.tax || "",
       taxInclusive: !!form.taxInclusive,
@@ -311,7 +314,8 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
       rate,
       total: +(rate * amount).toFixed(2),
       productPrice: rate,
-      rows: [{ qty: amount, purchasePrice: rate, salePrice: Number(payload.price) || 0 }],
+      rows: [{ qty: amount, purchasePrice: rate, salePrice: Number(payload.price) || 0, unit: payload.unit || "piece" }],
+      unit: payload.unit || "piece",
     });
   };
   const saveNew = async () => {
@@ -327,7 +331,10 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
       suppliers.push({ name: typedSup, id: `S${suppliers.length + 1}`, isMain: suppliers.length === 0 });
     }
     const supplier = (suppliers.find((s) => s.isMain) || suppliers[0])?.name || typedSup || "Opening Stock";
-    const res = await api.addProduct({ ...payload, suppliers, stock: 0 });
+    let res = await api.addProduct({ ...payload, suppliers, stock: 0 });
+    if (!res?.success && /unit/i.test(String(res?.message || "")) && /enum/i.test(String(res?.message || ""))) {
+      res = await api.addProduct({ ...payload, unit: "piece", stockUnit: payload.unit || "piece", suppliers, stock: 0 });
+    }
     if (!res.success) { alert(res.message); setSaving(false); return; }
     const productId = res.product?._id || res.product?.id;
     if (qty > 0 && productId) {
@@ -346,7 +353,10 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
     if (form.price === "") { alert(L.needSale); return; }
     setSaving(true);
     const payload = buildPayload();
-    const res = await api.updateProduct(editingId, payload);
+    let res = await api.updateProduct(editingId, payload);
+    if (!res?.success && /unit/i.test(String(res?.message || "")) && /enum/i.test(String(res?.message || ""))) {
+      res = await api.updateProduct(editingId, { ...payload, unit: "piece", stockUnit: payload.unit || "piece" });
+    }
     if (!res.success) { alert(res.message); setSaving(false); return; }
     const nextStock = Number(form.stock) || 0;
     if (nextStock !== origStock) {
@@ -374,19 +384,20 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
     else alert(res.message);
   };
 
-  saveRef.current = saveNew;
+  saveRef.current = editingId ? updateExisting : saveNew;
+
+  useEffect(() => {
+    const t = setTimeout(() => { if (tab === "create") focusFirstField(panelRef.current); }, 50);
+    return () => clearTimeout(t);
+  }, [tab]);
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === "F5") {
-        e.preventDefault();
-        if (!saving) saveRef.current?.();
-      }
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, saving]);
+  }, [onClose]);
 
   const inp = {
     background: th.input, border: `1px solid ${th.inputBorder}`, color: th.text,
@@ -412,7 +423,18 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 80, display: "flex", flexDirection: "column", background: "rgba(15,23,42,0.55)" }}>
-      <div style={{
+      <div
+        ref={panelRef}
+        onKeyDownCapture={(e) => {
+          if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || String(e.key).toLowerCase() === "s"))) {
+            e.preventDefault();
+            e.stopPropagation();
+            clickModalSave(panelRef.current);
+            return;
+          }
+          handleEnterNextField(e, panelRef.current);
+        }}
+        style={{
         flex: 1, margin: isMobile ? 0 : 12, borderRadius: isMobile ? 0 : 14, overflow: "hidden",
         display: "flex", flexDirection: "column", background: th.bgModal, boxShadow: th.modalShadow,
         border: `1px solid ${th.border}`,
@@ -461,7 +483,7 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
                     onAdd={() => addToList(LS.brands, brands, setBrands)}
                     onRemove={() => removeFromList(LS.brands, brands, setBrands, form.brand, () => set("brand", ""))} />
                 </Field>
-                <Field label={L.stock} labelS={labelS}>
+                <Field label={`${L.stock} / ${getUnitLabel(form.unit)}`} labelS={labelS}>
                   <input type="text" inputMode="decimal" value={form.stock} onChange={e => set("stock", e.target.value.replace(/[^0-9.]/g, ""))} style={inp} placeholder="0" />
                 </Field>
 
@@ -482,11 +504,11 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
                     onAdd={() => addToList(LS.categories, hwCats, setHwCats)}
                     onRemove={() => removeFromList(LS.categories, hwCats, setHwCats, form.hwCategory, () => set("hwCategory", ""))} />
                 </Field>
-                <Field label={L.lowStock} labelS={labelS}>
+                <Field label={`${L.lowStock} / ${getUnitLabel(form.unit)}`} labelS={labelS}>
                   <input type="text" inputMode="decimal" value={form.lowStockThreshold} onChange={e => set("lowStockThreshold", e.target.value.replace(/[^0-9.]/g, ""))} style={inp} placeholder="10" />
                 </Field>
 
-                <Field label={L.cost} required labelS={labelS}>
+                <Field label={`${L.cost} / ${getUnitLabel(form.unit)}`} required labelS={labelS}>
                   <input type="text" inputMode="decimal" value={form.purchasePrice} onChange={e => set("purchasePrice", e.target.value.replace(/[^0-9.]/g, ""))} style={inp} placeholder="0" />
                 </Field>
                 <Field label={L.subCat} labelS={labelS}>
@@ -498,7 +520,7 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
                     onRemove={() => removeFromList(LS.locations, locations, setLocations, form.location, () => set("location", ""))} />
                 </Field>
 
-                <Field label={L.sale} required labelS={labelS}>
+                <Field label={`${L.sale} / ${getUnitLabel(form.unit)}`} required labelS={labelS}>
                   <input type="text" inputMode="decimal" value={form.price} onChange={e => set("price", e.target.value.replace(/[^0-9.]/g, ""))} style={inp} placeholder="0" />
                 </Field>
                 <Field label={L.group} labelS={labelS}>
@@ -603,18 +625,9 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
 
                 <div style={boxS}>
                   <div style={{ fontSize: 11, fontWeight: 800, color: th.textMuted, marginBottom: 8 }}>{L.unit}</div>
-                  <Field label={L.baseUnit} labelS={labelS}>
-                    <select value={form.unit} onChange={e => set("unit", e.target.value)} style={inp}>
-                      {UNITS.map(u => <option key={u} value={u} style={{ background: th.bgModal }}>{u}</option>)}
-                    </select>
-                  </Field>
-                  <div style={{ height: 8 }} />
-                  <Field label={L.secUnit} labelS={labelS}>
-                    <select value={form.secondaryUnit} onChange={e => set("secondaryUnit", e.target.value)} style={inp}>
-                      <option value="">—</option>
-                      {UNITS.map(u => <option key={u} value={u} style={{ background: th.bgModal }}>{u}</option>)}
-                    </select>
-                  </Field>
+                  <select value={form.unit} onChange={e => set("unit", e.target.value)} style={inp}>
+                    {unitOptions.map(u => <option key={u.value} value={u.value} style={{ background: th.bgModal }}>{u.label}</option>)}
+                  </select>
                 </div>
 
                 <div style={boxS}>
@@ -638,8 +651,8 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
               </div>
 
               <div style={{ display: "flex", justifyContent: "center", gap: 10, flexWrap: "wrap", padding: "4px 0 2px" }}>
-                <ActionBtn isMobile={isMobile} label={L.save} icon="💾" color="#2563eb" onClick={saveNew} disabled={saving || !canSave() || !!editingId} />
-                <ActionBtn isMobile={isMobile} label={L.update} icon="🔄" color="#16a34a" onClick={updateExisting} disabled={saving || !editingId || !canSave()} />
+                <ActionBtn isMobile={isMobile} label={L.save} icon="💾" color="#2563eb" onClick={saveNew} disabled={saving || !canSave() || !!editingId} save />
+                <ActionBtn isMobile={isMobile} label={L.update} icon="🔄" color="#16a34a" onClick={updateExisting} disabled={saving || !editingId || !canSave()} save />
                 <ActionBtn isMobile={isMobile} label={L.del} icon="✖" color="#dc2626" onClick={delCurrent} disabled={saving || !editingId} />
                 <ActionBtn isMobile={isMobile} label={L.clearFields} icon="🧹" color="#0d9488" onClick={clearFields} disabled={saving} />
               </div>
@@ -682,7 +695,7 @@ export default function HardwareManageModal({ products, loadProducts, loadPurcha
                             <td style={{ padding: "8px 10px", color: th.text, fontWeight: 700, whiteSpace: "nowrap" }}>{p.name}</td>
                             <td style={{ padding: "8px 10px", color: th.textMuted }}>{p.barcode || "—"}</td>
                             <td style={{ padding: "8px 10px", color: th.text }}>{formatPKR(Number(p.purchasePrice) || 0)}</td>
-                            <td style={{ padding: "8px 10px", color: "#16a34a", fontWeight: 700 }}>{formatPKR(Number(p.price) || 0)}</td>
+                            <td style={{ padding: "8px 10px", color: "#16a34a", fontWeight: 700 }}>{formatPKR(hardwareSalePrice(p, purchases))}</td>
                             <td style={{ padding: "8px 10px", color: th.textMuted }}>{p.unit || "piece"}</td>
                             <td style={{ padding: "8px 10px", color: th.text }}>{p.brand || "—"}</td>
                             <td style={{ padding: "8px 10px", color: th.text }}>{p.subType || "—"}</td>

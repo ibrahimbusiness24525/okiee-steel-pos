@@ -3,8 +3,107 @@ import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard } from "../components/shared";
 import { api } from "../utils/api";
-import { formatPKR } from "../utils/helpers";
+import { formatPKR, loadShopProfile, printThermalOrA4 } from "../utils/helpers";
 import { PAKISTAN_BANKS } from "../utils/constants";
+import { liveBalance } from "../utils/tradeFinance";
+import { expenseApi, ensurePendingAccountCuts } from "../utils/expenseStore";
+import { buildAccountStatement } from "../utils/accountStatement";
+import { flushLocalAccountDeltas } from "../utils/accountBalance";
+
+function OutlineBtn({ onClick, color, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 10px",
+        borderRadius: 8, border: `1px solid ${color}55`, background: "transparent",
+        color, cursor: "pointer", fontWeight: 700, fontSize: 12, whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function AccountStatementSheet({ acc, built, isUrdu }) {
+  const sp = loadShopProfile();
+  const ownerLines = (sp.owners || []).filter((o) => o.name || o.nameUr);
+  const shopName = isUrdu ? (sp.shopNameUr || sp.shopName) : sp.shopName;
+  const address = isUrdu ? (sp.addressUr || sp.address) : sp.address;
+  const phoneLine = (o) => isUrdu
+    ? `${o.nameUr || o.name}: ${o.phone}`
+    : `${o.name}: ${o.phone}`;
+  const dash = { borderTop: "1px dashed #000", margin: "8px 0" };
+  const page = {
+    width: "65mm", margin: "0 auto", fontFamily: "Arial, sans-serif", fontSize: "12px",
+    color: "#000", background: "#fff", padding: "8px 8px 12px", boxSizing: "border-box",
+  };
+  const kind = acc.type === "bank" ? (isUrdu ? "بینک" : "Bank")
+    : acc.type === "wallet" ? (isUrdu ? "والٹ" : "Wallet")
+      : (isUrdu ? "نقد" : "Cash");
+  return (
+    <div style={{ background: "#f0f0f0", padding: 14, borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto" }}>
+      <div id="thermal-invoice" style={page}>
+        {sp.logoBase64 && (
+          <div style={{ textAlign: "center", marginBottom: 6 }}>
+            <img src={sp.logoBase64} alt="logo" style={{ maxWidth: 56, maxHeight: 40, objectFit: "contain" }} />
+          </div>
+        )}
+        {shopName ? <div style={{ textAlign: "center", fontSize: 18, fontWeight: 800, lineHeight: "24px" }}>{shopName}</div> : null}
+        {address && <div style={{ textAlign: "center", fontSize: 10, marginTop: 4 }}>{address}</div>}
+        {ownerLines.slice(0, 3).map((o, i) => (
+          <div key={i} style={{ textAlign: "center", fontSize: 10, marginTop: 1 }}>{phoneLine(o)}</div>
+        ))}
+        <div style={dash} />
+        <div style={{ textAlign: "center", fontWeight: 800, fontSize: 13 }}>
+          {isUrdu ? "بینک / والٹ بیان" : "Bank / Wallet statement"}
+        </div>
+        <div style={{ marginTop: 8, fontWeight: 800, fontSize: 12 }}>{acc.name}</div>
+        <div style={{ fontSize: 11 }}>{kind}{acc.bankName ? ` · ${acc.bankName}` : ""}</div>
+        {acc.accountNumber ? <div style={{ fontSize: 11, fontFamily: "monospace" }}>{acc.accountNumber}</div> : null}
+        <div style={{ marginTop: 6, fontWeight: 800, fontSize: 13 }}>
+          {isUrdu ? "بیلنس" : "Balance"}: {formatPKR(built.closing)}
+        </div>
+        <div style={dash} />
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 800, padding: "3px 0" }}>
+          <span>{isUrdu ? "ابتدائی بیلنس" : "Opening"}</span>
+          <span>{formatPKR(built.opening)}</span>
+        </div>
+        {(built.lines || []).length === 0 && (
+          <div style={{ fontSize: 11, padding: "4px 0" }}>{isUrdu ? "اس میں کوئی حرکت نہیں" : "No movements yet"}</div>
+        )}
+        {(built.lines || []).map((l, i) => (
+          <div key={i} style={{ padding: "4px 0", borderBottom: "1px dotted #ccc" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 700 }}>
+              <span>{l.date} · {l.label}</span>
+              <span>{l.inAmt > 0 ? `+${formatPKR(l.inAmt)}` : `−${formatPKR(l.outAmt)}`}</span>
+            </div>
+            {l.detail ? <div style={{ fontSize: 10, color: "#444" }}>{l.detail}</div> : null}
+            <div style={{ fontSize: 10, textAlign: "right" }}>{isUrdu ? "بیلنس" : "Bal"} {formatPKR(l.balance)}</div>
+          </div>
+        ))}
+        <div style={dash} />
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+          <span>{isUrdu ? "کل اندر" : "Total in"}</span>
+          <span style={{ fontWeight: 700 }}>{formatPKR(built.totalIn)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+          <span>{isUrdu ? "کل باہر" : "Total out"}</span>
+          <span style={{ fontWeight: 700 }}>{formatPKR(built.totalOut)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 800, marginTop: 4 }}>
+          <span>{isUrdu ? "اختتامی بیلنس" : "Closing"}</span>
+          <span>{formatPKR(built.closing)}</span>
+        </div>
+        <div style={dash} />
+        <div style={{ textAlign: "center", fontSize: 10, fontWeight: 700 }}>
+          {isUrdu ? "شکریہ" : "Thank you"}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AccountsPage() {
   const th = useTheme();
@@ -17,10 +116,19 @@ function AccountsPage() {
   const [form, setForm] = useState({type:"bank",name:"",bankName:"",accountNumber:"",openingBalance:"",notes:""});
   const [customBank, setCustomBank] = useState("");
   const [saving, setSaving] = useState(false);
+  const [stmtAcc, setStmtAcc] = useState(null);
+  const [stmtBuilt, setStmtBuilt] = useState(null);
+  const [stmtLoading, setStmtLoading] = useState(false);
   const f = (k)=>(v)=>setForm(p=>({...p,[k]:v}));
 
   const loadAccounts = async () => {
-    try { const r = await api.getAccounts(); if (r.success) setAccounts(r.accounts); }
+    try {
+      await flushLocalAccountDeltas();
+      const er = await expenseApi.list();
+      await ensurePendingAccountCuts(er.expenses || []);
+      const r = await api.getAccounts();
+      if (r.success) setAccounts(r.accounts);
+    }
     catch(e) { console.error(e); }
     finally { setLoadingData(false); }
   };
@@ -29,9 +137,10 @@ function AccountsPage() {
   const bankAccounts    = accounts.filter(a=>a.type==="bank");
   const cashAccounts    = accounts.filter(a=>a.type==="cash");
   const walletAccounts  = accounts.filter(a=>a.type==="wallet");
-  const totalBankBal    = bankAccounts.reduce((s,a)=>s+(Number(a.openingBalance)||0),0);
-  const totalCashBal    = cashAccounts.reduce((s,a)=>s+(Number(a.openingBalance)||0),0);
-  const totalWalletBal  = walletAccounts.reduce((s,a)=>s+(Number(a.openingBalance)||0),0);
+  const live = (a) => liveBalance(a);
+  const totalBankBal    = bankAccounts.reduce((s,a)=>s+live(a),0);
+  const totalCashBal    = cashAccounts.reduce((s,a)=>s+live(a),0);
+  const totalWalletBal  = walletAccounts.reduce((s,a)=>s+live(a),0);
   const totalAll        = totalBankBal + totalCashBal + totalWalletBal;
 
   const getAccId = (acc) => acc.id || acc._id;
@@ -59,13 +168,44 @@ function AccountsPage() {
       notes: form.notes
     };
     const res = editing ? await api.updateAccount(editing, payload) : await api.addAccount(payload);
-    if (res.success) { await loadAccounts(); setShowModal(false); } else alert(res.message || "Error saving account");
+    if (res.success) { await loadAccounts(); setShowModal(false); } else alert(res.message || "Error saving bank / wallet");
     setSaving(false);
   };
   const handleDelete = async (acc) => {
     if (!window.confirm(t.deleteAccountConfirm || "Delete karna chahte hain?")) return;
     const res = await api.deleteAccount(getAccId(acc));
     if (res.success) await loadAccounts(); else alert(res.message);
+  };
+
+  const openStatement = async (acc) => {
+    setStmtAcc(acc);
+    setStmtBuilt(null);
+    setStmtLoading(true);
+    try {
+      const [sr, pr, er] = await Promise.all([
+        api.getSales().catch(() => ({ sales: [] })),
+        api.getPurchases().catch(() => ({ purchases: [] })),
+        expenseApi.list(),
+      ]);
+      await ensurePendingAccountCuts(er.expenses || []);
+      const [accs, er2] = await Promise.all([api.getAccounts(), expenseApi.list()]);
+      let fresh = acc;
+      if (accs.success) {
+        setAccounts(accs.accounts || []);
+        fresh = (accs.accounts || []).find((a) => String(getAccId(a)) === String(getAccId(acc))) || acc;
+        setStmtAcc(fresh);
+      }
+      setStmtBuilt(buildAccountStatement(fresh, {
+        sales: sr.sales || [],
+        purchases: pr.purchases || [],
+        expenses: er2.expenses || er.expenses || [],
+      }));
+    } catch (e) {
+      console.error(e);
+      alert(e.message || "Could not load statement");
+    } finally {
+      setStmtLoading(false);
+    }
   };
 
   const isBank   = form.type === "bank";
@@ -97,7 +237,10 @@ function AccountsPage() {
     const badge = isB ? "🏦 Bank" : isW ? `${ws.icon} ${acc.bankName||"Wallet"}` : "💵 Cash";
 
     return (
-      <div style={{borderRadius:16,padding:isMobile?14:20,border:`1px solid ${bdr}`,background:bg,display:"flex",flexDirection:"column",gap:12}}>
+      <div
+        onClick={() => openStatement(acc)}
+        style={{borderRadius:16,padding:isMobile?14:20,border:`1px solid ${bdr}`,background:bg,display:"flex",flexDirection:"column",gap:12,cursor:"pointer"}}
+      >
         <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between"}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             <div style={{width:40,height:40,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",background:`${color}22`,fontSize:isW?20:16,flexShrink:0}}>
@@ -113,20 +256,25 @@ function AccountsPage() {
         </div>
         <div style={{borderTop:`1px solid ${bdr}`,paddingTop:12}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-            <span style={{color:th.textMuted,fontSize:12}}>{t.openingBalance||"Opening Balance"}</span>
-            <span style={{color,fontWeight:900,fontSize:16}}>{formatPKR(acc.openingBalance)}</span>
+            <span style={{color:th.textMuted,fontSize:12}}>{isUrdu?"موجودہ بیلنس":"Current Balance"}</span>
+            <span style={{color,fontWeight:900,fontSize:16}}>{formatPKR(live(acc))}</span>
+          </div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:6}}>
+            <span style={{color:th.textDim,fontSize:11}}>{t.openingBalance||"Opening Balance"}</span>
+            <span style={{color:th.textMuted,fontWeight:600,fontSize:12}}>{formatPKR(acc.openingBalance)}</span>
           </div>
           {acc.notes && <div style={{marginTop:8,padding:"6px 10px",borderRadius:8,background:`${color}11`,color:th.textMuted,fontSize:11}}>📝 {acc.notes}</div>}
         </div>
-        <div style={{display:"flex",gap:8}}>
-          <button onClick={()=>openEdit(acc)} style={{flex:1,padding:"7px",borderRadius:10,fontSize:12,color:"#93c5fd",border:"1px solid rgba(59,130,246,0.3)",background:"transparent",cursor:"pointer",fontFamily:"'Segoe UI',sans-serif"}}>✏️ {t.edit||"Edit"}</button>
-          <button onClick={()=>handleDelete(acc)} style={{flex:1,padding:"7px",borderRadius:10,fontSize:12,color:"#fca5a5",border:"1px solid rgba(239,68,68,0.3)",background:"transparent",cursor:"pointer",fontFamily:"'Segoe UI',sans-serif"}}>🗑️ {t.delete||"Delete"}</button>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}} onClick={(e)=>e.stopPropagation()}>
+          <button onClick={()=>openStatement(acc)} style={{flex:1,minWidth:90,padding:"7px",borderRadius:10,fontSize:12,color:color,border:`1px solid ${color}55`,background:"transparent",cursor:"pointer",fontFamily:"'Segoe UI',sans-serif",fontWeight:700}}>{isUrdu?"بیان":"Statement"}</button>
+          <button onClick={()=>openEdit(acc)} style={{flex:1,minWidth:70,padding:"7px",borderRadius:10,fontSize:12,color:"#93c5fd",border:"1px solid rgba(59,130,246,0.3)",background:"transparent",cursor:"pointer",fontFamily:"'Segoe UI',sans-serif"}}>✏️ {t.edit||"Edit"}</button>
+          <button onClick={()=>handleDelete(acc)} style={{flex:1,minWidth:70,padding:"7px",borderRadius:10,fontSize:12,color:"#fca5a5",border:"1px solid rgba(239,68,68,0.3)",background:"transparent",cursor:"pointer",fontFamily:"'Segoe UI',sans-serif"}}>🗑️ {t.delete||"Delete"}</button>
         </div>
       </div>
     );
   };
 
-  if (loadingData) return <div style={{textAlign:"center",padding:"60px",color:th.textDim,fontSize:14}}>⏳ {isUrdu ? "لوڈ ہو رہا ہے..." : "Loading accounts..."}</div>;
+  if (loadingData) return <div style={{textAlign:"center",padding:"60px",color:th.textDim,fontSize:14}}>⏳ {isUrdu ? "لوڈ ہو رہا ہے..." : "Loading banks and wallets..."}</div>;
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:20}}>
@@ -135,14 +283,14 @@ function AccountsPage() {
         <StatCard label={isUrdu?"بینک":"Banks"}        value={bankAccounts.length}   icon={ICONS.bank}   color="#60a5fa" sub={formatPKR(totalBankBal)}/>
         <StatCard label={isUrdu?"نقد":"Cash"}          value={cashAccounts.length}   icon={ICONS.wallet} color="#34d399" sub={formatPKR(totalCashBal)}/>
         <StatCard label={isUrdu?"والٹ":"Wallets"}      value={walletAccounts.length} icon={ICONS.coins}  color="#a78bfa" sub={formatPKR(totalWalletBal)}/>
-        <StatCard label={isUrdu?"کل بیلنس":"Total"}    value={formatPKR(totalAll)}   icon={ICONS.coins}  color="#fbbf24" sub={`${accounts.length} accounts`}/>
+        <StatCard label={isUrdu?"کل بیلنس":"Total"}    value={formatPKR(totalAll)}   icon={ICONS.coins}  color="#fbbf24" sub={`${accounts.length} ${isUrdu ? "بینک / والٹ" : "banks / wallets"}`}/>
       </div>
 
       {/* ── Header ── */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-        <p style={{color:th.textMuted,fontSize:13,margin:0}}>{accounts.length} {isUrdu?"اکاؤنٹس":"accounts"}</p>
+        <p style={{color:th.textMuted,fontSize:13,margin:0}}>{accounts.length} {isUrdu?"بینک / والٹ":"banks / wallets"}</p>
         <button onClick={openAdd} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 16px",borderRadius:12,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#1abc9c,#2980b9)",color:"white",fontWeight:600,fontSize:13}}>
-          <Icon path={ICONS.plus} size={14}/>{isMobile?"+":t.addAccount||"Add Account"}
+          <Icon path={ICONS.plus} size={14}/>{isMobile?"+":t.addAccount||"Add Bank / Wallet"}
         </button>
       </div>
 
@@ -151,7 +299,7 @@ function AccountsPage() {
         <div>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
             <span style={{fontSize:16}}>🏦</span>
-            <h3 style={{color:th.text,fontWeight:700,margin:0,fontSize:14}}>{isUrdu?"بینک اکاؤنٹس":"Bank Accounts"}</h3>
+            <h3 style={{color:th.text,fontWeight:700,margin:0,fontSize:14}}>{isUrdu?"بینک":"Banks"}</h3>
             <span style={{fontSize:11,padding:"2px 10px",borderRadius:20,background:"rgba(96,165,250,0.15)",color:"#60a5fa",fontWeight:600}}>{bankAccounts.length}</span>
             <span style={{marginLeft:"auto",color:"#60a5fa",fontWeight:700,fontSize:13}}>{formatPKR(totalBankBal)}</span>
           </div>
@@ -181,7 +329,7 @@ function AccountsPage() {
         <div>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
             <span style={{fontSize:16}}>💵</span>
-            <h3 style={{color:th.text,fontWeight:700,margin:0,fontSize:14}}>{isUrdu?"نقد اکاؤنٹس":"Cash Accounts"}</h3>
+            <h3 style={{color:th.text,fontWeight:700,margin:0,fontSize:14}}>{isUrdu?"نقد":"Cash"}</h3>
             <span style={{fontSize:11,padding:"2px 10px",borderRadius:20,background:"rgba(52,211,153,0.15)",color:"#34d399",fontWeight:600}}>{cashAccounts.length}</span>
             <span style={{marginLeft:"auto",color:"#34d399",fontWeight:700,fontSize:13}}>{formatPKR(totalCashBal)}</span>
           </div>
@@ -195,21 +343,21 @@ function AccountsPage() {
       {accounts.length===0 && (
         <div style={{textAlign:"center",padding:"48px 24px",borderRadius:16,border:`2px dashed ${th.border}`,background:th.bgCard}}>
           <div style={{fontSize:40,marginBottom:10}}>🏦</div>
-          <p style={{color:th.textMuted,fontSize:14,fontWeight:600,margin:"0 0 6px"}}>{t.noAccountsYet||"Koi account nahi"}</p>
+          <p style={{color:th.textMuted,fontSize:14,fontWeight:600,margin:"0 0 6px"}}>{t.noAccountsYet||"No banks or wallets yet"}</p>
           <button onClick={openAdd} style={{display:"inline-flex",alignItems:"center",gap:8,padding:"10px 20px",borderRadius:12,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#1abc9c,#2980b9)",color:"white",fontWeight:600,fontSize:14}}>
-            <Icon path={ICONS.plus} size={16}/>{t.addAccount||"Add Account"}
+            <Icon path={ICONS.plus} size={16}/>{t.addAccount||"Add Bank / Wallet"}
           </button>
         </div>
       )}
 
       {/* ── Modal ── */}
       {showModal && (
-        <Modal title={editing ? (t.editAccount||"Edit Account") : (t.addAccount||"Add Account")} onClose={()=>setShowModal(false)}>
+        <Modal title={editing ? (t.editAccount||"Edit Bank / Wallet") : (t.addAccount||"Add Bank / Wallet")} onClose={()=>setShowModal(false)}>
           <div style={{display:"flex",flexDirection:"column",gap:16}}>
 
             {/* Account Type — 3 options */}
             <div>
-              <label style={{color:th.textMuted,fontSize:11,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8,display:"block"}}>{t.accountType||"Account Type"} <span style={{color:"#f87171"}}>*</span></label>
+              <label style={{color:th.textMuted,fontSize:11,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8,display:"block"}}>{t.accountType||"Type"} <span style={{color:"#f87171"}}>*</span></label>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
                 {[
                   {val:"bank",   icon:ICONS.bank,   label:isUrdu?"🏦 بینک":"🏦 Bank",   color:"#60a5fa"},
@@ -271,7 +419,7 @@ function AccountsPage() {
             )}
 
             <FInput
-              label={(isBank||isWallet) ? (isUrdu?"لیبل (اختیاری)":"Label (optional)") : ((t.accountName||"Account Name")+" *")}
+              label={(isBank||isWallet) ? (isUrdu?"لیبل (اختیاری)":"Label (optional)") : ((t.accountName||"Name")+" *")}
               value={form.name}
               onChange={f("name")}
               placeholder={isBank?(isUrdu?"مثلاً میرا HBL":"e.g. My HBL"):isWallet?(isUrdu?"مثلاً میرا EasyPaisa":"e.g. My EasyPaisa"):(isUrdu?"مثلاً دکان کیش":"e.g. Shop Cash")}
@@ -292,7 +440,90 @@ function AccountsPage() {
               <textarea value={form.notes} onChange={e=>f("notes")(e.target.value)} placeholder={isUrdu?"کوئی نوٹ...":"Any notes..."} rows={2} style={{...inpS,resize:"vertical"}} onFocus={e=>e.target.style.borderColor="#1abc9c"} onBlur={e=>e.target.style.borderColor=th.inputBorder}/>
             </div>
 
-            <SaveBtn label={saving?"...":(editing?(t.update||"Update"):(t.addAccount||"Add Account"))} onClick={handleSave} loading={saving} disabled={!canSave}/>
+            <SaveBtn label={saving?"...":(editing?(t.update||"Update"):(t.addAccount||"Add Bank / Wallet"))} onClick={handleSave} loading={saving} disabled={!canSave}/>
+          </div>
+        </Modal>
+      )}
+
+      {stmtAcc && (
+        <Modal title={`${stmtAcc.name} · ${isUrdu ? "بیان" : "Statement"}`} onClose={() => { setStmtAcc(null); setStmtBuilt(null); }} wide>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {stmtLoading && (
+              <div style={{ textAlign: "center", padding: 24, color: th.textDim, fontSize: 13 }}>
+                {isUrdu ? "لوڈ ہو رہا ہے..." : "Loading statement..."}
+              </div>
+            )}
+            {!stmtLoading && stmtBuilt && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 8 }}>
+                  <div style={{ padding: "10px 12px", borderRadius: 12, background: th.bgCard, border: `1px solid ${th.border}` }}>
+                    <div style={{ fontSize: 10, color: th.textMuted, fontWeight: 700, letterSpacing: "0.06em" }}>{isUrdu ? "موجودہ" : "CURRENT"}</div>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: th.text }}>{formatPKR(liveBalance(stmtAcc))}</div>
+                  </div>
+                  <div style={{ padding: "10px 12px", borderRadius: 12, background: th.bgCard, border: `1px solid ${th.border}` }}>
+                    <div style={{ fontSize: 10, color: th.textMuted, fontWeight: 700, letterSpacing: "0.06em" }}>{isUrdu ? "بیان بیلنس" : "STATEMENT"}</div>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: th.text }}>{formatPKR(stmtBuilt.closing)}</div>
+                  </div>
+                </div>
+                <div style={{ overflowX: "auto", borderRadius: 12, border: `1px solid ${th.border}` }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: th.bgCard, color: th.textMuted, textAlign: "left" }}>
+                        <th style={{ padding: "8px 10px", fontWeight: 700 }}>{isUrdu ? "تاریخ" : "Date"}</th>
+                        <th style={{ padding: "8px 10px", fontWeight: 700 }}>{isUrdu ? "تفصیل" : "Detail"}</th>
+                        <th style={{ padding: "8px 10px", fontWeight: 700, textAlign: "right" }}>{isUrdu ? "اندر" : "In"}</th>
+                        <th style={{ padding: "8px 10px", fontWeight: 700, textAlign: "right" }}>{isUrdu ? "باہر" : "Out"}</th>
+                        <th style={{ padding: "8px 10px", fontWeight: 700, textAlign: "right" }}>{isUrdu ? "بیلنس" : "Balance"}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr style={{ borderBottom: `1px solid ${th.border}` }}>
+                        <td style={{ padding: "8px 10px", color: th.textMuted }}>—</td>
+                        <td style={{ padding: "8px 10px", color: th.text, fontWeight: 700 }}>{isUrdu ? "ابتدائی بیلنس" : "Opening balance"}</td>
+                        <td style={{ padding: "8px 10px" }} />
+                        <td style={{ padding: "8px 10px" }} />
+                        <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: th.text }}>{formatPKR(stmtBuilt.opening)}</td>
+                      </tr>
+                      {stmtBuilt.lines.length === 0 && (
+                        <tr>
+                          <td colSpan={5} style={{ padding: 14, textAlign: "center", color: th.textDim }}>
+                            {isUrdu ? "کوئی حرکت نہیں" : "No movements on this bank / wallet yet"}
+                          </td>
+                        </tr>
+                      )}
+                      {stmtBuilt.lines.map((l, i) => (
+                        <tr key={i} style={{ borderBottom: `1px solid ${th.border}` }}>
+                          <td style={{ padding: "8px 10px", color: th.textMuted, whiteSpace: "nowrap" }}>{l.date || "—"}</td>
+                          <td style={{ padding: "8px 10px" }}>
+                            <div style={{ color: th.text, fontWeight: 700 }}>{l.label}</div>
+                            {l.detail ? <div style={{ color: th.textDim, fontSize: 11 }}>{l.detail}</div> : null}
+                          </td>
+                          <td style={{ padding: "8px 10px", textAlign: "right", color: l.inAmt ? "#34d399" : th.textDim, fontWeight: l.inAmt ? 700 : 400 }}>
+                            {l.inAmt ? formatPKR(l.inAmt) : "—"}
+                          </td>
+                          <td style={{ padding: "8px 10px", textAlign: "right", color: l.outAmt ? "#f87171" : th.textDim, fontWeight: l.outAmt ? 700 : 400 }}>
+                            {l.outAmt ? formatPKR(l.outAmt) : "—"}
+                          </td>
+                          <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: th.text }}>{formatPKR(l.balance)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <OutlineBtn color="#0f766e" onClick={() => printThermalOrA4("thermal")}>
+                    <Icon path={ICONS.print} size={13} /> {isUrdu ? "پرنٹ" : "Print"}
+                  </OutlineBtn>
+                  <OutlineBtn color="#3b82f6" onClick={() => printThermalOrA4("a4")}>A4</OutlineBtn>
+                  <OutlineBtn color="#7c3aed" onClick={() => printThermalOrA4("pdf", `statement-${stmtAcc.name}`)}>
+                    PDF
+                  </OutlineBtn>
+                </div>
+                <div style={{ position: "fixed", left: -10000, top: 0, width: 260, pointerEvents: "none" }} aria-hidden="true">
+                  <AccountStatementSheet acc={stmtAcc} built={stmtBuilt} isUrdu={isUrdu} />
+                </div>
+              </>
+            )}
           </div>
         </Modal>
       )}

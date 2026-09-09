@@ -12,13 +12,25 @@ import HardwareManageModal from "../components/HardwareManageModal";
 // ═══════════════════════════════════════════════════════════════════════════
 const EMPTY_FORM = { category:"", name:"", pipeType:"", pipeSubType:"", pipeInch:"", gauge:"", length:"", weight:"", basePrice:"", percentage:"", price:"", purchasePrice:"", subType:"", stock:"", unit:"piece", width:"" };
 
-function ProductsPage({ products, loadProducts, loadPurchases }) {
+function ProductsPage({ products, purchases = [], loadProducts, loadPurchases }) {
   const th = useTheme(); const {t,lang} = useLang(); const { isMobile } = useResponsive();
   const isUrdu = lang === "ur";
   const [showModal,setShowModal]=useState(false); const [form,setForm]=useState(EMPTY_FORM);
   const [editing,setEditing]=useState(null); const [saving,setSaving]=useState(false);
   const [catTab,setCatTab]=useState("all"); const [search,setSearch]=useState("");
   const [showHwModal,setShowHwModal]=useState(false); const [hwSeed,setHwSeed]=useState(null);
+  const [revealedCost,setRevealedCost]=useState(() => new Set());
+
+  const toggleCostPrice = (id, e) => {
+    e?.stopPropagation?.();
+    e?.preventDefault?.();
+    setRevealedCost((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const openAdd  = () => { setForm(EMPTY_FORM); setEditing(null); setShowModal(true); };
   const openHwAdd = () => { setHwSeed(null); setShowHwModal(true); };
@@ -173,18 +185,42 @@ function ProductsPage({ products, loadProducts, loadPurchases }) {
         </div>
       </div>
       <Table
-        cols={[t.number, t.pipeProduct, t.price, t.type, t.subType||"Sub Type"]}
+        cols={[t.number, t.pipeProduct, isUrdu ? "خریداری / فروخت قیمت" : "Cost / Sale Price", t.type, t.subType||"Sub Type"]}
         rows={displayed.map((p,i)=>{
           const cc=catColor[p.category]||catColor.Custom;
           const isPipe = p.category==="Pipe";
-          const displayAmt = isPipe ? parseFloat(p.price) : (parseFloat(p.price) || parseFloat(p.purchasePrice));
-          const priceNum = isNaN(displayAmt) ? NaN : displayAmt;
+          const cost = Number(p.purchasePrice) || 0;
+          const sale = Number(p.price) || 0;
+          const costOpen = revealedCost.has(p._id);
+          const fmtRs = (n) => (!isNaN(n) && n > 0) ? `Rs ${n.toLocaleString("en-PK")}` : "—";
+          const costText = costOpen ? fmtRs(cost) : (cost > 0 ? "••••" : "—");
+          const eyeBtn = cost > 0 ? (
+            <button
+              type="button"
+              title={costOpen ? (isUrdu ? "خریداری چھپائیں" : "Hide cost") : (isUrdu ? "خریداری دکھائیں" : "Show cost")}
+              onClick={(e) => toggleCostPrice(p._id, e)}
+              style={{
+                display:"inline-flex", alignItems:"center", justifyContent:"center",
+                width:22, height:22, padding:0, marginLeft:4, flexShrink:0,
+                border:`1px solid ${th.border}`, borderRadius:6, cursor:"pointer",
+                background: costOpen ? "rgba(148,163,184,0.18)" : th.bgCard,
+                color: costOpen ? th.text : th.textMuted, verticalAlign:"middle",
+              }}
+            >
+              <Icon path={costOpen ? ICONS.eye_off : ICONS.eye} size={13}/>
+            </button>
+          ) : null;
           return {data:p,cells:[
             <span style={{color:th.textDim,fontSize:14}}>{i+1}</span>,
             <span style={{fontWeight:600,color:th.text,fontSize:15}}>{getProductDisplayName(p)}</span>,
-            <span style={{color:"#34d399",fontSize:14,fontWeight:600}}>
-              {!isNaN(priceNum)&&priceNum>0?`Rs ${priceNum.toLocaleString('en-PK')}`:"—"}
-              {isPipe?(priceNum>0?<span style={{color:th.textMuted,fontSize:12,fontWeight:400}}> /ft</span>:null):p.category==="Hardware"?<span style={{color:th.textMuted,fontSize:12,fontWeight:400}}> {isUrdu?"فروخت":"sale"}</span>:<span style={{color:th.textMuted,fontSize:12,fontWeight:400}}> {isUrdu?"خریداری":"purchase"}</span>}
+            <span style={{display:"inline-flex",alignItems:"center",gap:5,flexWrap:"nowrap",whiteSpace:"nowrap",fontSize:13,fontWeight:600}}>
+              <span style={{color:th.textMuted}}>{costText}</span>
+              {eyeBtn}
+              <span style={{color:th.textMuted,fontWeight:500}}>/</span>
+              <span style={{color:"#34d399",fontWeight:700}}>
+                {fmtRs(sale)}
+                {isPipe && sale>0 ? <span style={{color:th.textMuted,fontSize:12,fontWeight:400}}> /ft</span> : null}
+              </span>
             </span>,
             <span style={{fontSize:13,padding:"3px 10px",borderRadius:20,fontWeight:600,background:cc.bg,color:cc.color}}>
               {getTypeLabel(p)}
@@ -215,6 +251,7 @@ function ProductsPage({ products, loadProducts, loadPurchases }) {
       {showHwModal&&(
         <HardwareManageModal
           products={products}
+          purchases={purchases}
           loadProducts={loadProducts}
           loadPurchases={loadPurchases}
           seed={hwSeed}

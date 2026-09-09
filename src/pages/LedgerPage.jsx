@@ -2,11 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn } from "../components/shared";
-import { formatPKR, todayStr } from "../utils/helpers";
+import { formatPKR, todayStr, printThermalOrA4, downloadInvoicePdf } from "../utils/helpers";
 import { ledgerApi } from "../utils/ledgerStore";
+import { ensureParty, liveBalance } from "../utils/tradeFinance";
+import { adjustAccountBalance } from "../utils/accountBalance";
+import { useAccounts, accId, accLabel } from "../components/PaymentTerms";
+import PartyLedgerSheet, { buildPartyLedger } from "../components/PartyLedgerSheet";
 
 const EMPTY_PARTY = { name: "", phone: "", partyType: "", address: "", notes: "" };
-const EMPTY_TX = { role: "", partyId: "", amount: "", note: "" };
+const EMPTY_TX = { role: "", partyId: "", amount: "", note: "", accountId: "" };
 
 function LedgerPage({ purchases = [], sales = [] }) {
   const th = useTheme();
@@ -29,9 +33,13 @@ function LedgerPage({ purchases = [], sales = [] }) {
   const [txKind, setTxKind] = useState("take");
   const [txForm, setTxForm] = useState(EMPTY_TX);
   const [savingTx, setSavingTx] = useState(false);
+  const accounts = useAccounts();
 
   const [detail, setDetail] = useState(null);
   const [entries, setEntries] = useState([]);
+  const [ledgerFrom, setLedgerFrom] = useState("");
+  const [ledgerTo, setLedgerTo] = useState("");
+  const [pendingPrint, setPendingPrint] = useState(null);
 
   const L = isUrdu ? {
     createSupplier: "سپلائر بنائیں", createCustomer: "گاہک بنائیں",
@@ -45,12 +53,19 @@ function LedgerPage({ purchases = [], sales = [] }) {
     none: "ابھی کوئی کھاتہ نہیں",
     needName: "نام ضروری ہے", needPhone: "نمبر ضروری ہے",
     needWho: "پہلے سپلائر یا گاہک منتخب کریں", needParty: "نام منتخب کریں",
-    needAmt: "رقم ضروری ہے",
+    needAmt: "رقم ضروری ہے", needAccount: "بینک / والٹ منتخب کریں",
+    account: "بینک / والٹ",
+    takeHint: "رقم منتخب بینک / والٹ میں آئے گی",
+    giveHint: "رقم منتخب بینک / والٹ سے نکلے گی",
     youOwe: "آپ ادا کریں گے", theyOwe: "وہ ادا کریں گے", settled: "حساب صاف",
     edit: "ترمیم", del: "حذف", delParty: "کیا یہ کھاتہ حذف کریں؟",
     delTx: "کیا یہ اندراج حذف کریں؟",
     loading: "لوڈ ہو رہا ہے...", importBtn: "خریداری/فروخت سے درآمد",
     history: "اندراجات",
+    printA4: "A4 پرنٹ", printThermal: "تھرمل", printPdf: "PDF",
+    from: "سے", to: "تک",
+    source: "حوالہ", desc: "تفصیل", debit: "ڈیبٹ", credit: "کریڈٹ", balance: "بیلنس",
+    opening: "اوپننگ بیلنس", total: "کل",
   } : {
     createSupplier: "Create Supplier", createCustomer: "Create Customer",
     takeCredit: "Take Credit", giveCredit: "Give Credit",
@@ -63,17 +78,39 @@ function LedgerPage({ purchases = [], sales = [] }) {
     none: "No accounts yet",
     needName: "Name is required", needPhone: "Number is required",
     needWho: "Choose supplier or customer first", needParty: "Select a name",
-    needAmt: "Amount is required",
+    needAmt: "Amount is required", needAccount: "Select a bank or wallet",
+    account: "Bank / Wallet",
+    takeHint: "Money will come IN to this bank or wallet",
+    giveHint: "Money will go OUT of this bank or wallet",
     youOwe: "You will pay", theyOwe: "They will pay you", settled: "Settled",
     edit: "Edit", del: "Delete", delParty: "Delete this account?",
     delTx: "Delete this entry?",
     loading: "Loading...", importBtn: "Import from Purchases / Sales",
     history: "Entries",
+    printA4: "A4 Print", printThermal: "Thermal", printPdf: "PDF",
+    from: "From", to: "To",
+    source: "Source", desc: "Description", debit: "Debit", credit: "Credit", balance: "Balance",
+    opening: "Opening Balance", total: "Total",
   };
 
   const load = async () => {
     try {
-      const r = await ledgerApi.list();
+      let r = await ledgerApi.list();
+      if (!r.success) { alert(r.message || "Could not load"); return; }
+      const have = new Set(
+        (r.parties || []).map((p) => `${p.type}::${String(p.name || "").trim().toLowerCase()}`)
+      );
+      const missingFromTrade = (purchases || []).some((p) => {
+        const n = (p.supplier || p.supplierName || "").trim();
+        return n && n !== "—" && !have.has(`supplier::${n.toLowerCase()}`);
+      }) || (sales || []).some((s) => {
+        const n = (s.customer || "").trim();
+        return n && n !== "—" && !have.has(`customer::${n.toLowerCase()}`);
+      });
+      if (missingFromTrade) {
+        await ledgerApi.importNames(purchases, sales);
+        r = await ledgerApi.list();
+      }
       if (r.success) { setParties(r.parties || []); setRemote(r.remote !== false); }
       else alert(r.message || "Could not load");
     } catch (e) {
@@ -84,14 +121,40 @@ function LedgerPage({ purchases = [], sales = [] }) {
   };
   useEffect(() => { load(); }, []);
 
+  const directory = useMemo(() => {
+    const list = [...parties];
+    const have = new Set(list.map((p) => `${p.type}::${String(p.name || "").trim().toLowerCase()}`));
+    const addGhost = (type, name) => {
+      const n = (name || "").trim();
+      if (!n || n === "—") return;
+      const key = `${type}::${n.toLowerCase()}`;
+      if (have.has(key)) return;
+      have.add(key);
+      list.push({
+        _id: `ghost:${type}:${n.toLowerCase()}`,
+        type,
+        name: n,
+        phone: "",
+        balance: 0,
+        payable: 0,
+        receivable: 0,
+        openingBalance: 0,
+        ghost: true,
+      });
+    };
+    (purchases || []).forEach((p) => addGhost("supplier", p.supplier || p.supplierName));
+    (sales || []).forEach((s) => addGhost("customer", s.customer));
+    return list;
+  }, [parties, purchases, sales]);
+
   const totals = useMemo(() => ({
-    payable: parties.reduce((s, p) => s + (Number(p.payable) || Math.max(0, -(Number(p.balance) || 0))), 0),
-    receivable: parties.reduce((s, p) => s + (Number(p.receivable) || Math.max(0, Number(p.balance) || 0)), 0),
-  }), [parties]);
+    payable: directory.reduce((s, p) => s + (Number(p.payable) || Math.max(0, -(Number(p.balance) || 0))), 0),
+    receivable: directory.reduce((s, p) => s + (Number(p.receivable) || Math.max(0, Number(p.balance) || 0)), 0),
+  }), [directory]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return parties.filter((p) => {
+    return directory.filter((p) => {
       const net = Number(p.balance) || 0;
       if (filter === "payable" && !(net < -0.5)) return false;
       if (filter === "receivable" && !(net > 0.5)) return false;
@@ -102,11 +165,11 @@ function LedgerPage({ purchases = [], sales = [] }) {
         || (p.phone || "").toLowerCase().includes(q)
         || (p.address || "").toLowerCase().includes(q);
     });
-  }, [parties, search, filter]);
+  }, [directory, search, filter]);
 
   const dropdownParties = useMemo(
-    () => parties.filter((p) => p.type === txForm.role).sort((a, b) => (a.name || "").localeCompare(b.name || "")),
-    [parties, txForm.role]
+    () => directory.filter((p) => p.type === txForm.role && !p.ghost).sort((a, b) => (a.name || "").localeCompare(b.name || "")),
+    [directory, txForm.role]
   );
 
   const openCreate = (role) => {
@@ -150,14 +213,6 @@ function LedgerPage({ purchases = [], sales = [] }) {
     } else alert(res.message);
     setSavingParty(false);
   };
-  const delParty = async (p) => {
-    if (!window.confirm(L.delParty)) return;
-    const res = await ledgerApi.remove(p._id);
-    if (res.success) {
-      if (detail && detail._id === p._id) { setDetail(null); setEntries([]); }
-      await load();
-    } else alert(res.message);
-  };
 
   const openTx = (kind) => {
     setTxKind(kind);
@@ -168,34 +223,54 @@ function LedgerPage({ purchases = [], sales = [] }) {
     if (!txForm.role) { alert(L.needWho); return; }
     if (!txForm.partyId) { alert(L.needParty); return; }
     if (!Number(txForm.amount) || Number(txForm.amount) <= 0) { alert(L.needAmt); return; }
+    if (accounts.length > 0 && !txForm.accountId) { alert(L.needAccount); return; }
     setSavingTx(true);
+    const acc = (accounts || []).find((a) => accId(a) === txForm.accountId);
+    const accountName = acc ? accLabel(acc) : "";
+    const amt = Number(txForm.amount);
     const res = await ledgerApi.addEntry(txForm.partyId, {
       kind: txKind,
-      amount: Number(txForm.amount),
+      amount: amt,
       date: todayStr(),
       note: txForm.note,
+      accountId: txForm.accountId || "",
+      accountName,
     });
-    if (res.success) { setShowTx(false); await load(); }
-    else alert(res.message);
+    if (res.success) {
+      if (txForm.accountId) {
+        try {
+          await adjustAccountBalance(txForm.accountId, {
+            amount: amt,
+            direction: txKind === "take" ? "in" : "out",
+            accountName,
+          });
+        } catch (e) {
+          console.error("account adjust failed", e);
+        }
+      }
+      setShowTx(false);
+      await load();
+    } else alert(res.message);
     setSavingTx(false);
   };
 
   const openDetail = async (p) => {
-    const res = await ledgerApi.get(p._id);
-    if (res.success) { setDetail(res.party); setEntries(res.entries || []); }
-    else alert(res.message);
-  };
-  const delTx = async (e) => {
-    if (!detail) return;
-    if (!window.confirm(L.delTx)) return;
-    const res = await ledgerApi.removeEntry(detail._id, e._id);
+    let id = p._id;
+    if (p.ghost) {
+      const created = await ensureParty(p.type, p.name);
+      id = created?._id || created?.id;
+      if (!id) { alert(isUrdu ? "کھاتہ نہیں کھل سکا" : "Could not open this account"); return; }
+      await load();
+    }
+    const res = await ledgerApi.get(id);
     if (res.success) {
       setDetail(res.party);
       setEntries(res.entries || []);
-      await load();
-    } else alert(res.message);
+      setLedgerFrom("");
+      setLedgerTo("");
+    }
+    else alert(res.message);
   };
-
   const doImport = async () => {
     const res = await ledgerApi.importNames(purchases, sales);
     if (res.success) {
@@ -219,6 +294,21 @@ function LedgerPage({ purchases = [], sales = [] }) {
     display: "flex", alignItems: "center", gap: 6, padding: isMobile ? "9px 12px" : "10px 16px",
     borderRadius: 12, border: "none", cursor: "pointer", fontWeight: 800, fontSize: isMobile ? 12 : 13, color: "#fff",
   };
+
+  useEffect(() => {
+    if (!pendingPrint || !detail) return;
+    const mode = pendingPrint;
+    const t = setTimeout(() => {
+      const file = `ledger-${String(detail.name || "party").replace(/\s+/g, "-")}`;
+      try {
+        if (mode === "pdf") downloadInvoicePdf(file);
+        else printThermalOrA4(mode, file);
+      } finally {
+        setPendingPrint(null);
+      }
+    }, 80);
+    return () => clearTimeout(t);
+  }, [pendingPrint]);
 
   if (loading) {
     return <div style={{ textAlign: "center", padding: 60, color: th.textDim }}>⏳ {L.loading}</div>;
@@ -371,6 +461,44 @@ function LedgerPage({ purchases = [], sales = [] }) {
               </div>
             )}
             <FInput label={L.amount} value={txForm.amount} onChange={(v) => setTxForm((p) => ({ ...p, amount: v.replace(/[^0-9.]/g, "") }))} required placeholder="0" />
+            <div>
+              <label style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, display: "block", marginBottom: 6 }}>
+                {L.account} {accounts.length > 0 ? <span style={{ color: "#f87171" }}>*</span> : null}
+              </label>
+              {accounts.length === 0 ? (
+                <div style={{ padding: "10px 12px", borderRadius: 10, border: `1px dashed ${th.border}`, color: th.textMuted, fontSize: 12 }}>
+                  {isUrdu ? "پہلے بینک اور والٹ میں کیش / بینک بنائیں" : "Add a cash or bank in Banks and Wallet first"}
+                </div>
+              ) : (
+                <select value={txForm.accountId} onChange={(e) => setTxForm((p) => ({ ...p, accountId: e.target.value }))} style={inpS}>
+                  <option value="">— {L.account} —</option>
+                  {accounts.filter((a) => (a.type || a.accountType) === "cash").length > 0 && (
+                    <optgroup label={isUrdu ? "نقد" : "Cash"}>
+                      {accounts.filter((a) => (a.type || a.accountType) === "cash").map((a) => (
+                        <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>{accLabel(a)} · {formatPKR(liveBalance(a))}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {accounts.filter((a) => (a.type || a.accountType) === "bank").length > 0 && (
+                    <optgroup label={isUrdu ? "بینک" : "Bank"}>
+                      {accounts.filter((a) => (a.type || a.accountType) === "bank").map((a) => (
+                        <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>{accLabel(a)} · {formatPKR(liveBalance(a))}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {accounts.filter((a) => (a.type || a.accountType) === "wallet").length > 0 && (
+                    <optgroup label={isUrdu ? "والٹ" : "Wallet"}>
+                      {accounts.filter((a) => (a.type || a.accountType) === "wallet").map((a) => (
+                        <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>{accLabel(a)} · {formatPKR(liveBalance(a))}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              )}
+              <div style={{ color: txKind === "take" ? "#16a34a" : "#dc2626", fontSize: 12, fontWeight: 700, marginTop: 6 }}>
+                {txKind === "take" ? L.takeHint : L.giveHint}
+              </div>
+            </div>
             <FInput label={L.note} value={txForm.note} onChange={(v) => setTxForm((p) => ({ ...p, note: v }))} placeholder="..." />
             <SaveBtn
               onClick={saveTx}
@@ -383,36 +511,100 @@ function LedgerPage({ purchases = [], sales = [] }) {
       )}
 
       {detail && (
-        <Modal title={detail.name} onClose={() => { setDetail(null); setEntries([]); }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Modal
+          title={detail.name}
+          onClose={() => { setDetail(null); setEntries([]); setPendingPrint(null); }}
+          xl
+          headerRight={
+            <>
+              {[
+                { id: "a4", label: L.printA4, color: "#2563eb" },
+                { id: "thermal", label: L.printThermal, color: "#0f766e" },
+                { id: "pdf", label: L.printPdf, color: "#7c3aed" },
+              ].map((b) => (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => setPendingPrint(b.id)}
+                  style={{ padding: "5px 9px", borderRadius: 8, border: "none", cursor: "pointer", background: b.color, color: "#fff", fontWeight: 800, fontSize: 11, whiteSpace: "nowrap" }}
+                >
+                  {b.label}
+                </button>
+              ))}
+            </>
+          }
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: isMobile ? 0 : 520 }}>
             <div style={{ color: th.textMuted, fontSize: 13 }}>{detail.phone || "—"}{detail.address ? ` · ${detail.address}` : ""}</div>
-            <div style={{ color: toneColor(tone(netOf(detail))), fontWeight: 900, fontSize: 22 }}>{formatPKR(Math.abs(netOf(detail)))}</div>
+            <div style={{ color: toneColor(tone(netOf(detail))), fontWeight: 900, fontSize: 26 }}>{formatPKR(Math.abs(netOf(detail)))}</div>
             <div style={{ color: toneColor(tone(netOf(detail))), fontWeight: 700, fontSize: 13 }}>{toneLabel(netOf(detail))}</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={() => openEdit(detail)} style={{ flex: 1, padding: 8, borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.text, cursor: "pointer", fontWeight: 700, fontSize: 12 }}>{L.edit}</button>
-              <button onClick={() => delParty(detail)} style={{ flex: 1, padding: 8, borderRadius: 10, border: "1px solid rgba(220,38,38,0.3)", background: "rgba(220,38,38,0.08)", color: "#dc2626", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>{L.del}</button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <button onClick={() => openEdit(detail)} style={{ padding: "8px 14px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.text, cursor: "pointer", fontWeight: 700, fontSize: 12 }}>{L.edit}</button>
+              <label style={{ color: th.textMuted, fontSize: 12, fontWeight: 700 }}>{L.from}</label>
+              <input type="date" value={ledgerFrom} onChange={(e) => setLedgerFrom(e.target.value)} style={{ ...inpS, width: "auto", padding: "6px 10px" }} />
+              <label style={{ color: th.textMuted, fontSize: 12, fontWeight: 700 }}>{L.to}</label>
+              <input type="date" value={ledgerTo} onChange={(e) => setLedgerTo(e.target.value)} style={{ ...inpS, width: "auto", padding: "6px 10px" }} />
             </div>
-            <div style={{ fontSize: 12, fontWeight: 800, color: th.textMuted }}>{L.history}</div>
-            {entries.length === 0 && <div style={{ color: th.textDim, fontSize: 13 }}>—</div>}
-            {entries.map((e) => {
-              const isTake = e.kind === "take" || (e.kind === "credit" && detail.type === "supplier");
-              const isGive = e.kind === "give" || (e.kind === "credit" && detail.type === "customer");
-              const red = isTake;
-              const green = isGive;
-              const label = e.kind === "take" ? L.takeCredit : e.kind === "give" ? L.giveCredit : e.kind;
+            {(() => {
+              const pack = buildPartyLedger({ party: detail, entries, from: ledgerFrom, to: ledgerTo, isUrdu });
+              const thS = { textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 800, color: th.textMuted, borderBottom: `1px solid ${th.border}`, whiteSpace: "nowrap" };
+              const tdS = { padding: "8px 10px", borderBottom: `1px solid ${th.border}`, fontSize: 13, color: th.text };
+              const numS = { ...tdS, textAlign: "right", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" };
               return (
-                <div key={e._id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "8px 0", borderTop: `1px solid ${th.border}` }}>
-                  <div>
-                    <div style={{ fontWeight: 800, fontSize: 12, color: red ? "#dc2626" : green ? "#16a34a" : th.text }}>{label}</div>
-                    <div style={{ fontSize: 11, color: th.textDim }}>{e.date} {e.note ? `· ${e.note}` : ""}</div>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: th.textMuted }}>{L.history}</div>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: th.text }}>{L.opening}: {formatPKR(pack.opening)}</div>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontWeight: 900, color: red ? "#dc2626" : green ? "#16a34a" : th.text }}>{formatPKR(e.amount)}</span>
-                    <button onClick={() => delTx(e)} style={{ background: "none", border: "none", cursor: "pointer", color: "#f87171" }}><Icon path={ICONS.trash} size={14} /></button>
+                  <div style={{ overflowX: "auto", border: `1px solid ${th.border}`, borderRadius: 12 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+                      <thead>
+                        <tr style={{ background: th.dark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.03)" }}>
+                          <th style={thS}>#</th>
+                          <th style={thS}>{isUrdu ? "تاریخ" : "Date"}</th>
+                          <th style={thS}>{L.source}</th>
+                          <th style={thS}>{L.desc}</th>
+                          <th style={{ ...thS, textAlign: "right" }}>{L.debit}</th>
+                          <th style={{ ...thS, textAlign: "right" }}>{L.credit}</th>
+                          <th style={{ ...thS, textAlign: "right" }}>{L.balance}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(pack.rows.length ? pack.rows : [{ date: "—", source: "—", description: "—", debit: 0, credit: 0, balance: pack.opening }]).map((r, i) => (
+                          <tr key={i}>
+                            <td style={tdS}>{i + 1}</td>
+                            <td style={{ ...tdS, whiteSpace: "nowrap" }}>{r.date}</td>
+                            <td style={tdS}>{r.source}</td>
+                            <td style={tdS}>{r.description}</td>
+                            <td style={numS}>{formatPKR(r.debit)}</td>
+                            <td style={numS}>{formatPKR(r.credit)}</td>
+                            <td style={{ ...numS, fontWeight: 800 }}>{formatPKR(r.balance)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr>
+                          <td style={{ ...tdS, borderBottom: "none", fontWeight: 800 }} colSpan={4}>{L.total}</td>
+                          <td style={{ ...numS, borderBottom: "none", fontWeight: 800 }}>{formatPKR(pack.totalDebit)}</td>
+                          <td style={{ ...numS, borderBottom: "none", fontWeight: 800 }}>{formatPKR(pack.totalCredit)}</td>
+                          <td style={{ ...numS, borderBottom: "none", fontWeight: 800 }}>{formatPKR(pack.closing)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
                   </div>
                 </div>
               );
-            })}
+            })()}
+            <div style={{ position: "fixed", left: -10000, top: 0, pointerEvents: "none" }} aria-hidden="true">
+              <PartyLedgerSheet
+                party={detail}
+                entries={entries}
+                from={ledgerFrom}
+                to={ledgerTo}
+                isUrdu={isUrdu}
+                compact={pendingPrint === "thermal"}
+              />
+            </div>
           </div>
         </Modal>
       )}

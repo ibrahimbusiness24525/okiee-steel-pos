@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table } from "../components/shared";
+import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table, handleEnterNextField } from "../components/shared";
 import { api, API, authHeaders } from "../utils/api";
 import { formatPKR } from "../utils/helpers";
 
@@ -97,6 +97,7 @@ function SuperAdminPage({ onLogout }) {
   const [error, setError] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [hoveredAdmin, setHoveredAdmin] = useState(null);
+  const adminModalRef = useRef(null);
 
   const load = async () => {
     try {
@@ -309,7 +310,11 @@ function SuperAdminPage({ onLogout }) {
         {showModal && (
           <div style={{ position:"fixed", inset:0, zIndex:50, display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}>
             <div style={{ position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", backdropFilter:"blur(8px)" }} onClick={()=>setShowModal(false)}/>
-            <div style={{ position:"relative", width:"100%", maxWidth:430, borderRadius:22, border:"1px solid rgba(124,110,247,0.25)", background:"#13161f", boxShadow:"0 30px 70px rgba(0,0,0,0.6)", overflow:"hidden", animation:"okModalIn 0.28s cubic-bezier(0.34,1.56,0.64,1) both" }}>
+            <div
+              ref={adminModalRef}
+              onKeyDownCapture={(e) => handleEnterNextField(e, adminModalRef.current)}
+              style={{ position:"relative", width:"100%", maxWidth:430, borderRadius:22, border:"1px solid rgba(124,110,247,0.25)", background:"#13161f", boxShadow:"0 30px 70px rgba(0,0,0,0.6)", overflow:"hidden", animation:"okModalIn 0.28s cubic-bezier(0.34,1.56,0.64,1) both" }}
+            >
 
               {/* Modal header */}
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"18px 24px", borderBottom:"1px solid rgba(124,110,247,0.1)", background:"linear-gradient(135deg,rgba(124,110,247,0.1),rgba(91,79,207,0.06))" }}>

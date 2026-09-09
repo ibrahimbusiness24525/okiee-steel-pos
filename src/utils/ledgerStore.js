@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { sortLedgerEntries } from "./helpers";
 
 const KEY = "steelpos_ledger_v1";
 
@@ -86,8 +87,8 @@ const local = {
     const db = read();
     const party = db.parties.find((p) => p._id === id);
     if (!party) return { success: false, message: "Not found" };
-    const entries = db.entries.filter((e) => e.party === id).sort((a, b) => String(b.date).localeCompare(String(a.date)));
-    return { success: true, party: { ...party, ...partyTotals(party.type, party.openingBalance, entries) }, entries, remote: false };
+    const entries = db.entries.filter((e) => e.party === id);
+    return { success: true, party: { ...party, ...partyTotals(party.type, party.openingBalance, entries) }, entries: sortLedgerEntries(entries), remote: false };
   },
   update(id, payload) {
     const db = read();
@@ -121,11 +122,14 @@ const local = {
       date: payload.date || new Date().toISOString().slice(0, 10),
       note: payload.note || "",
       invoice: payload.invoice || "",
+      accountId: payload.accountId || "",
+      accountName: payload.accountName || "",
+      createdAt: new Date().toISOString(),
     };
     db.entries.push(entry);
     write(db);
-    const entries = db.entries.filter((e) => e.party === id).sort((a, b) => String(b.date).localeCompare(String(a.date)));
-    return { success: true, entry, party: { ...party, ...partyTotals(party.type, party.openingBalance, entries) }, entries, remote: false };
+    const entries = db.entries.filter((e) => e.party === id);
+    return { success: true, entry, party: { ...party, ...partyTotals(party.type, party.openingBalance, entries) }, entries: sortLedgerEntries(entries), remote: false };
   },
   removeEntry(id, eid) {
     const db = read();
@@ -160,14 +164,14 @@ export const ledgerApi = {
   async list(type) {
     try {
       const r = await api.getParties(type);
-      if (isRemoteOk(r)) return { ...r, remote: true };
+      if (isRemoteOk(r)) return { ...r, entries: sortLedgerEntries(r.entries || []), remote: true };
     } catch { /* local */ }
     return local.list(type);
   },
   async add(payload) {
     try {
       const r = await api.addParty(payload);
-      if (isRemoteOk(r)) return { ...r, remote: true };
+      if (isRemoteOk(r)) return { ...r, entries: sortLedgerEntries(r.entries || []), remote: true };
       if (r && r.message && r.message !== "Route not found") return r;
     } catch { /* local */ }
     return local.add(payload);
@@ -175,14 +179,14 @@ export const ledgerApi = {
   async get(id) {
     try {
       const r = await api.getParty(id);
-      if (isRemoteOk(r)) return { ...r, remote: true };
+      if (isRemoteOk(r)) return { ...r, entries: sortLedgerEntries(r.entries || []), remote: true };
     } catch { /* local */ }
     return local.get(id);
   },
   async update(id, payload) {
     try {
       const r = await api.updateParty(id, payload);
-      if (isRemoteOk(r)) return { ...r, remote: true };
+      if (isRemoteOk(r)) return { ...r, entries: sortLedgerEntries(r.entries || []), remote: true };
       if (r && r.message && r.message !== "Route not found") return r;
     } catch { /* local */ }
     return local.update(id, payload);
@@ -190,14 +194,14 @@ export const ledgerApi = {
   async remove(id) {
     try {
       const r = await api.deleteParty(id);
-      if (isRemoteOk(r)) return { ...r, remote: true };
+      if (isRemoteOk(r)) return { ...r, entries: sortLedgerEntries(r.entries || []), remote: true };
     } catch { /* local */ }
     return local.remove(id);
   },
   async addEntry(id, payload) {
     try {
       const r = await api.addPartyEntry(id, payload);
-      if (isRemoteOk(r)) return { ...r, remote: true };
+      if (isRemoteOk(r)) return { ...r, entries: sortLedgerEntries(r.entries || []), remote: true };
       if (r && r.message && r.message !== "Route not found") return r;
     } catch { /* local */ }
     return local.addEntry(id, payload);
@@ -205,14 +209,14 @@ export const ledgerApi = {
   async removeEntry(id, eid) {
     try {
       const r = await api.deletePartyEntry(id, eid);
-      if (isRemoteOk(r)) return { ...r, remote: true };
+      if (isRemoteOk(r)) return { ...r, entries: sortLedgerEntries(r.entries || []), remote: true };
     } catch { /* local */ }
     return local.removeEntry(id, eid);
   },
   async importNames(purchases, sales) {
     try {
       const r = await api.importParties();
-      if (isRemoteOk(r)) return { ...r, remote: true };
+      if (isRemoteOk(r)) return { ...r, entries: sortLedgerEntries(r.entries || []), remote: true };
     } catch { /* local */ }
     return local.importFrom(purchases, sales);
   },

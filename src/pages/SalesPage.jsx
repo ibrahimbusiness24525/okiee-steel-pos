@@ -8,6 +8,7 @@ import { formatPKR, todayStr, loadShopProfile, pxToPageHeightMM } from "../utils
 import { safeProductName } from "../utils/constants";
 import { BillingNewSaleModal, BillingSaleInvoice, getPaymentBadgeStyle } from "./BillingPage";
 import { SaleReturnModal, ReturnsTable } from "../components/StockReturns";
+import { reverseTradeFinance } from "../utils/tradeFinance";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SALES PAGE — Fixed: th (useTheme) was missing in SaleThermalInvoice
@@ -211,6 +212,16 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
   const todaySales   = sales.filter(s => s.date === today2);
   const todayRevenue = todaySales.reduce((s, x) => s + netSaleAmount(x, saleReturns), 0);
 
+  const saleRecency = (s) => {
+    const t = Date.parse(s?.createdAt || s?.updatedAt || "");
+    if (Number.isFinite(t)) return t;
+    const id = String(s?._id || s?.id || "");
+    if (/^[a-fA-F0-9]{24}$/.test(id)) return parseInt(id.slice(0, 8), 16) * 1000;
+    const d = Date.parse(s?.date || "");
+    return Number.isFinite(d) ? d : 0;
+  };
+  const recentSales = [...sales].sort((a, b) => saleRecency(b) - saleRecency(a));
+
   const buildItemsFromSale = (s) => {
     if (s.items && s.items.length > 0) return s.items;
     const cat   = s.category || "";
@@ -279,6 +290,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
     const saleData = {
       invoice:payload.invoice, date:payload.date, customer:payload.customer,
       paymentMethod:payload.paymentMethod, bankName:payload.bankName,
+      accountId:payload.accountId||"", accountName:payload.accountName||"", settlement:payload.settlement||"full",
       total:payload.total, grandTotal:payload.grandTotal,
       loaderFee:Number(payload.loaderFee)||0, bindingFee:Number(payload.bindingFee)||0,
       items:payload.items, rows:resolvedRows,
@@ -307,7 +319,16 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
   const del = async (s) => {
     if (!window.confirm(t.deleteSaleConfirm || (isUrdu ? "کیا آپ یہ فروخت حذف کرنا چاہتے ہیں؟" : "Delete this sale?"))) return;
     const res = await api.deleteSale(s._id);
-    if (res.success) { await loadSales(); await loadProducts(); await loadSaleReturns?.(); }
+    if (res.success) {
+      await reverseTradeFinance({
+        kind: "sale",
+        partyName: s.customer,
+        invoice: s.invoice || s.invoiceNum,
+        paid: s.paidAmount,
+        accountId: s.accountId,
+      });
+      await loadSales(); await loadProducts(); await loadSaleReturns?.();
+    }
     else alert(res.message);
   };
 
@@ -325,12 +346,12 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
       invoice: s.invoice, date: s.date, customer: s.customer,
       items, grandTotal,
       paymentMethod: s.paymentMethod || "cash",
-      bankName:      s.bankName      || "",
+      bankName:      s.accountName || s.bankName || "",
       loaderName:    s.loaderName    || "",
       loaderFee:     s.loaderFee     || 0,
       bindingFee:    s.bindingFee    || 0,
       isPartial:      s.isPartial      || false,
-      paidAmount:     Number(s.paidAmount)     || grandTotal,
+      paidAmount:     (s.isPartial || s.settlement === "credit") ? (Number(s.paidAmount)||0) : (Number(s.paidAmount)||grandTotal),
       remainingAmount:Number(s.remainingAmount)|| 0,
     });
   };
@@ -340,6 +361,8 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
     return {
       invoice: s.invoice, date: s.date, customer: s.customer,
       paymentMethod: s.paymentMethod || "cash", bankName: s.bankName || "",
+      accountId: s.accountId || "", accountName: s.accountName || "",
+      settlement: s.settlement || (s.isPartial ? ((Number(s.paidAmount)||0)===0 ? "credit" : "partial") : "full"),
       items, grandTotal: Number(s.grandTotal) || Number(s.total) || 0,
       total: Number(s.total) || 0, loaderFee: Number(s.loaderFee) || 0,
       bindingFee: Number(s.bindingFee) || 0,
@@ -347,6 +370,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
       isPartial:       s.isPartial       || false,
       paidAmount:      Number(s.paidAmount)      || Number(s.total) || 0,
       remainingAmount: Number(s.remainingAmount) || 0,
+      isEdit: true,
     };
   };
 
@@ -387,7 +411,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
       <div style={{ width:"100%", overflowX:"auto" }}>
         <Table
           cols={[t.invoiceNum, t.date, t.customer, t.products, t.totalLabel, "💳", "💰", isUrdu?"بائنڈنگ":"Binding", isUrdu?"کس نے فروخت کی":"Sold By", "🖨️"]}
-          rows={[...sales].reverse().map(s=>{
+          rows={recentSales.map(s=>{
             const net = netSaleAmount(s, saleReturns);
             const retAmt = saleReturnedAmount(s, saleReturns);
             return {
@@ -404,7 +428,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
                 {retAmt>0 && <div style={{fontSize:11,color:"#f87171",fontWeight:700}}>-{formatPKR(retAmt)}</div>}
               </div>,
               <span style={{ fontSize:12, padding:"2px 8px", borderRadius:20, fontWeight:600, whiteSpace:"nowrap", ...getPaymentBadgeStyle(s.paymentMethod) }}>
-                {s.paymentMethod==="bank"?`🏦 ${s.bankName||"Bank"}`:s.paymentMethod==="jazzcash"?"🎵 JazzCash":s.paymentMethod==="easypaisa"?"📱 Easypaisa":"💵 Cash"}
+                {s.paymentMethod==="credit"?(isUrdu?"ادھار":"Credit"):s.paymentMethod==="bank"?`🏦 ${s.accountName||s.bankName||"Bank"}`:s.paymentMethod==="jazzcash"?"🎵 JazzCash":s.paymentMethod==="easypaisa"?"📱 Easypaisa":s.paymentMethod==="wallet"?`📱 ${s.accountName||s.bankName||"Wallet"}`:(s.accountName?`💵 ${s.accountName}`:"💵 Cash")}
               </span>,
               s.isPartial
                 ? <span style={{fontSize:11,padding:"2px 7px",borderRadius:20,background:"rgba(248,113,113,0.15)",color:"#f87171",fontWeight:700,whiteSpace:"nowrap"}}>⏳ {formatPKR(s.remainingAmount||0)} {isUrdu?"باقی":"due"}</span>
@@ -452,6 +476,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
             isUrdu={isUrdu}
             prefill={editData ? buildEditPayload(editData) : null}
             loaders={loaders}
+            extraNames={sales.map(s => s.customer)}
           />
         </Modal>
       )}

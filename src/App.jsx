@@ -1,10 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { LangProvider, useLang } from "./context/LangContext";
 import { useResponsive } from "./components/shared";
 import { Sidebar, Topbar, BottomNav } from "./components/Layout";
 import { api, API, authHeaders } from "./utils/api";
 import { listPurchaseReturns, listSaleReturns } from "./utils/returnsStore";
+import { applyHardwareSalePrices } from "./utils/productPrices";
+import { expenseApi } from "./utils/expenseStore";
+import { ledgerApi } from "./utils/ledgerStore";
 
 // Pages
 import LoginPage from "./pages/LoginPage";
@@ -13,7 +16,9 @@ import ProductsPage from "./pages/ProductsPage";
 import PurchasePage from "./pages/PurchasePage";
 import SalesPage from "./pages/SalesPage";
 import AccountsPage from "./pages/AccountsPage";
+import ExpensesPage from "./pages/ExpensesPage";
 import LedgerPage from "./pages/LedgerPage";
+import RecordsPage from "./pages/RecordsPage";
 import StaffPage from "./pages/StaffPage";
 import LoadersPage from "./pages/LoadersPage";
 import ShopProfilePage from "./pages/ShopProfilePage";
@@ -94,7 +99,7 @@ function AppLoader() {
 
 const PAGE_KEY = "steelpos_active_page";
 const ROLE_PAGES = {
-  admin: ["dashboard", "products", "purchase", "sales", "accounts", "ledger", "staff", "loaders", "shop-profile", "profile"],
+  admin: ["dashboard", "products", "purchase", "sales", "accounts", "expenses", "ledger", "records", "staff", "loaders", "shop-profile", "profile"],
   staff: ["billing", "loaders"],
   superadmin: ["superadmin"],
 };
@@ -128,6 +133,8 @@ function AppInner() {
   const [purchaseReturns, setPurchaseReturns] = useState([]);
   const [staff,     setStaff]     = useState([]);
   const [loaders,   setLoaders]   = useState([]);
+  const [parties,   setParties]   = useState([]);
+  const [expenses,  setExpenses]  = useState([]);
 
   const loadLoaders   = async () => { try { const r = await api.getLoaders();   if (r.success) setLoaders(r.loaders || []); } catch (e) {} };
   const loadProducts  = async () => { const r = await api.getProducts();  if (r.success) setProducts(Array.isArray(r.products) ? r.products : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
@@ -136,6 +143,9 @@ function AppInner() {
   const loadSaleReturns = async () => { try { const r = await listSaleReturns(); if (r.success) setSaleReturns(r.returns || []); } catch (e) {} };
   const loadPurchaseReturns = async () => { try { const r = await listPurchaseReturns(); if (r.success) setPurchaseReturns(r.returns || []); } catch (e) {} };
   const loadStaff     = async () => { const r = await api.getStaff();     if (r.success) setStaff(Array.isArray(r.staff) ? r.staff : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
+  const loadParties   = async () => { try { const r = await ledgerApi.list(); if (r.success) setParties(r.parties || []); } catch (e) { console.error("Failed to load parties:", e); } };
+  const loadExpenses  = async () => { try { const r = await expenseApi.list(); if (r.success) setExpenses(r.expenses || []); } catch (e) { console.error("Failed to load expenses:", e); } };
+  const productsView = useMemo(() => applyHardwareSalePrices(products, purchases), [products, purchases]);
 
   useEffect(() => {
     const token = localStorage.getItem("steelpos_token");
@@ -163,7 +173,8 @@ function AppInner() {
       loadSales();
       loadLoaders();
       loadSaleReturns();
-      if (user.role === "admin") { loadPurchases(); loadStaff(); loadPurchaseReturns(); }
+      if (user.role === "admin") { loadPurchases(); loadStaff(); loadPurchaseReturns(); loadParties(); loadExpenses(); }
+      else loadPurchases();
     }
   }, [user]);
 
@@ -177,7 +188,7 @@ function AppInner() {
     localStorage.removeItem(PAGE_KEY);
     setUser(null);
     setActiveState("dashboard");
-    setProducts([]); setPurchases([]); setSales([]); setStaff([]); setLoaders([]); setSaleReturns([]); setPurchaseReturns([]);
+    setProducts([]); setPurchases([]); setSales([]); setStaff([]); setLoaders([]); setSaleReturns([]); setPurchaseReturns([]); setParties([]); setExpenses([]);
   };
 
   if (loading) return <AppLoader />;
@@ -188,12 +199,14 @@ function AppInner() {
     <main dir={isUrdu ? "rtl" : "ltr"} style={{ flex: 1, overflowY: "auto", padding: isMobile ? "14px" : "20px", paddingBottom: isMobile ? 80 : 20 }}>
       {user.role === "admin" && (
         <>
-          {active === "dashboard"    && <Dashboard products={products} purchases={purchases} sales={sales} staff={staff} loaders={loaders} saleReturns={saleReturns} purchaseReturns={purchaseReturns} />}
-          {active === "products"     && <ProductsPage products={products} loadProducts={loadProducts} loadPurchases={loadPurchases} />}
-          {active === "purchase"     && <PurchasePage purchases={purchases} products={products} loadPurchases={loadPurchases} loadProducts={loadProducts} purchaseReturns={purchaseReturns} loadPurchaseReturns={loadPurchaseReturns} />}
-          {active === "sales"        && <SalesPage sales={sales} products={products} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} saleReturns={saleReturns} loadSaleReturns={loadSaleReturns} />}
+          {active === "dashboard"    && <Dashboard products={productsView} purchases={purchases} sales={sales} staff={staff} loaders={loaders} saleReturns={saleReturns} purchaseReturns={purchaseReturns} parties={parties} expenses={expenses} loadParties={loadParties} loadExpenses={loadExpenses} />}
+          {active === "products"     && <ProductsPage products={productsView} purchases={purchases} loadProducts={loadProducts} loadPurchases={loadPurchases} />}
+          {active === "purchase"     && <PurchasePage purchases={purchases} products={productsView} loadPurchases={loadPurchases} loadProducts={loadProducts} purchaseReturns={purchaseReturns} loadPurchaseReturns={loadPurchaseReturns} sales={sales} saleReturns={saleReturns} />}
+          {active === "sales"        && <SalesPage sales={sales} products={productsView} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} saleReturns={saleReturns} loadSaleReturns={loadSaleReturns} />}
           {active === "accounts"     && <AccountsPage />}
+          {active === "expenses"     && <ExpensesPage loadExpenses={loadExpenses} loadParties={loadParties} />}
           {active === "ledger"       && <LedgerPage purchases={purchases} sales={sales} />}
+          {active === "records"      && <RecordsPage products={productsView} purchases={purchases} sales={sales} />}
           {active === "staff"        && <StaffPage staff={staff} loadStaff={loadStaff} />}
           {active === "loaders"      && <LoadersPage loaders={loaders} loadLoaders={loadLoaders} />}
           {active === "shop-profile" && <ShopProfilePage />}
@@ -202,7 +215,7 @@ function AppInner() {
       )}
       {user.role === "staff" && (
         <>
-          {active === "billing" && <BillingPage sales={sales} products={products} loadSales={loadSales} loadProducts={loadProducts} currentUser={user} loaders={loaders} />}
+          {active === "billing" && <BillingPage sales={sales} products={productsView} loadSales={loadSales} loadProducts={loadProducts} currentUser={user} loaders={loaders} />}
           {active === "loaders" && <LoadersPage loaders={loaders} loadLoaders={loadLoaders} />}
         </>
       )}

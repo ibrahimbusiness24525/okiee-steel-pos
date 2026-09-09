@@ -1,18 +1,29 @@
 import { useTheme } from "../context/ThemeContext";
-import { formatPKR, loadShopProfile, formatWeightKgG, pxToPageHeightMM } from "../utils/helpers";
+import { formatPKR, loadShopProfile, formatWeightKgG, printThermalOrA4 } from "../utils/helpers";
 
 // ─── Thermal print styles ─────────────────────────────────────────────────────
 export const thermalPrintStyles = `
-@page { margin: 0; }
+@page { size: 65mm 297mm; margin: 4mm 3mm; }
 @media print {
-  html, body { width:65mm !important; margin:0 !important; padding:0 !important; font-family:Arial,sans-serif; font-size:14px; }
-  body * { visibility:hidden; }
-  #thermal-invoice, #thermal-invoice * { visibility:visible; }
-  #thermal-invoice { position:absolute; left:0; top:0; width:65mm !important; padding:8px; background:#fff; box-sizing:border-box; font-size:14px; line-height:1.5; }
+  html, body { margin:0 !important; padding:0 !important; background:#fff !important; }
+  body * { visibility:hidden !important; }
+  #print-portal-overlay, #print-portal-overlay *,
+  #thermal-invoice-print, #thermal-invoice-print *,
+  #thermal-invoice, #thermal-invoice * { visibility:visible !important; color:#000 !important; }
   button { display:none !important; }
 }`;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+export function OkiieeBrandFooter() {
+  return (
+    <div className="inv-brand" style={{ textAlign: "center", marginTop: 6, paddingTop: 6, borderTop: "1px dashed #000" }}>
+      <div className="inv-brand-title" style={{ fontWeight: 800, fontSize: 13, letterSpacing: "0.2px", lineHeight: "17px" }}>For okiiee Software</div>
+      <div className="inv-brand-phone" style={{ fontWeight: 700, fontSize: 11, lineHeight: "15px", marginTop: 3 }}>03090001316</div>
+      <div className="inv-brand-phone" style={{ fontWeight: 700, fontSize: 11, lineHeight: "15px" }}>03057903867</div>
+    </div>
+  );
+}
+
 export const getUrduItemLabel = (cat) => {
   switch (cat) {
     case "Pipe":     return "پائپ";
@@ -79,92 +90,16 @@ function numberToWords(num) {
 
 // ─── getPaymentLabel ──────────────────────────────────────────────────────────
 function getPaymentLabel(paymentMethod, bankName, isUrdu) {
+  if (paymentMethod === "credit")    return isUrdu ? "ادھار (Credit)" : "Credit";
   if (paymentMethod === "bank")      return `Bank: ${bankName || (isUrdu ? "بینک" : "Bank")}`;
   if (paymentMethod === "jazzcash")  return `JazzCash${bankName ? ` (${bankName})` : ""}`;
   if (paymentMethod === "easypaisa") return `Easypaisa${bankName ? ` (${bankName})` : ""}`;
+  if (paymentMethod === "wallet")    return bankName ? `Wallet: ${bankName}` : (isUrdu ? "والٹ" : "Wallet");
   return isUrdu ? "نقد (Cash)" : "Cash";
 }
 
-// ─── SHARED PRINT HANDLER (BillingSaleInvoice style — no font overrides) ─────
-function buildPrintHandler() {
-  return () => {
-    const existingOverlay = document.getElementById("print-portal-overlay");
-    if (existingOverlay) existingOverlay.remove();
-    const existingStyle = document.getElementById("print-portal-style");
-    if (existingStyle) existingStyle.remove();
-
-    const inv = document.getElementById("thermal-invoice");
-    if (!inv) return;
-
-    const portal = document.createElement("div");
-    portal.id = "print-portal-overlay";
-    portal.style.position = "absolute";
-    portal.style.left = "-9999px";
-    portal.style.top = "0";
-    portal.style.width = "65mm";
-
-    const clone = inv.cloneNode(true);
-    clone.id = "thermal-invoice-print";
-    clone.style.width = "65mm";
-    clone.style.maxWidth = "65mm";
-    clone.style.margin = "0";
-    clone.style.boxSizing = "border-box";
-    portal.appendChild(clone);
-    document.body.appendChild(portal);
-
-    // Measure the actual rendered receipt height (now that it's in the DOM)
-    // and give the @page rule an explicit height in mm, as a FALLBACK for
-    // engines that don't understand `size: 65mm auto`. Long invoices (many
-    // line items) were being squeezed onto a single fixed-height page by
-    // some print pipelines' own "shrink to fit" step whenever the fixed mm
-    // height we requested didn't match the real content height closely
-    // enough — the whole receipt (including the shop name / fonts) got
-    // scaled down visibly the more items were on it.
-    //
-    // Fix: use the CSS `auto` keyword for the page height wherever it's
-    // supported (modern Chrome/Chromium — which is what almost all Android
-    // print bridges to thermal printers are built on). `auto` tells the
-    // browser "this dimension is a continuous roll, just lay out the full
-    // content at 100% and don't try to fit it into one page" — so fonts
-    // never shrink no matter how many items are on the invoice. The
-    // JS-measured fixed-height rule is kept first as a generous fallback
-    // for any engine that doesn't support `auto`, with extra buffer so
-    // nothing is ever clipped at the bottom.
-    const pageHeightMM = Math.max(pxToPageHeightMM(clone), 40) + 20;
-
-    const styleEl = document.createElement("style");
-    styleEl.id = "print-portal-style";
-    styleEl.innerHTML = `
-      @page { size: 65mm ${pageHeightMM}mm; margin: 0; }
-      @page { size: 65mm auto; margin: 0; }
-      @media print {
-        html, body { width:65mm !important; max-width:65mm !important; margin:0 !important; padding:0 !important; zoom:1 !important; }
-        body * { visibility:hidden !important; }
-        #thermal-invoice-print, #thermal-invoice-print * { visibility:visible !important; }
-        #print-portal-overlay {
-          position:fixed !important; left:0 !important; top:0 !important;
-          width:65mm !important; max-width:65mm !important; height:auto !important;
-          z-index:99999 !important; box-sizing:border-box !important;
-          transform:none !important; zoom:1 !important;
-        }
-        #thermal-invoice-print { width:65mm !important; margin:0 !important; transform:none !important; zoom:1 !important; }
-        #thermal-invoice-print * { box-sizing:border-box !important; max-width:100% !important; }
-        button { display:none !important; }
-      }
-    `;
-    document.head.appendChild(styleEl);
-
-    // Wait one extra paint cycle before printing so the freshly-appended
-    // clone (and its logo image, if any) is fully laid out — printing
-    // immediately after appendChild occasionally caught a not-yet-settled
-    // layout on very long invoices, which is exactly what caused the
-    // measured height (and therefore the fallback page size) to come out
-    // too small for big orders.
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      window.print();
-      setTimeout(() => { portal.remove(); styleEl.remove(); }, 1000);
-    }));
-  };
+function buildPrintHandler(mode = "thermal", filename) {
+  return () => printThermalOrA4(mode, filename);
 }
 
 // ─── SHARED STYLE OBJECTS (identical to BillingSaleInvoice) ──────────────────
@@ -210,15 +145,24 @@ function InvoiceTopHeader({ sp, L, isUrdu }) {
 }
 
 // ─── SHARED BUTTON ROW ────────────────────────────────────────────────────────
-function PrintButtonRow({ onClose, isUrdu, handlePrint, th }) {
+function PrintButtonRow({ onClose, isUrdu, handlePrint, handlePrintA4, handlePrintPdf, th }) {
+  const btn = (bg) => ({
+    flex: 1, padding: "10px 8px", borderRadius: 10, border: "none", background: bg,
+    color: "white", fontWeight: 700, fontSize: 13, cursor: "pointer", minWidth: 90,
+  });
   return (
-    <div style={{ display: "flex", gap: 10, width: "100%" }}>
-      <button onClick={handlePrint}
-        style={{ flex: 1, padding: "10px", borderRadius: 10, border: "none", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "white", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
-        🖨️ {isUrdu ? "پرنٹ کریں" : "Print Invoice"}
+    <div style={{ display: "flex", gap: 8, width: "100%", flexWrap: "wrap" }}>
+      <button onClick={handlePrint} style={btn("linear-gradient(135deg,#1abc9c,#2980b9)")}>
+        🖨️ {isUrdu ? "تھرمل" : "Thermal"}
+      </button>
+      <button onClick={handlePrintA4 || handlePrint} style={btn("linear-gradient(135deg,#3b82f6,#1d4ed8)")}>
+        📄 {isUrdu ? "A4 کاغذ" : "A4 Paper"}
+      </button>
+      <button onClick={handlePrintPdf || handlePrintA4 || handlePrint} style={btn("linear-gradient(135deg,#7c3aed,#5b21b6)")}>
+        📑 PDF
       </button>
       <button onClick={onClose}
-        style={{ padding: "10px 18px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.textMuted, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
+        style={{ padding: "10px 14px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.textMuted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
         ✕ {isUrdu ? "بند کریں" : "Close"}
       </button>
     </div>
@@ -331,7 +275,9 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
   });
 
   const grandTotal  = lineItems.reduce((s, li) => s + li.amount, 0);
-  const handlePrint = buildPrintHandler();
+  const handlePrint = buildPrintHandler("thermal");
+  const handlePrintA4 = buildPrintHandler("a4");
+  const handlePrintPdf = buildPrintHandler("pdf", `${invoice || "purchase"}-${date || "invoice"}`);
   const { page, center, bold500, dash, tbl, thS, tdS, tdNum } = sharedStyles;
 
   return (
@@ -339,7 +285,7 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
       <style>{thermalPrintStyles}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
 
-        <PrintButtonRow onClose={onClose} isUrdu={isUrdu} handlePrint={handlePrint} th={th} />
+        <PrintButtonRow onClose={onClose} isUrdu={isUrdu} handlePrint={handlePrint} handlePrintA4={handlePrintA4} handlePrintPdf={handlePrintPdf} th={th} />
 
         <div style={{ background: "#f0f0f0", padding: "14px", borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto" }}>
           <div id="thermal-invoice" style={page}>
@@ -378,7 +324,7 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
             <div style={dash} />
 
             {/* Items table */}
-            <table style={{ ...tbl, marginTop: 2 }}>
+            <table className="inv-items" style={{ ...tbl, marginTop: 2 }}>
               <colgroup>
                 <col style={{ width: COL_SN }} />
                 <col style={{ width: COL_ITEM }} />
@@ -452,14 +398,7 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
               </tbody>
             </table>
 
-            <div style={dash} />
-
-            <div style={{ ...center, fontWeight: 700, fontSize: "12px", letterSpacing: "0.8px", lineHeight: "18px", marginTop: "4px" }}>
-              OKIIEE SOFTWARE COMPANY
-            </div>
-            <div style={{ ...center, fontWeight: 700, fontSize: "11px", letterSpacing: "0.5px", marginTop: "2px" }}>
-              {L.softPhone}
-            </div>
+            <OkiieeBrandFooter />
 
           </div>
         </div>
@@ -573,7 +512,9 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
     });
   });
 
-  const handlePrint = buildPrintHandler();
+  const handlePrint = buildPrintHandler("thermal");
+  const handlePrintA4 = buildPrintHandler("a4");
+  const handlePrintPdf = buildPrintHandler("pdf", `${invoice || "sale"}-${date || "invoice"}`);
   const { page, center, bold500, dash, tbl, thS, tdS, tdNum } = sharedStyles;
 
   return (
@@ -581,7 +522,7 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
       <style>{thermalPrintStyles}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
 
-        <PrintButtonRow onClose={onClose} isUrdu={isUrdu} handlePrint={handlePrint} th={th} />
+        <PrintButtonRow onClose={onClose} isUrdu={isUrdu} handlePrint={handlePrint} handlePrintA4={handlePrintA4} handlePrintPdf={handlePrintPdf} th={th} />
 
         <div style={{ background: "#f0f0f0", padding: "14px", borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto" }}>
           <div id="thermal-invoice" style={page}>
@@ -623,7 +564,7 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
             <div style={dash} />
 
             {/* Items table — SN / Item / Qty / Price / Amt */}
-            <table style={{ ...tbl, marginTop: 2 }}>
+            <table className="inv-items" style={{ ...tbl, marginTop: 2 }}>
               <colgroup>
                 <col style={{ width: COL_SN }} />
                 <col style={{ width: COL_ITEM }} />
@@ -748,36 +689,6 @@ wordBreak:"break-word"
 
 </tr>
 
-{paymentMethod==="jazzcash" && (
-
-<tr>
-<td
-colSpan={2}
-style={{
-...tdS("center"),
-fontWeight:900
-}}
->
-JazzCash: 03057903867
-</td>
-</tr>
-)}
-
-{paymentMethod==="easypaisa" && (
-
-<tr>
-<td
-colSpan={2}
-style={{
-...tdS("center"),
-fontWeight:900
-}}
->
-Easypaisa: 03057903867
-</td>
-</tr>
-)}
-
 {loaderName && (
 
 <tr>
@@ -887,14 +798,7 @@ minute:"2-digit"
 </table>
 
 
-            <div style={dash} />
-
-            <div style={{ ...center, fontWeight: 700, fontSize: "12px", letterSpacing: "0.8px", lineHeight: "18px", marginTop: "4px" }}>
-              OKIIEE SOFTWARE COMPANY
-            </div>
-            <div style={{ ...center, fontWeight: 700, fontSize: "11px", letterSpacing: "0.5px", marginTop: "2px" }}>
-              {L.softPhone}
-            </div>
+            <OkiieeBrandFooter />
 
           </div>
         </div>

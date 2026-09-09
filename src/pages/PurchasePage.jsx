@@ -1,12 +1,17 @@
 import { useState } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table, WeightKgGInput } from "../components/shared";
+import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table, WeightKgGInput, useTypeaheadNav, focusNextField, DateFilterBar } from "../components/shared";
 import { api } from "../utils/api";
 import { savePurchaseReturn, removePurchaseReturn } from "../utils/returnsStore";
-import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, pxToPageHeightMM } from "../utils/helpers";
+import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, inDateFilter, formatDateTime, printThermalOrA4 } from "../utils/helpers";
 import { safeProductName, productDisplayName } from "../utils/constants";
 import { PurchaseReturnModal, ReturnsTable } from "../components/StockReturns";
+import InventoryStockTable, { inventoryStats } from "../components/InventoryStockTable";
+import PaymentTerms, { useAccounts, derivePayment, isPayValid } from "../components/PaymentTerms";
+import { recordTradeFinance, reverseTradeFinance } from "../utils/tradeFinance";
+import PartyNamePicker from "../components/PartyNamePicker";
+import { OkiieeBrandFooter } from "../components/InvoiceComponents";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PURCHASE PAGE — Invoice matches Billing style exactly
@@ -33,6 +38,28 @@ const calcRowAmt = (row, cat, price) => {
   return (Number(row.purchasePrice) || 0) * (Number(row.qty) || 0);
 };
 
+function productCostSale(product) {
+  if (!product) return { cost: 0, sale: 0 };
+  if (product.category === "Pipe") {
+    return { cost: Number(product.price) || 0, sale: Number(product.purchasePrice) || 0 };
+  }
+  return {
+    cost: Number(product.purchasePrice) || 0,
+    sale: Number(product.price) || 0,
+  };
+}
+
+function prefillPurchaseRow(category, product) {
+  const { cost, sale } = productCostSale(product);
+  const n = (v) => (v > 0 ? String(v) : "");
+  const r = { _id: Date.now() + Math.random() };
+  if (category === "Chader") Object.assign(r, { purchasePrice: n(cost), salePrice: n(sale), weight: "" });
+  else if (category === "Net") Object.assign(r, { feet: "", width: product?.width ? String(product.width) : "", purchasePricePerFeet: n(cost), salePricePerFeet: n(sale) });
+  else if (category === "Pipe") Object.assign(r, { length: "", quantity: "", purchasePercentage: "" });
+  else Object.assign(r, { unit: productUnitOf(product), qty: "", purchasePrice: n(cost), salePrice: n(sale) });
+  return r;
+}
+
 const getUrduItemLabel = (cat) => {
   switch (cat) {
     case "Pipe":     return "پائپ";
@@ -46,19 +73,20 @@ const getUrduItemLabel = (cat) => {
 
 // ─── Print Styles (same as BillingSaleInvoice) ────────────────────────────────
 const thermalPrintStyles = `
-@page { margin: 0; }
+@page { size: 65mm 297mm; margin: 4mm 3mm; }
 @media print {
-  html, body { width:65mm !important; margin:0 !important; padding:0 !important; font-family:Arial,sans-serif; font-size:14px; }
-  body * { visibility:hidden; }
-  #thermal-invoice, #thermal-invoice * { visibility:visible; }
-  #thermal-invoice { position:absolute; left:0; top:0; width:65mm !important; padding:8px; background:#fff; box-sizing:border-box; font-size:14px; line-height:1.5; }
+  html, body { margin:0 !important; padding:0 !important; background:#fff !important; }
+  body * { visibility:hidden !important; }
+  #print-portal-overlay, #print-portal-overlay *,
+  #thermal-invoice-print, #thermal-invoice-print *,
+  #thermal-invoice, #thermal-invoice * { visibility:visible !important; color:#000 !important; }
   button { display:none !important; }
 }`;
 
 // ─── Purchase Thermal Invoice — BillingSaleInvoice style ──────────────────────
 function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
   const th = useTheme();
-  const { invoice, date, supplier, products } = invoiceData;
+  const { invoice, date, supplier, products, createdAt, paymentMethod, bankName, accountName, isPartial, paidAmount, remainingAmount } = invoiceData;
   const sp         = loadShopProfile();
   const ownerLines = sp.owners.filter(o => o.name || o.nameUr);
 
@@ -78,6 +106,9 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
     colAmt:       "رقم",
     subtotalLbl:  "ذیلی کل",
     totalLbl:     "کل رقم",
+    payLbl:       "ادائیگی",
+    paidNowLbl:   "ادا کردہ",
+    remainingLbl: "قابل ادائیگی",
     timeLbl:      "وقت",
     softPhone:    "03057903867",
   } : {
@@ -96,6 +127,9 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
     colAmt:       "Amt",
     subtotalLbl:  "Subtotal",
     totalLbl:     "TOTAL",
+    payLbl:       "Payment",
+    paidNowLbl:   "Paid",
+    remainingLbl: "Payable",
     timeLbl:      "Time",
     softPhone:    "03057903867",
   };
@@ -192,75 +226,28 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
   });
 
   const grandTotal = lineItems.reduce((s, li) => s + li.amount, 0);
-
-  // ── Print handler — same as BillingSaleInvoice (no font overrides on clone) ──
-  const handlePrint = () => {
-    const existingOverlay = document.getElementById("print-portal-overlay");
-    if (existingOverlay) existingOverlay.remove();
-    const existingStyle = document.getElementById("print-portal-style");
-    if (existingStyle) existingStyle.remove();
-
-    const inv = document.getElementById("thermal-invoice");
-    if (!inv) return;
-
-    const portal = document.createElement("div");
-    portal.id = "print-portal-overlay";
-    portal.style.position = "absolute";
-    portal.style.left = "-9999px";
-    portal.style.top = "0";
-    portal.style.width = "65mm";
-
-    const clone = inv.cloneNode(true);
-    clone.id = "thermal-invoice-print";
-    clone.style.width = "65mm";
-    clone.style.maxWidth = "65mm";
-    clone.style.margin = "0";
-    clone.style.boxSizing = "border-box";
-    portal.appendChild(clone);
-    document.body.appendChild(portal);
-
-    // Measure the actual rendered receipt height (now that it's in the DOM)
-    // and give the @page rule an explicit height in mm. "65mm auto" is not
-    // valid CSS, so browsers fell back to their default page size and long
-    // invoices (many line items) got cut off after roughly one default page.
-    const pageHeightMM = pxToPageHeightMM(clone);
-
-    const styleEl = document.createElement("style");
-    styleEl.id = "print-portal-style";
-    styleEl.innerHTML = `
-      @page { size: 65mm ${pageHeightMM}mm; margin: 0; }
-      @media print {
-        html, body { width:65mm !important; max-width:65mm !important; margin:0 !important; padding:0 !important; }
-        body * { visibility:hidden !important; }
-        #thermal-invoice-print, #thermal-invoice-print * { visibility:visible !important; }
-        #print-portal-overlay {
-          position:fixed !important; left:0 !important; top:0 !important;
-          width:65mm !important; max-width:65mm !important; height:auto !important;
-          z-index:99999 !important; box-sizing:border-box !important;
-        }
-        #thermal-invoice-print { width:65mm !important; margin:0 !important; }
-        #thermal-invoice-print * { box-sizing:border-box !important; max-width:100% !important; }
-        button { display:none !important; }
-      }
-    `;
-    document.head.appendChild(styleEl);
-    window.print();
-    setTimeout(() => { portal.remove(); styleEl.remove(); }, 1000);
-  };
+  const btn = (bg) => ({
+    flex: 1, padding: "10px 8px", borderRadius: 10, border: "none", background: bg,
+    color: "white", fontWeight: 700, fontSize: 13, cursor: "pointer", minWidth: 90,
+  });
 
   return (
     <>
       <style>{thermalPrintStyles}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
 
-        {/* Buttons */}
-        <div style={{ display: "flex", gap: 10, width: "100%" }}>
-          <button onClick={handlePrint}
-            style={{ flex: 1, padding: "10px", borderRadius: 10, border: "none", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "white", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
-            🖨️ {isUrdu ? "پرنٹ کریں" : "Print Invoice"}
+        <div style={{ display: "flex", gap: 8, width: "100%", flexWrap: "wrap" }}>
+          <button onClick={() => printThermalOrA4("thermal")} style={btn("linear-gradient(135deg,#1abc9c,#2980b9)")}>
+            🖨️ {isUrdu ? "تھرمل" : "Thermal"}
+          </button>
+          <button onClick={() => printThermalOrA4("a4")} style={btn("linear-gradient(135deg,#3b82f6,#1d4ed8)")}>
+            📄 {isUrdu ? "A4 کاغذ" : "A4 Paper"}
+          </button>
+          <button onClick={() => printThermalOrA4("pdf", `${invoice || "purchase"}-${date || todayStr()}`)} style={btn("linear-gradient(135deg,#7c3aed,#5b21b6)")}>
+            📑 PDF
           </button>
           <button onClick={onClose}
-            style={{ padding: "10px 18px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.textMuted, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
+            style={{ padding: "10px 14px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.textMuted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
             ✕ {isUrdu ? "بند کریں" : "Close"}
           </button>
         </div>
@@ -306,7 +293,7 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
             <div style={dash} />
 
             {/* Items table — SN / Item / Qty / Price / Amt */}
-            <table style={{ ...tbl, marginTop: 2 }}>
+            <table className="inv-items" style={{ ...tbl, marginTop: 2 }}>
               <colgroup>
                 <col style={{ width: COL_SN }} />
                 <col style={{ width: COL_ITEM }} />
@@ -366,6 +353,35 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
               <span>{formatPKR(grandTotal)}</span>
             </div>
 
+            {(paymentMethod || isPartial || Number(remainingAmount) > 0) && (
+              <>
+                <div style={dash} />
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 600 }}>
+                  <span>{L.payLbl}</span>
+                  <span>
+                    {paymentMethod === "credit" ? (isUrdu ? "ادھار" : "Credit")
+                      : paymentMethod === "bank" ? `Bank: ${accountName || bankName || ""}`
+                      : paymentMethod === "jazzcash" ? "JazzCash"
+                      : paymentMethod === "easypaisa" ? "Easypaisa"
+                      : paymentMethod === "wallet" ? (accountName || bankName || "Wallet")
+                      : (accountName || (isUrdu ? "نقد" : "Cash"))}
+                  </span>
+                </div>
+                {(isPartial || Number(remainingAmount) > 0) && (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 600, marginTop: 4 }}>
+                      <span>{L.paidNowLbl}</span>
+                      <span>{formatPKR(paidAmount)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 700, marginTop: 4 }}>
+                      <span>{L.remainingLbl}</span>
+                      <span>{formatPKR(remainingAmount)}</span>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
             <div style={dash} />
 
             {/* Time */}
@@ -374,21 +390,13 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
                 <tr>
                   <td style={{ ...tdS("left"), padding: "6px 3px" }}>{L.timeLbl}</td>
                   <td colSpan={4} style={{ ...tdS("right"), padding: "6px 3px", whiteSpace: "nowrap" }}>
-                    {new Date().toLocaleTimeString(isUrdu ? "ur-PK" : "en-PK", { hour: "2-digit", minute: "2-digit" })}
+                    {new Date(createdAt || Date.now()).toLocaleTimeString(isUrdu ? "ur-PK" : "en-PK", { hour: "2-digit", minute: "2-digit" })}
                   </td>
                 </tr>
               </tbody>
             </table>
 
-            <div style={dash} />
-
-            {/* Footer */}
-            <div style={{ ...center, fontWeight: 700, fontSize: "12px", letterSpacing: "0.8px", lineHeight: "18px", marginTop: "4px" }}>
-              OKIIEE SOFTWARE COMPANY
-            </div>
-            <div style={{ ...center, fontWeight: 700, fontSize: "11px", letterSpacing: "0.5px", marginTop: "2px" }}>
-              {L.softPhone}
-            </div>
+            <OkiieeBrandFooter />
 
           </div>
         </div>
@@ -414,23 +422,40 @@ function CellInput({ value, onChange, placeholder }) {
 }
 
 // ─── Purchase Entry Table ─────────────────────────────────────────────────────
-function PurchaseEntryTable({ category, rows, setRows, productPrice }) {
+function PurchaseEntryTable({ category, rows, setRows, productPrice, product }) {
   const th = useTheme();
   const { t } = useLang();
   const pp = Number(productPrice) || 0;
+  const rowUnit = rows[0]?.unit || productUnitOf(product);
+  const unitLbl = getUnitLabel(rowUnit);
 
   const colDefs = {
     Chader:   [{ key: "purchasePrice", label: t.purchasePrice, placeholder: "0" }, { key: "salePrice", label: t.salePrice, placeholder: "0" }, { key: "weight", label: t.weight, placeholder: "kg" }],
     Net:      [{ key: "feet", label: t.feet, placeholder: "0" }, { key: "width", label: "Width (ft)", placeholder: "e.g. 3" }, { key: "purchasePricePerFeet", label: t.purchasePricePerFt, placeholder: "0" }, { key: "salePricePerFeet", label: t.salePricePerFt, placeholder: "0" }],
-    Hardware: [{ key: "qty", label: t.qty, placeholder: "0" }, { key: "purchasePrice", label: t.purchasePricePerPc, placeholder: "0" }, { key: "salePrice", label: t.salePricePerPc, placeholder: "0" }],
-    Custom:   [{ key: "qty", label: t.qty, placeholder: "0" }, { key: "purchasePrice", label: t.purchasePricePerPc, placeholder: "0" }, { key: "salePrice", label: t.salePricePerPc, placeholder: "0" }],
+    Hardware: [{ key: "unit", label: "Unit", isSelect: true }, { key: "qty", label: t.qty, placeholder: "0" }, { key: "purchasePrice", label: `Cost / ${unitLbl}`, placeholder: "0" }, { key: "salePrice", label: `Sale / ${unitLbl}`, placeholder: "0" }],
+    Custom:   [{ key: "unit", label: "Unit", isSelect: true }, { key: "qty", label: t.qty, placeholder: "0" }, { key: "purchasePrice", label: `Cost / ${unitLbl}`, placeholder: "0" }, { key: "salePrice", label: `Sale / ${unitLbl}`, placeholder: "0" }],
     Pipe:     [{ key: "length", label: "Length (ft)", placeholder: "e.g. 20" }, { key: "quantity", label: "Pieces", placeholder: "0" }, { key: "purchasePercentage", label: "Purchase %", placeholder: "e.g. -5" }],
   };
   const cols = colDefs[category] || colDefs.Hardware;
 
-  const addRow    = () => { const r = { _id: Date.now() + Math.random() }; cols.forEach(c => (r[c.key] = "")); setRows(rs => [...rs, r]); };
+  const addRow    = () => setRows(rs => [...rs, prefillPurchaseRow(category, product)]);
   const removeRow = (idx) => setRows(rs => rs.filter((_, i) => i !== idx));
-  const updateRow = (idx, key, val) => setRows(rs => rs.map((r, i) => i === idx ? { ...r, [key]: val } : r));
+  const roundAmt = (n) => {
+    const x = Math.round((Number(n) || 0) * 100) / 100;
+    return Number.isInteger(x) ? String(x) : String(x);
+  };
+  const updateRow = (idx, key, val) => setRows(rs => rs.map((r, i) => {
+    if (i !== idx) return r;
+    if (key !== "unit") return { ...r, [key]: val };
+    const from = r.unit || "piece";
+    const to = val;
+    if (!canConvert(from, to) || from === to) return { ...r, unit: to };
+    const next = { ...r, unit: to };
+    if (Number(r.purchasePrice) > 0) next.purchasePrice = roundAmt(convertPrice(r.purchasePrice, from, to));
+    if (Number(r.salePrice) > 0) next.salePrice = roundAmt(convertPrice(r.salePrice, from, to));
+    if (Number(r.qty) > 0) next.qty = roundAmt(convertQuantity(r.qty, from, to));
+    return next;
+  }));
   const rowTotal  = (row) => calcRowAmt(row, category, pp);
   const grandTotal = rows.reduce((s, r) => s + rowTotal(r), 0);
 
@@ -488,6 +513,20 @@ function PurchaseEntryTable({ category, rows, setRows, productPrice }) {
                         <td key={c.key} style={tdCell}>
                           {category === "Chader" && c.key === "weight" ? (
                             <WeightKgGInput key={row._id} value={row[c.key]} onChange={v => updateRow(idx, c.key, v)} compact />
+                          ) : c.isSelect ? (
+                            <select
+                              value={row[c.key] || "piece"}
+                              onChange={e => updateRow(idx, c.key, e.target.value)}
+                              style={{ background: th.input, border: `1px solid ${th.inputBorder}`, color: th.text, borderRadius: 8, padding: "7px 6px", fontSize: 13, outline: "none", width: "100%", boxSizing: "border-box" }}
+                              onFocus={e => e.target.style.borderColor = "#1abc9c"}
+                              onBlur={e  => e.target.style.borderColor = th.inputBorder}
+                            >
+                              {unitOptions.map(opt => (
+                                <option key={opt.value} value={opt.value} style={{ background: th.bgModal || th.bgCard }}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
                           ) : (
                             <CellInput value={row[c.key]} onChange={v => updateRow(idx, c.key, v)} placeholder={c.placeholder} />
                           )}
@@ -545,35 +584,27 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
   const { t } = useLang();
   const [open,         setOpen]         = useState(true);
   const [searchQuery,  setSearchQuery]  = useState("");
-  const [showDropdown, setShowDropdown] = useState(false);
+  const makeEmptyRow = (product) => prefillPurchaseRow(product.category, product);
 
-  const selectedProduct = products.find(p => p._id === block.productId);
-  const category        = selectedProduct?.category || "";
-  const productPrice    = selectedProduct?.price    || 0;
+  const handleSelectProduct = (product) => {
+    setSearchQuery(product.name);
+    setShowDropdown(false);
+    onChange({ ...block, productId: product._id, rows: [makeEmptyRow(product)] });
+    requestAnimationFrame(() => {
+      const root = document.querySelector("[data-modal-box]");
+      focusNextField(document.activeElement, root);
+    });
+  };
 
   const filteredProducts = products.filter(p =>
     p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     p.category.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  const { open: showDropdown, setOpen: setShowDropdown, hi, setHi, onKeyDown: navKeys, listRef } = useTypeaheadNav(filteredProducts, handleSelectProduct);
 
-  const makeEmptyRow = (cat) => {
-    const keys = {
-      Chader:   ["purchasePrice", "salePrice", "weight"],
-      Net:      ["feet", "width", "purchasePricePerFeet", "salePricePerFeet"],
-      Hardware: ["qty", "purchasePrice", "salePrice"],
-      Custom:   ["qty", "purchasePrice", "salePrice"],
-      Pipe:     ["length", "quantity", "purchasePercentage"],
-    };
-    const r = { _id: Date.now() + Math.random() };
-    (keys[cat] || keys.Hardware).forEach(k => (r[k] = ""));
-    return r;
-  };
-
-  const handleSelectProduct = (product) => {
-    setSearchQuery(product.name);
-    setShowDropdown(false);
-    onChange({ ...block, productId: product._id, rows: [makeEmptyRow(product.category)] });
-  };
+  const selectedProduct = products.find(p => p._id === block.productId);
+  const category        = selectedProduct?.category || "";
+  const productPrice    = selectedProduct?.price    || 0;
 
   const setRows = (updater) => {
     const newRows = typeof updater === "function" ? updater(block.rows) : updater;
@@ -626,27 +657,42 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
               <input
                 type="text"
                 value={searchQuery}
-                onChange={e => { setSearchQuery(e.target.value); setShowDropdown(true); onChange({ ...block, productId: "", rows: [] }); }}
+                data-product-search="1"
+                data-suggest-open={showDropdown ? "1" : "0"}
+                onChange={e => { setSearchQuery(e.target.value); setShowDropdown(true); setHi(0); onChange({ ...block, productId: "", rows: [] }); }}
                 onFocus={() => setShowDropdown(true)}
+                onKeyDown={navKeys}
                 placeholder={`🔍 ${t.selectProduct}...`}
                 style={inpS}
+                autoComplete="off"
               />
               {showDropdown && (
                 <>
                   <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 998 }} onMouseDown={() => setShowDropdown(false)} />
-                  <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 999, background: th.bgModal || th.bgCard, border: `1px solid ${th.border}`, borderRadius: 10, maxHeight: 200, overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.18)" }}>
+                  <div ref={listRef} style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 999, background: th.bgModal || th.bgCard, border: `1px solid ${th.border}`, borderRadius: 10, maxHeight: 200, overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.18)" }}>
                     {filteredProducts.length === 0
                       ? <div style={{ padding: "12px", textAlign: "center", color: th.textDim, fontSize: 13 }}>No products found</div>
-                      : filteredProducts.map(p => (
+                      : filteredProducts.map((p, i) => (
                         <div
                           key={p._id}
+                          data-nav-i={i}
                           onMouseDown={() => handleSelectProduct(p)}
-                          style={{ padding: "9px 13px", cursor: "pointer", borderBottom: `1px solid ${th.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 14, color: th.text }}
-                          onMouseEnter={e => e.currentTarget.style.background = th.rowHover}
-                          onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                          onMouseEnter={() => setHi(i)}
+                          style={{ padding: "9px 13px", cursor: "pointer", borderBottom: `1px solid ${th.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 14, color: th.text, background: i === hi ? "rgba(26,188,156,0.16)" : "transparent" }}
                         >
                           <span>{p.name}</span>
-                          <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, background: catBg, color: catColor, fontWeight: 600 }}>{p.category}</span>
+                          <span style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                            {(() => {
+                              const cs = productCostSale(p);
+                              return (
+                                <span style={{ fontSize: 11, color: th.textMuted, fontWeight: 600 }}>
+                                  {cs.cost > 0 ? formatPKR(cs.cost) : "—"}
+                                  <span style={{ color: "#34d399" }}> · {cs.sale > 0 ? formatPKR(cs.sale) : "—"}</span>
+                                </span>
+                              );
+                            })()}
+                            <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, background: catBg, color: catColor, fontWeight: 600 }}>{p.category}</span>
+                          </span>
                         </div>
                       ))
                     }
@@ -657,14 +703,23 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
           </div>
 
           {selectedProduct && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 11px", borderRadius: 8, background: catBg, border: `1px solid ${catColor}40` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 11px", borderRadius: 8, background: catBg, border: `1px solid ${catColor}40`, flexWrap: "wrap" }}>
               <span style={{ color: catColor, fontSize: 12, fontWeight: 700 }}>{category}</span>
               <span style={{ color: th.text, fontSize: 13, fontWeight: 600 }}>{selectedProduct.name}</span>
               {category === "Pipe" && productPrice > 0 && <span style={{ marginLeft: "auto", color: "#60a5fa", fontSize: 12, fontWeight: 600 }}>Rs {productPrice}/ft</span>}
+              {category !== "Pipe" && (() => {
+                const cs = productCostSale(selectedProduct);
+                return (
+                  <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, display: "flex", gap: 10 }}>
+                    <span style={{ color: th.text }}>{formatPKR(cs.cost)} <span style={{ color: th.textMuted, fontWeight: 500 }}>cost</span></span>
+                    <span style={{ color: "#34d399" }}>{formatPKR(cs.sale)} <span style={{ opacity: 0.8, fontWeight: 500 }}>sale</span></span>
+                  </span>
+                );
+              })()}
             </div>
           )}
 
-          {category && <PurchaseEntryTable category={category} rows={block.rows} setRows={setRows} productPrice={productPrice} />}
+          {category && <PurchaseEntryTable category={category} rows={block.rows} setRows={setRows} productPrice={productPrice} product={selectedProduct} />}
           {!category && <div style={{ padding: "14px", textAlign: "center", color: th.textDim, fontSize: 13, borderRadius: 8, border: `1px dashed ${th.border}` }}>👆 Select a product to add entries</div>}
 
           {pipeSummary && pipeSummary.pieces > 0 && (
@@ -680,10 +735,11 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
 }
 
 // ─── Purchase Form Modal ──────────────────────────────────────────────────────
-function PurchaseFormModal({ products, onSave, onClose }) {
+function PurchaseFormModal({ products, onSave, onClose, extraNames=[] }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const isUrdu = lang === "ur";
+  const accounts = useAccounts();
 
   const [supplier,    setSupplier]    = useState("");
   const [invoiceNum,  setInvoiceNum]  = useState(`PO-${Date.now().toString().slice(-4)}`);
@@ -691,6 +747,7 @@ function PurchaseFormModal({ products, onSave, onClose }) {
   const [saving,      setSaving]      = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
   const [invoiceData, setInvoiceData] = useState(null);
+  const [payForm,     setPayForm]     = useState({ settlement: "full", accountId: "", paidAmount: "" });
 
   const newBlock = () => ({ _id: Date.now() + Math.random(), productId: "", rows: [] });
   const [blocks, setBlocks] = useState([newBlock()]);
@@ -706,7 +763,8 @@ function PurchaseFormModal({ products, onSave, onClose }) {
     return sum + block.rows.reduce((s, r) => s + calcRowAmt(r, category, pp), 0);
   }, 0);
 
-  const canSave = supplier && blocks.every(b => b.productId && b.rows.length > 0);
+  const pay = derivePayment(grandTotal, payForm, accounts);
+  const canSave = supplier && blocks.every(b => b.productId && b.rows.length > 0) && isPayValid(grandTotal, payForm, accounts);
 
   const handleSave = async () => {
     if (!canSave) return;
@@ -747,14 +805,35 @@ function PurchaseFormModal({ products, onSave, onClose }) {
       }
 
       const rate = qty > 0 ? total / qty : purchasePricePerUnit;
-      const res  = await onSave({ supplier, invoice: invoiceNum, date, productId: block.productId, rows: block.rows, total, qty, rate, category, productPrice: purchasePricePerUnit });
+      const purchaseUnit = (category === "Hardware" || category === "Custom") && block.rows[0]?.unit 
+        ? block.rows[0].unit 
+        : null;
+      const res  = await onSave({
+        supplier, invoice: invoiceNum, date, productId: block.productId, rows: block.rows, total, qty, rate, category, productPrice: purchasePricePerUnit,
+        paymentMethod: pay.paymentMethod, bankName: pay.bankName, accountId: pay.accountId, accountName: pay.accountName,
+        settlement: pay.settlement, isPartial: pay.isPartial, paidAmount: pay.paidAmount, remainingAmount: pay.remainingAmount,
+        unit: purchaseUnit,
+      });
       if (!res || !res.success) { allOk = false; break; }
       invoiceProducts.push({ productName: product?.name || "", category, rows: block.rows, total, qty, productPrice: purchasePricePerUnit });
     }
 
     setSaving(false);
     if (allOk) {
-      setInvoiceData({ invoice: invoiceNum, date, supplier, products: invoiceProducts });
+      await recordTradeFinance({
+        kind: "purchase",
+        partyName: supplier,
+        invoice: invoiceNum,
+        date,
+        paid: pay.paidAmount,
+        remaining: pay.remainingAmount,
+        accountId: pay.accountId,
+      });
+      setInvoiceData({
+        invoice: invoiceNum, date, supplier, products: invoiceProducts,
+        paymentMethod: pay.paymentMethod, bankName: pay.bankName, accountName: pay.accountName,
+        isPartial: pay.isPartial, paidAmount: pay.paidAmount, remainingAmount: pay.remainingAmount,
+      });
       setShowInvoice(true);
     }
   };
@@ -782,7 +861,14 @@ function PurchaseFormModal({ products, onSave, onClose }) {
         </div>
         <div style={{ gridColumn: "1/-1" }}>
           <Lbl c={t.supplier} req />
-          <input value={supplier} onChange={e => setSupplier(e.target.value)} placeholder={t.supplier + "..."} style={inpS} onFocus={e => e.target.style.borderColor = "#1abc9c"} onBlur={e => e.target.style.borderColor = th.inputBorder} />
+          <PartyNamePicker
+            type="supplier"
+            value={supplier}
+            onChange={setSupplier}
+            extraNames={extraNames}
+            isUrdu={isUrdu}
+            inputStyle={inpS}
+          />
         </div>
       </div>
 
@@ -800,18 +886,46 @@ function PurchaseFormModal({ products, onSave, onClose }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <button
+          data-add-product="1"
+          type="button"
           onClick={addBlock}
           style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px", borderRadius: 10, border: `2px dashed ${th.border}`, background: "transparent", color: th.textMuted, fontSize: 13, fontWeight: 600, cursor: "pointer" }}
           onMouseEnter={e => { e.currentTarget.style.borderColor = "#1abc9c"; e.currentTarget.style.color = "#1abc9c"; }}
           onMouseLeave={e => { e.currentTarget.style.borderColor = th.border;  e.currentTarget.style.color = th.textMuted; }}
         >
           <Icon path={ICONS.plus} size={14} /> + {isUrdu ? "پروڈکٹ شامل کریں" : "Add Product"}
+          <span style={{ fontSize: 11, fontWeight: 600, opacity: 0.75 }}>(Ctrl+A)</span>
         </button>
 
         {grandTotal > 0 && (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "9px 14px", borderRadius: 10, background: "rgba(26,188,156,0.08)", border: "1px solid rgba(26,188,156,0.25)" }}>
-            <span style={{ color: th.textMuted, fontSize: 13, fontWeight: 600 }}>{isUrdu ? "کل رقم:" : "Grand Total:"}</span>
-            <span style={{ color: "#34d399", fontWeight: 900, fontSize: 17 }}>{formatPKR(grandTotal)}</span>
+          <PaymentTerms
+            total={grandTotal}
+            form={payForm}
+            setForm={setPayForm}
+            accounts={accounts}
+            isUrdu={isUrdu}
+            partyKind="supplier"
+          />
+        )}
+
+        {grandTotal > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "9px 14px", borderRadius: 10, background: "rgba(26,188,156,0.08)", border: "1px solid rgba(26,188,156,0.25)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              <span style={{ color: th.textMuted, fontSize: 13, fontWeight: 600 }}>{isUrdu ? "کل رقم:" : "Grand Total:"}</span>
+              <span style={{ color: "#34d399", fontWeight: 900, fontSize: 17 }}>{formatPKR(grandTotal)}</span>
+            </div>
+            {pay.settlement !== "full" && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                <span style={{ color: th.textMuted }}>{isUrdu ? "ابھی ادا:" : "Paying now:"}</span>
+                <span style={{ color: "#fbbf24", fontWeight: 800 }}>{formatPKR(pay.paidAmount)}</span>
+              </div>
+            )}
+            {pay.remainingAmount > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                <span style={{ color: th.textMuted }}>{isUrdu ? "قابل ادائیگی:" : "Payable:"}</span>
+                <span style={{ color: "#f87171", fontWeight: 800 }}>{formatPKR(pay.remainingAmount)}</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -822,7 +936,7 @@ function PurchaseFormModal({ products, onSave, onClose }) {
 }
 
 // ─── Purchase Page ────────────────────────────────────────────────────────────
-function PurchasePage({ purchases, products, loadPurchases, loadProducts, purchaseReturns=[], loadPurchaseReturns }) {
+function PurchasePage({ purchases, products, loadPurchases, loadProducts, purchaseReturns=[], loadPurchaseReturns, sales=[], saleReturns=[] }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
@@ -832,26 +946,61 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
   const [showReturnModal,  setShowReturnModal]  = useState(false);
   const [showDemandPopup,  setShowDemandPopup]  = useState(false);
   const [showReturnsPopup, setShowReturnsPopup] = useState(false);
+  const [showInvPopup,     setShowInvPopup]     = useState(false);
   const [returnSeedId,     setReturnSeedId]     = useState("");
-  const [invSearch,        setInvSearch]        = useState("");
   const [printData,        setPrintData]        = useState(null);
   const [showSupplierList, setShowSupplierList] = useState(false);
+  const [dateFilter,       setDateFilter]       = useState("today");
+  const [customFrom,       setCustomFrom]       = useState("");
+  const [customTo,         setCustomTo]         = useState("");
+  const [viewGroup,        setViewGroup]        = useState(null);
 
-  const handleSave = async ({ supplier, invoice, date, productId, rows, total, qty, rate, category, productPrice }) => {
+  const handleSave = async (payload) => {
+    const { supplier, invoice, date, productId, rows, total, qty, rate, category, productPrice } = payload;
     const matchedProd   = products.find(p => p._id === productId);
     const resolvedPrice = Number(productPrice) || Number(matchedProd?.price) || 0;
-    const payload = { supplier, invoice, date, product: productId, rows, total, qty, rate, category, productName: matchedProd?.name || "", productPrice: resolvedPrice };
-    const res = await api.addPurchase(payload);
+    const data = {
+      supplier, invoice, date, product: productId, rows, total, qty, rate, category,
+      productName: matchedProd?.name || "", productPrice: resolvedPrice,
+      paymentMethod: payload.paymentMethod || "cash",
+      bankName: payload.bankName || "",
+      accountId: payload.accountId || "",
+      accountName: payload.accountName || "",
+      settlement: payload.settlement || "full",
+      isPartial: payload.isPartial || false,
+      paidAmount: payload.paidAmount || 0,
+      remainingAmount: payload.remainingAmount || 0,
+      unit: payload.unit || rows?.[0]?.unit || matchedProd?.unit || "",
+    };
+    const res = await api.addPurchase(data);
     if (res.success) { await loadPurchases(); await loadProducts(); }
     else alert(res.message || "Error saving purchase");
     return res;
   };
 
-  const del = async (d) => {
-    if (!window.confirm(t.deletePurchaseConfirm)) return;
-    const res = await api.deletePurchase(d._id);
-    if (res.success) { await loadPurchases(); await loadProducts(); await loadPurchaseReturns?.(); }
-    else alert(res.message);
+  const delGroup = async (g) => {
+    const items = g.items || [g];
+    const inv = g.head?.invoice || g.head?.invoiceNum || g.invoice || g.invoiceNum || "";
+    const n = items.length;
+    const ok = window.confirm(
+      n > 1
+        ? (isUrdu ? `انوائس ${inv} کی ${n} آئٹمز حذف کریں؟` : `Delete invoice ${inv} (${n} items)?`)
+        : t.deletePurchaseConfirm
+    );
+    if (!ok) return;
+    for (const line of items) {
+      const res = await api.deletePurchase(line._id);
+      if (!res.success) { alert(res.message); return; }
+    }
+    await reverseTradeFinance({
+      kind: "purchase",
+      partyName: g.head?.supplier || g.supplier || g.supplierName,
+      invoice: inv,
+      paid: g.head?.paidAmount ?? g.paidAmount,
+      accountId: g.head?.accountId || g.accountId,
+    });
+    setViewGroup(null);
+    await loadPurchases(); await loadProducts(); await loadPurchaseReturns?.();
   };
 
   const delReturn = async (r) => {
@@ -861,8 +1010,60 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
     else alert(res.message);
   };
 
+  const filteredPurchases = [...purchases]
+    .filter((p) => inDateFilter(p.date, dateFilter, customFrom, customTo, p.createdAt))
+    .sort((a, b) => String(b.createdAt || b.date || "").localeCompare(String(a.createdAt || a.date || "")));
+  const purchaseGroups = (() => {
+    const map = new Map();
+    filteredPurchases.forEach((p) => {
+      const key = `${p.invoice || p.invoiceNum || p._id}|${p.date || ""}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(p);
+    });
+    return [...map.values()].map((items) => {
+      items.sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
+      const head = items[0];
+      const names = items.map((p) => p.productName || safeProductName(p.product)).filter(Boolean);
+      const cats = [...new Set(items.map((p) => p.category).filter(Boolean))];
+      return {
+        items,
+        head,
+        names,
+        cats,
+        total: items.reduce((s, p) => s + (Number(p.total) || 0), 0),
+        due: Number(head.remainingAmount) || 0,
+        paid: Number(head.paidAmount) || 0,
+      };
+    });
+  })();
+  const filteredReturns = (purchaseReturns || []).filter((r) => inDateFilter(r.date, dateFilter, customFrom, customTo, r.createdAt));
+  const periodPurchaseAmt = filteredPurchases.reduce((s, p) => s + (Number(p.total) || 0), 0);
+  const periodReturnAmt = filteredReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
+  const periodNet = periodPurchaseAmt - periodReturnAmt;
+
+  const filterLabel = dateFilter === "today" ? (isUrdu ? "آج" : "Today")
+    : dateFilter === "yesterday" ? (isUrdu ? "کل" : "Yesterday")
+    : dateFilter === "week" ? (isUrdu ? "ایک ہفتہ" : "1 Week")
+    : dateFilter === "month" ? (isUrdu ? "ایک مہینہ" : "1 Month")
+    : (customFrom || customTo) ? `${customFrom || "…"} → ${customTo || "…"}`
+    : (isUrdu ? "تاریخ" : "Date");
+
+  const toInvoiceProducts = (list) => list.map((p) => {
+    const productId      = typeof p.product === "object" ? p.product?._id : p.product;
+    const matchedProduct = products.find((pr) => pr._id === productId);
+    const resolvedPrice  = Number(p.productPrice) || Number(matchedProduct?.price) || (typeof p.product === "object" ? Number(p.product?.price) : 0) || 0;
+    return {
+      productName:  p.productName || safeProductName(p.product),
+      category:     p.category || "",
+      rows:         p.rows || [],
+      total:        p.total || 0,
+      qty:          p.qty || 0,
+      productPrice: resolvedPrice,
+    };
+  });
+
   const supplierGroups = {};
-  purchases.forEach(p => {
+  filteredPurchases.forEach((p) => {
     const key = p.supplier || "—";
     if (!supplierGroups[key]) supplierGroups[key] = [];
     supplierGroups[key].push(p);
@@ -871,21 +1072,30 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
 
   const handleSupplierInvoice = (supplierName) => {
     const supplierPurchases = supplierGroups[supplierName] || [];
-    const allProducts = supplierPurchases.map(p => {
-      const productId      = typeof p.product === "object" ? p.product?._id : p.product;
-      const matchedProduct = products.find(pr => pr._id === productId);
-      const resolvedPrice  = Number(p.productPrice) || Number(matchedProduct?.price) || (typeof p.product === "object" ? Number(p.product?.price) : 0) || 0;
-      return {
-        productName:  p.productName || safeProductName(p.product),
-        category:     p.category || "",
-        rows:         p.rows || [],
-        total:        p.total || 0,
-        qty:          p.qty || 0,
-        productPrice: resolvedPrice,
-      };
-    });
-    setPrintData({ invoice: isUrdu ? "کل خریداری" : "ALL PURCHASES", date: todayStr(), supplier: supplierName, products: allProducts });
+    setPrintData({ invoice: isUrdu ? "کل خریداری" : "ALL PURCHASES", date: todayStr(), supplier: supplierName, products: toInvoiceProducts(supplierPurchases) });
     setShowSupplierList(false);
+  };
+
+  const openPurchaseInvoice = (g) => {
+    const list = g.items || [g];
+    const p = g.head || g;
+    const inv = p.invoice || p.invoiceNum || "";
+    setPrintData({
+      invoice: inv || "PO", date: p.date || todayStr(), supplier: p.supplier || "—",
+      products: toInvoiceProducts(list), createdAt: p.createdAt,
+      paymentMethod: p.paymentMethod, bankName: p.bankName, accountName: p.accountName,
+      isPartial: p.isPartial, paidAmount: p.paidAmount, remainingAmount: p.remainingAmount,
+    });
+  };
+
+  const printFiltered = () => {
+    if (!filteredPurchases.length) return;
+    setPrintData({
+      invoice: isUrdu ? `خریداری · ${filterLabel}` : `Purchases — ${filterLabel}`,
+      date: todayStr(),
+      supplier: isUrdu ? "تمام سپلائرز" : "All suppliers",
+      products: toInvoiceProducts(filteredPurchases),
+    });
   };
 
   const catBadge = (cat) => (
@@ -905,105 +1115,76 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
     : Math.round(qty || 0)
   );
 
-  const stockOf = (p) => Number(p.stock) || 0;
-  const thresholdOf = (p) => {
-    const n = Number(p.lowStockThreshold);
-    return Number.isFinite(n) && n > 0 ? n : 10;
+  const { stockedCount, inventoryAmount, demandZero } = inventoryStats(products);
+
+  const saleOf = (p) => {
+    const r = (p.rows || [])[0] || {};
+    return Number(r.salePrice) || Number(r.salePricePerFeet) || 0;
   };
-  const qInv = invSearch.trim().toLowerCase();
-  const matchesInvSearch = (p) => {
-    if (!qInv) return true;
-    return (p.name || "").toLowerCase().includes(qInv)
-      || (p.barcode || "").toLowerCase().includes(qInv)
-      || (p.category || "").toLowerCase().includes(qInv)
-      || (p.brand || "").toLowerCase().includes(qInv)
-      || (p.subType || "").toLowerCase().includes(qInv)
-      || (p.lastInvoice || "").toLowerCase().includes(qInv)
-      || (p.lastSupplier || "").toLowerCase().includes(qInv)
-      || (Array.isArray(p.suppliers) ? p.suppliers.some((s) => (s?.name || "").toLowerCase().includes(qInv)) : false);
-  };
-  const inventory = products.filter((p) => stockOf(p) > thresholdOf(p) && matchesInvSearch(p));
-  const demandZero = products.filter((p) => stockOf(p) <= 0);
-  const demandLow = products.filter((p) => {
-    const s = stockOf(p);
-    return s > 0 && s <= thresholdOf(p);
-  });
-  const latestPurchase = {};
-  const latestByName = {};
-  const takeLatest = (map, key, p, stamp) => {
-    if (!key) return;
-    const prev = map[key];
-    const prevStamp = prev ? `${prev.date || ""}|${prev.createdAt || ""}` : "";
-    if (!prev || stamp >= prevStamp) map[key] = p;
-  };
-  purchases.forEach((p) => {
-    const raw = p.product;
-    const id = raw && typeof raw === "object" ? (raw._id || raw.id) : raw;
-    const stamp = `${p.date || ""}|${p.createdAt || ""}`;
-    takeLatest(latestPurchase, id ? String(id) : "", p, stamp);
-    takeLatest(latestByName, (p.productName || "").trim().toLowerCase(), p, stamp);
-  });
-  const billOf = (p) => latestPurchase[String(p._id)] || latestByName[(p.name || "").trim().toLowerCase()] || null;
-  const invoiceOf = (p, bill) => bill?.invoice || bill?.invoiceNum || p.lastInvoice || "—";
-  const dateOf = (p, bill) => bill?.date || p.lastPurchaseDate || "—";
-  const supplierOf = (p, bill) => {
-    const mainSup = (Array.isArray(p.suppliers) ? (p.suppliers.find((s) => s?.isMain) || p.suppliers[0]) : null)?.name || "";
-    return bill?.supplier || bill?.supplierName || p.lastSupplier || mainSup || "—";
-  };
-  const stockedCount = inventory.length;
-  const inventoryAmount = products.reduce((s, p) => {
-    const stock = Number(p.stock) || 0;
-    const cost = Number(p.purchasePrice) || Number(p.price) || 0;
-    return s + stock * cost;
-  }, 0);
+  const costOf = (p) => Number(p.rate) || Number(p.productPrice) || 0;
 
   const openInvReturn = (p) => {
+    setShowInvPopup(false);
+    setShowDemandPopup(false);
     setReturnSeedId(p?._id || "");
     setShowReturnModal(true);
   };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-        <p style={{ color: th.textMuted, fontSize: 14, margin: 0 }}>{stockedCount} {isUrdu ? "انوینٹری" : "Inventory"}</p>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {purchases.length > 0 && (
-            <button
-              onClick={() => setShowSupplierList(true)}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#9b59b6,#8e44ad)", color: "white", fontWeight: 600, fontSize: 14 }}
-            >
-              📊 {isMobile ? (isUrdu ? "سپلائر" : "Sup") : (isUrdu ? "سپلائر وار اینوائس" : "Supplier Invoice")}
-            </button>
-          )}
-          <button
-            onClick={() => { setReturnSeedId(""); setShowReturnModal(true); }}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#dc2626,#f87171)", color: "white", fontWeight: 600, fontSize: 14 }}
-          >
-            ↩ {isMobile ? (isUrdu ? "واپسی" : "Return") : t.purchaseReturn}
-          </button>
-          <button
-            onClick={() => setShowModal(true)}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "white", fontWeight: 600, fontSize: 14 }}
-          >
-            <Icon path={ICONS.plus} size={15} />{isMobile ? "+" : t.addPurchase}
-          </button>
-        </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", padding: "12px 14px", borderRadius: 14, border: `1px solid ${th.border}`, background: th.bgCard }}>
+        <DateFilterBar
+          filter={dateFilter}
+          setFilter={setDateFilter}
+          customFrom={customFrom}
+          setCustomFrom={setCustomFrom}
+          customTo={customTo}
+          setCustomTo={setCustomTo}
+        />
+        <button
+          onClick={printFiltered}
+          disabled={!filteredPurchases.length}
+          style={{ padding: "8px 14px", borderRadius: 10, border: "none", cursor: filteredPurchases.length ? "pointer" : "not-allowed", background: filteredPurchases.length ? "linear-gradient(135deg,#1abc9c,#2980b9)" : th.thHead, color: filteredPurchases.length ? "#fff" : th.textMuted, fontWeight: 700, fontSize: 13 }}
+        >
+          🖨️ {isUrdu ? "پرنٹ / PDF" : "Print / PDF"}
+        </button>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(auto-fit,minmax(180px,1fr))", gap: 12 }}>
-        <StatCard label={t.inventoryValue} value={formatPKR(inventoryAmount)} icon={ICONS.purchase} color="#3498db" />
-        <StatCard label={isUrdu ? "انوینٹری" : "Inventory"} value={stockedCount} icon={ICONS.box} color="#f59e0b" />
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(5, minmax(0, 1fr))", gap: 10 }}>
+        <StatCard
+          label={isUrdu ? "مدت کی خریداری" : "Period Purchases"}
+          value={formatPKR(periodNet)}
+          icon={ICONS.purchase}
+          color="#3498db"
+          sub={periodReturnAmt > 0 ? `− ${formatPKR(periodReturnAmt)}` : `${purchaseGroups.length} ${isUrdu ? "آرڈر" : "orders"}`}
+        />
+        <StatCard
+          label={t.inventoryValue}
+          value={formatPKR(inventoryAmount)}
+          icon={ICONS.box}
+          color="#f59e0b"
+          sub={isUrdu ? "کلک کرکے دیکھیں" : "Click to open"}
+          onClick={() => setShowInvPopup(true)}
+        />
+        <StatCard
+          label={isUrdu ? "اسٹاک لسٹ" : "Stock List"}
+          value={stockedCount}
+          icon={ICONS.box}
+          color="#22c55e"
+          sub={isUrdu ? "کلک کرکے دیکھیں" : "Click to open"}
+          onClick={() => setShowInvPopup(true)}
+        />
         <StatCard
           label={isUrdu ? "ڈیمانڈ" : "Demand"}
-          value={demandZero.length + demandLow.length}
+          value={demandZero.length}
           icon={ICONS.warning}
           color="#ea580c"
-          sub={`${demandZero.length} zero · ${demandLow.length} low`}
+          sub={isUrdu ? "اسٹاک ختم" : "Out of stock"}
           onClick={() => setShowDemandPopup(true)}
         />
         <StatCard
           label={isUrdu ? "واپسی" : "Returns"}
-          value={(purchaseReturns || []).length}
+          value={filteredReturns.length}
           icon={ICONS.trend_down}
           color="#ef4444"
           sub={isUrdu ? "کلک کرکے دیکھیں" : "Click to view"}
@@ -1013,88 +1194,146 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
 
       <div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-          <h3 style={{ color: th.text, fontWeight: 700, margin: 0, fontSize: 16 }}>{isUrdu ? "انوینٹری" : "Inventory"}</h3>
-          <input
-            value={invSearch}
-            onChange={(e) => setInvSearch(e.target.value)}
-            placeholder={isUrdu ? "نام / بارکوڈ تلاش..." : "Search name / barcode..."}
-            style={{ flex: "1 1 180px", maxWidth: 280, padding: "8px 12px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.text, fontSize: 13, outline: "none" }}
-          />
+          <div>
+            <h3 style={{ color: th.text, fontWeight: 700, margin: 0, fontSize: 16 }}>
+              {isUrdu ? "خریداریاں" : "Purchases"} · {filterLabel}
+            </h3>
+            <p style={{ color: th.textMuted, fontSize: 12, margin: "4px 0 0" }}>
+              {isUrdu ? "آئٹمز دیکھنے کے لیے قطار پر کلک کریں" : "Click a row to see items"}
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {filteredPurchases.length > 0 && (
+              <button
+                onClick={() => setShowSupplierList(true)}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#9b59b6,#8e44ad)", color: "white", fontWeight: 600, fontSize: 14 }}
+              >
+                📊 {isMobile ? (isUrdu ? "سپلائر" : "Sup") : (isUrdu ? "سپلائر وار اینوائس" : "Supplier Invoice")}
+              </button>
+            )}
+            <button
+              onClick={() => { setReturnSeedId(""); setShowReturnModal(true); }}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#dc2626,#f87171)", color: "white", fontWeight: 600, fontSize: 14 }}
+            >
+              ↩ {isMobile ? (isUrdu ? "واپسی" : "Return") : t.purchaseReturn}
+            </button>
+            <button
+              onClick={() => setShowModal(true)}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "white", fontWeight: 600, fontSize: 14 }}
+            >
+              <Icon path={ICONS.plus} size={15} />{isMobile ? "+" : t.addPurchase}
+            </button>
+          </div>
         </div>
         <Table
-          cols={[t.invoiceNum, t.date, t.supplier, t.name, t.category, t.stock, t.totalLabel, t.actions]}
-          rows={inventory.map((p) => {
-            const stock = Number(p.stock) || 0;
-            const cost = Number(p.purchasePrice) || Number(p.price) || 0;
-            const bill = billOf(p);
+          cols={[t.invoiceNum, isUrdu ? "تاریخ / وقت" : "Date / Time", t.supplier, t.name, t.category, t.quantity, t.totalLabel, isUrdu ? "ادائیگی" : "Pay"]}
+          rows={purchaseGroups.map((g) => {
+            const p = g.head;
+            const multi = g.items.length > 1;
+            const nameLabel = !g.names.length
+              ? "—"
+              : multi ? `${g.names[0]} +${g.names.length - 1}` : g.names[0];
             return {
-              data: p,
+              data: g,
               cells: [
-                <span style={{ fontFamily: "monospace", color: "#60a5fa", fontSize: 13 }}>{invoiceOf(p, bill)}</span>,
-                dateOf(p, bill),
-                supplierOf(p, bill),
-                <div>
-                  <div style={{ fontWeight: 700, color: th.text }}>{productDisplayName(p) || p.name}</div>
-                  {p.barcode ? <div style={{ color: th.textMuted, fontSize: 11 }}>{p.barcode}</div> : null}
+                <span style={{ fontFamily: "monospace", color: "#60a5fa", fontSize: 13 }}>{p.invoice || p.invoiceNum || "—"}</span>,
+                <span style={{ whiteSpace: "nowrap", fontSize: 13 }}>{formatDateTime(p.date, p.createdAt, isUrdu ? "ur-PK" : "en-PK")}</span>,
+                p.supplier || "—",
+                <div style={{ fontWeight: 700, color: th.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 280 }} title={g.names.join(", ")}>
+                  {nameLabel}
                 </div>,
-                catBadge(p.category),
-                <span style={{ fontWeight: 700, color: "#34d399" }}>{stockLabel(p.category, stock)}</span>,
-                <span style={{ fontWeight: 700 }}>{formatPKR(stock * cost)}</span>,
-                <button
-                  onClick={() => openInvReturn(p)}
-                  style={{ padding: "5px 10px", borderRadius: 8, border: "none", cursor: "pointer", background: "rgba(248,113,113,0.15)", color: "#f87171", fontWeight: 700, fontSize: 12 }}
-                >↩ {isUrdu ? "واپسی" : "Return"}</button>,
+                multi && g.cats.length > 1
+                  ? <span style={{ display: "flex", alignItems: "center", gap: 4 }}>{catBadge(g.cats[0])}<span style={{ fontSize: 11, color: th.textMuted }}>+{g.cats.length - 1}</span></span>
+                  : catBadge(g.cats[0] || p.category),
+                <span style={{ fontWeight: 700, whiteSpace: "nowrap" }}>
+                  {multi ? `${g.items.length} ${isUrdu ? "آئٹمز" : "items"}` : stockLabel(p.category, p.qty)}
+                </span>,
+                <span style={{ fontWeight: 800, color: "#60a5fa", whiteSpace: "nowrap" }}>{formatPKR(g.total)}</span>,
+                g.due > 0
+                  ? <span style={{ fontSize: 11, padding: "2px 7px", borderRadius: 20, background: "rgba(248,113,113,0.15)", color: "#f87171", fontWeight: 700, whiteSpace: "nowrap" }}>⏳ {formatPKR(g.due)}</span>
+                  : <span style={{ fontSize: 11, padding: "2px 7px", borderRadius: 20, background: "rgba(52,211,153,0.12)", color: "#34d399", fontWeight: 600 }}>{p.accountName || p.bankName || (isUrdu ? "ادا" : "Paid")}</span>,
               ],
             };
           })}
+          onRowClick={(g) => setViewGroup(g)}
+          onDelete={delGroup}
         />
-        {!inventory.length && (
-          <p style={{ color: th.textMuted, fontSize: 13, margin: "8px 0 0" }}>{isUrdu ? "اسٹاک والی آئٹمز یہاں آئیں گی" : "In-stock items will show here"}</p>
-        )}
       </div>
 
-      {showDemandPopup && (
-        <Modal title={isUrdu ? `ڈیمانڈ · ${demandZero.length + demandLow.length}` : `Demand · ${demandZero.length + demandLow.length}`} onClose={() => setShowDemandPopup(false)}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div>
-              <div style={{ color: "#f87171", fontWeight: 800, fontSize: 12, marginBottom: 8, letterSpacing: "0.06em" }}>
-                {isUrdu ? "زیرو مقدار" : "ZERO QUANTITY"} ({demandZero.length})
+      {viewGroup && (
+        <Modal
+          title={`${viewGroup.head.invoice || viewGroup.head.invoiceNum || "PO"} · ${viewGroup.items.length} ${isUrdu ? "آئٹمز" : "items"}`}
+          onClose={() => setViewGroup(null)}
+          xl
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "10px 12px", borderRadius: 12, border: `1px solid ${th.border}`, background: th.bgCard }}>
+              <div>
+                <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>{isUrdu ? "سپلائر" : "Supplier"}</div>
+                <div style={{ color: th.text, fontWeight: 800, fontSize: 15 }}>{viewGroup.head.supplier || "—"}</div>
               </div>
-              {demandZero.length === 0 && <p style={{ color: th.textMuted, fontSize: 12, margin: 0 }}>{isUrdu ? "کوئی نہیں" : "None"}</p>}
-              {demandZero.map((p) => (
-                <div key={p._id} style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid rgba(248,113,113,0.25)", background: "rgba(248,113,113,0.08)", marginBottom: 6 }}>
-                  <div style={{ color: th.text, fontWeight: 700, fontSize: 13 }}>{productDisplayName(p) || p.name}</div>
-                  <div style={{ color: th.textMuted, fontSize: 11, marginTop: 2 }}>{p.category || "—"} · 0</div>
-                </div>
-              ))}
+              <div>
+                <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>{isUrdu ? "تاریخ" : "Date"}</div>
+                <div style={{ color: th.text, fontWeight: 700, fontSize: 14 }}>{formatDateTime(viewGroup.head.date, viewGroup.head.createdAt, isUrdu ? "ur-PK" : "en-PK")}</div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>{isUrdu ? "کل رقم" : "Invoice total"}</div>
+                <div style={{ color: "#60a5fa", fontWeight: 900, fontSize: 16 }}>{formatPKR(viewGroup.total)}</div>
+              </div>
             </div>
-            <div>
-              <div style={{ color: "#fbbf24", fontWeight: 800, fontSize: 12, marginBottom: 8, letterSpacing: "0.06em" }}>
-                {isUrdu ? "کم مقدار" : "LOW QUANTITY"} ({demandLow.length})
+            {(viewGroup.due > 0 || viewGroup.paid > 0) && (
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, padding: "8px 12px", borderRadius: 10, border: `1px solid ${th.border}` }}>
+                <span style={{ color: th.textMuted }}>{isUrdu ? "ادا کردہ" : "Paid"} · {formatPKR(viewGroup.paid)}</span>
+                {viewGroup.due > 0
+                  ? <span style={{ color: "#f87171", fontWeight: 800 }}>{isUrdu ? "باقی" : "Due"} · {formatPKR(viewGroup.due)}</span>
+                  : <span style={{ color: "#34d399", fontWeight: 700 }}>{viewGroup.head.accountName || viewGroup.head.bankName || (isUrdu ? "مکمل ادا" : "Paid")}</span>}
               </div>
-              {demandLow.length === 0 && <p style={{ color: th.textMuted, fontSize: 12, margin: 0 }}>{isUrdu ? "کوئی نہیں" : "None"}</p>}
-              {demandLow.map((p) => {
-                const bill = billOf(p);
-                return (
-                <div key={p._id} style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid rgba(251,191,36,0.25)", background: "rgba(251,191,36,0.08)", marginBottom: 6 }}>
-                  <div style={{ color: th.text, fontWeight: 700, fontSize: 13 }}>{productDisplayName(p) || p.name}</div>
-                  <div style={{ color: "#fbbf24", fontSize: 11, marginTop: 2, fontWeight: 700 }}>
-                    {stockLabel(p.category, stockOf(p))} ≤ {thresholdOf(p)}
-                  </div>
-                  <div style={{ color: th.textMuted, fontSize: 11, marginTop: 2 }}>
-                    {invoiceOf(p, bill)} · {dateOf(p, bill)} · {supplierOf(p, bill)}
-                  </div>
-                </div>
-                );
+            )}
+            <Table
+              compact
+              cols={[t.name, t.category, t.quantity, isUrdu ? "لاگت" : "Cost", t.salePrice || "Sale", t.totalLabel]}
+              rows={viewGroup.items.map((p) => {
+                const cost = costOf(p);
+                const sale = saleOf(p);
+                return {
+                  data: p,
+                  cells: [
+                    <div style={{ fontWeight: 700, color: th.text }}>{p.productName || safeProductName(p.product)}</div>,
+                    catBadge(p.category),
+                    <span style={{ fontWeight: 700, whiteSpace: "nowrap" }}>{stockLabel(p.category, p.qty)}</span>,
+                    <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{cost ? formatPKR(cost) : "—"}</span>,
+                    <span style={{ whiteSpace: "nowrap", fontSize: 12, color: "#34d399", fontWeight: 700 }}>{sale ? formatPKR(sale) : "—"}</span>,
+                    <span style={{ fontWeight: 800, color: "#60a5fa", whiteSpace: "nowrap" }}>{formatPKR(p.total)}</span>,
+                  ],
+                };
               })}
-            </div>
+            />
+            <button
+              type="button"
+              onClick={() => { const g = viewGroup; setViewGroup(null); openPurchaseInvoice(g); }}
+              style={{ padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "#fff", fontWeight: 700, fontSize: 13 }}
+            >
+              🖨️ {isUrdu ? "پرنٹ رسید" : "Print invoice"}
+            </button>
           </div>
+        </Modal>
+      )}
+
+      {showInvPopup && (
+        <Modal title={isUrdu ? `اسٹاک لسٹ · ${stockedCount}` : `Stock List · ${stockedCount}`} onClose={() => setShowInvPopup(false)} xl>
+          <InventoryStockTable products={products} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} onReturn={openInvReturn} />
+        </Modal>
+      )}
+
+      {showDemandPopup && (
+        <Modal title={isUrdu ? `ڈیمانڈ · ${demandZero.length}` : `Demand · ${demandZero.length}`} onClose={() => setShowDemandPopup(false)} xl>
+          <InventoryStockTable products={products} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} onReturn={openInvReturn} kind="demand" />
         </Modal>
       )}
 
       {showReturnsPopup && (
         <Modal title={isUrdu ? "خریداری واپسی کے ریکارڈ" : t.returnRecords} onClose={() => setShowReturnsPopup(false)} wide>
-          <ReturnsTable returns={purchaseReturns} kind="purchase" onDelete={delReturn} />
+          <ReturnsTable returns={filteredReturns} kind="purchase" onDelete={delReturn} />
         </Modal>
       )}
 
@@ -1115,7 +1354,16 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
 
       {showModal && (
         <Modal title={t.addPurchase} onClose={() => setShowModal(false)} wide>
-          <PurchaseFormModal products={products} onSave={handleSave} onClose={() => setShowModal(false)} />
+          <PurchaseFormModal
+            products={products}
+            extraNames={[
+              ...purchases.map((p) => p.supplier || p.supplierName),
+              ...products.flatMap((p) => (Array.isArray(p.suppliers) ? p.suppliers.map((s) => s?.name) : [])),
+              ...products.map((p) => p.lastSupplier),
+            ]}
+            onSave={handleSave}
+            onClose={() => setShowModal(false)}
+          />
         </Modal>
       )}
 
