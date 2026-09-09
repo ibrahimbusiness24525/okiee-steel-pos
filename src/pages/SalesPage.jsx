@@ -15,7 +15,7 @@ import { reverseTradeFinance } from "../utils/tradeFinance";
 // causing crash on Print button click → blank page on print.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const saleThermalPrintStyles = `@media print{body *{visibility:hidden !important;}#sale-thermal-invoice,#sale-thermal-invoice *{visibility:visible !important;font-weight:900 !important;}#sale-thermal-invoice{position:fixed !important;left:50% !important;top:0 !important;transform:translateX(-50%) !important;width:63mm !important;max-width:63mm !important;margin:0 !important;padding:1mm !important;box-sizing:border-box !important;overflow:hidden !important;}@page{margin:0;}html,body{width:65mm !important;max-width:65mm !important;margin:0 !important;padding:0 !important;overflow-x:hidden !important;}button{display:none !important;}}`;
+const saleThermalPrintStyles = `@media print{body *{visibility:hidden !important;}#sale-thermal-invoice,#sale-thermal-invoice *{visibility:visible !important;font-weight:900 !important;}#sale-thermal-invoice{position:fixed !important;left:50% !important;top:0 !important;transform:translateX(-50%) !important;width:3in !important;max-width:3in !important;margin:0 !important;padding:1mm !important;box-sizing:border-box !important;overflow:hidden !important;}@page{margin:0;}html,body{width:3in !important;max-width:3in !important;margin:0 !important;padding:0 !important;overflow-x:hidden !important;}button{display:none !important;}}`;
 
 function SaleThermalInvoice({ invoiceData, onClose }) {
   // ✅ FIX: th was missing — Close button used th.border / th.bgCard / th.textMuted
@@ -43,7 +43,7 @@ function SaleThermalInvoice({ invoiceData, onClose }) {
     const clone = invoiceEl.cloneNode(true);
     clone.id = "sale-thermal-invoice-print";
     clone.style.cssText = [
-      "width:63mm","max-width:63mm","font-family:'Courier New',Courier,monospace",
+      "width:3in","max-width:3in","font-family:'Courier New',Courier,monospace",
       "font-size:12px","color:#000","background:#fff",
       "padding:1mm","box-sizing:border-box",
       "margin:0","overflow:hidden","font-weight:900"
@@ -60,21 +60,21 @@ function SaleThermalInvoice({ invoiceData, onClose }) {
     const styleEl = document.createElement("style");
     styleEl.id = "print-portal-style";
     styleEl.innerHTML = `
-      @page { size: 65mm ${pageHeightMM}mm; margin: 0; }
+      @page { size: 3in ${pageHeightMM}mm; margin: 0; }
       @media print {
-        html, body { width:65mm !important; max-width:65mm !important; margin:0 !important; padding:0 !important; overflow-x:hidden !important; }
+        html, body { width:3in !important; max-width:3in !important; margin:0 !important; padding:0 !important; overflow-x:hidden !important; }
         body * { visibility: hidden !important; }
         #sale-thermal-invoice-print, #sale-thermal-invoice-print * { visibility: visible !important; }
         #print-portal-overlay {
           position: fixed !important; top:0 !important; left:50% !important;
           transform: translateX(-50%) !important;
-          width:63mm !important; max-width:63mm !important;
+          width:3in !important; max-width:3in !important;
           height:auto !important; overflow:hidden !important;
           z-index:99999 !important; margin:0 !important; box-sizing:border-box !important;
         }
         #sale-thermal-invoice-print {
           position:static !important; margin:0 !important;
-          width:63mm !important; max-width:63mm !important; box-sizing:border-box !important;
+          width:3in !important; max-width:3in !important; box-sizing:border-box !important;
         }
         #sale-thermal-invoice-print * { box-sizing:border-box !important; font-weight:900 !important; max-width:100% !important; }
         button { display: none !important; }
@@ -97,7 +97,7 @@ function SaleThermalInvoice({ invoiceData, onClose }) {
   const ownerLines = sp.owners.filter(o => o.name || o.nameUr);
 
   const s = {
-    page:    { width:"63mm", maxWidth:"63mm", fontFamily:"'Courier New',Courier,monospace", fontSize:"12px", color:"#000", fontWeight:"900", background:"#fff", padding:"1mm", boxSizing:"border-box", overflow:"hidden", margin:"0 auto" },
+    page:    { width:"3in", maxWidth:"3in", fontFamily:"'Courier New',Courier,monospace", fontSize:"12px", color:"#000", fontWeight:"900", background:"#fff", padding:"1mm", boxSizing:"border-box", overflow:"hidden", margin:"0 auto" },
     center:  { textAlign:"center", fontWeight:"900" },
     bold:    { fontWeight:"900" },
     divider: { borderTop:"1px dashed #000", margin:"4px 0" },

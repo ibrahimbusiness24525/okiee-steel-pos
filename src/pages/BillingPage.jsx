@@ -19,7 +19,7 @@ import PartyNamePicker from "../components/PartyNamePicker";
 // ✅ Fix 4: Partial Payment feature
 // ✅ Fix 5: Invoice in proper TABLE — clean, attractive, professional
 // ✅ Fix 6: PRINT — visibility trick fixes Modal nesting issue
-// ✅ Fix 7: PRINT WIDTH — 65mm to match actual printer paper
+// ✅ Fix 7: PRINT WIDTH — 3 inch thermal slip
 // ✅ Fix 8: PRINT FULL BOLD — font-weight:900 forced on every element
 // ✅ Fix 9: TABLE INVOICE — Description/Qty/Rate/Amount columns per product
 // ✅ Fix 10: INVOICE REDESIGN — plain "Sleek Bill" style (SN/Item/Qty/Price/Amt,
@@ -149,8 +149,8 @@ const getPaymentBadgeStyle = (paymentMethod) => {
 // invoice — that mismatch was the actual bug being reported.
 const thermalPrintStyles = `
 @page {
-  size: 65mm 297mm;
-  margin: 4mm 3mm;
+  size: 3in 297mm;
+  margin: 1.5mm;
 }
 
 @media print {
@@ -184,7 +184,7 @@ body *{
     left:0 !important;
     top:0 !important;
     width:100% !important;
-    padding:0 !important;
+    padding:2mm 1mm !important;
     background:#fff;
     box-sizing:border-box;
     font-size:12px;
@@ -396,13 +396,13 @@ function BillingSaleInvoice({ invoiceData, onClose, isUrdu }) {
   });
 
   const page = {
-  width: "65mm",
+  width: "3in",
   margin: "0 auto",
   fontFamily: "Arial, sans-serif",
   fontSize: "14px",
   color: "#000",
   background: "#fff",
-  padding: "8px 8px 12px",
+  padding: "6px 4px 10px",
   boxSizing: "border-box",
 };
 
@@ -423,10 +423,6 @@ const tbl = {
   width: "100%",
   borderCollapse: "collapse",
   tableLayout: "fixed",
-
-  border: "1px solid #cfcfcf",
-  borderRadius: "8px",
-  overflow: "hidden",
 };
 
 const thS = (w, align) => ({
@@ -466,11 +462,11 @@ const tdNum = (align) => ({
 
 /* BALANCED WIDTHS */
 
-const COL_SN = "10%";
-const COL_ITEM = "36%";
-const COL_QTY = "14%";
-const COL_PRICE = "20%";
-const COL_AMT = "20%";
+const COL_SN = "8%";
+const COL_ITEM = "40%";
+const COL_QTY = "16%";
+const COL_PRICE = "18%";
+const COL_AMT = "18%";
 
 
   // ── PRINT MECHANISM ─────────────────────────────────────────────────────
@@ -573,23 +569,23 @@ letterSpacing:"0.3px"
 
 <tr>
 
-<th style={thS("8%","center")}>
+<th style={thS(COL_SN,"center")}>
 {L.colSN}
 </th>
 
-<th style={thS("40%","left")}>
+<th style={thS(COL_ITEM,"left")}>
 {L.colItem}
 </th>
 
-<th style={thS("12%","center")}>
+<th style={thS(COL_QTY,"center")}>
 {L.colQty}
 </th>
 
-<th style={thS("20%","right")}>
+<th style={thS(COL_PRICE,"right")}>
 Price
 </th>
 
-<th style={thS("20%","right")}>
+<th style={thS(COL_AMT,"right")}>
 Amount
 </th>
 

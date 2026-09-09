@@ -241,7 +241,7 @@ function printPageCss({ isA4, pageHeightMM }) {
   const thermalH = Math.max(80, Math.min(pageHeightMM || 297, 297));
   const page = isA4
     ? `@page { size: A4 portrait; margin: 8mm 10mm; }`
-    : `@page { size: 65mm ${thermalH}mm; margin: 3mm 2.5mm; }`;
+    : `@page { size: 3in ${thermalH}mm; margin: 1.5mm; }`;
   return `
     ${page}
     @media print {
@@ -286,7 +286,7 @@ function printPageCss({ isA4, pageHeightMM }) {
         width: 100% !important;
         max-width: 100% !important;
         margin: 0 !important;
-        padding: 0 !important;
+        padding: 2mm 1mm !important;
         background: #fff !important;
         font-size: 13px !important;
         line-height: 1.35 !important;
@@ -417,7 +417,7 @@ export async function sharePdfOnWhatsApp({ filename, text, phone } = {}) {
   window.open(whatsappUrl(phone, hint), "_blank");
 }
 
-/** Print #thermal-invoice as thermal roll (65mm) or A4 paper. PDF downloads a file (no print dialog). */
+/** Print #thermal-invoice as thermal roll (3 inch) or A4 paper. PDF downloads a file (no print dialog). */
 export function printThermalOrA4(mode = "thermal", filename) {
   if (mode === "pdf") {
     downloadInvoicePdf(filename);
@@ -438,14 +438,13 @@ export function printThermalOrA4(mode = "thermal", filename) {
   portal.style.position = "absolute";
   portal.style.left = "-9999px";
   portal.style.top = "0";
-  portal.style.width = isA4 ? "210mm" : "65mm";
+  portal.style.width = isA4 ? "210mm" : "3in";
 
   const clone = inv.cloneNode(true);
   clone.id = "thermal-invoice-print";
-  clone.style.width = isA4 ? "190mm" : "59mm";
-  clone.style.maxWidth = isA4 ? "190mm" : "59mm";
+  clone.style.width = isA4 ? "190mm" : "3in";
+  clone.style.maxWidth = isA4 ? "190mm" : "3in";
   clone.style.margin = "0";
-  clone.style.padding = "0";
   clone.style.boxSizing = "border-box";
   clone.style.color = "#000";
   clone.style.background = "#fff";

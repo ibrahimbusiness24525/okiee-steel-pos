@@ -1,4 +1,4 @@
-import { CombinedSaleInvoice } from "../components/InvoiceComponents";
+import { CombinedSaleInvoice, CombinedThermalInvoice } from "../components/InvoiceComponents";
 import { useState, useMemo, useEffect } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
@@ -1680,7 +1680,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
 
       {purchaseModal && (
         <Modal title={isUrdu ? "خریداری رسید" : "Purchase Invoice"} onClose={() => setPurchaseModal(null)}>
-          <CombinedSaleInvoice invoiceData={purchaseModal} onClose={() => setPurchaseModal(null)} isUrdu={isUrdu}/>
+          <CombinedThermalInvoice invoiceData={purchaseModal} onClose={() => setPurchaseModal(null)} isUrdu={isUrdu}/>
         </Modal>
       )}
 

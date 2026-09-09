@@ -3,7 +3,7 @@ import { formatPKR, loadShopProfile, formatWeightKgG, printThermalOrA4 } from ".
 
 // ─── Thermal print styles ─────────────────────────────────────────────────────
 export const thermalPrintStyles = `
-@page { size: 65mm 297mm; margin: 4mm 3mm; }
+@page { size: 3in 297mm; margin: 1.5mm; }
 @media print {
   html, body { margin:0 !important; padding:0 !important; background:#fff !important; }
   body * { visibility:hidden !important; }
@@ -105,17 +105,16 @@ function buildPrintHandler(mode = "thermal", filename) {
 // ─── SHARED STYLE OBJECTS (identical to BillingSaleInvoice) ──────────────────
 const sharedStyles = {
   page: {
-    width: "65mm", margin: "0 auto",
+    width: "3in", margin: "0 auto",
     fontFamily: "Arial, sans-serif", fontSize: "14px",
     color: "#000", background: "#fff",
-    padding: "8px 8px 12px", boxSizing: "border-box",
+    padding: "6px 4px 10px", boxSizing: "border-box",
   },
   center:  { textAlign: "center" },
   bold500: { fontWeight: 500 },
   dash:    { borderTop: "1px dashed #000", margin: "8px 0" },
   tbl: {
     width: "100%", borderCollapse: "collapse", tableLayout: "fixed",
-    border: "1px solid #cfcfcf", borderRadius: "8px", overflow: "hidden",
   },
   thS: (w, align) => ({
     width: w, padding: "6px 3px", fontWeight: 600, fontSize: "11px",
@@ -132,11 +131,11 @@ const sharedStyles = {
   }),
 };
 
-const COL_SN    = "10%";
-const COL_ITEM  = "36%";
-const COL_QTY   = "14%";
-const COL_PRICE = "20%";
-const COL_AMT   = "20%";
+const COL_SN    = "8%";
+const COL_ITEM  = "40%";
+const COL_QTY   = "16%";
+const COL_PRICE = "18%";
+const COL_AMT   = "18%";
 
 // ─── SHARED INVOICE HEADER BLOCK ─────────────────────────────────────────────
 function InvoiceTopHeader({ sp, L, isUrdu }) {
@@ -175,7 +174,15 @@ function PrintButtonRow({ onClose, isUrdu, handlePrint, handlePrintA4, handlePri
 // ═══════════════════════════════════════════════════════════════════════════════
 function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
   const th = useTheme();
-  const { invoice, date, supplier, products } = invoiceData;
+  const {
+    invoice, date,
+    supplier: supplierRaw, customer,
+    products: productsRaw, items,
+    paymentMethod, bankName, accountName,
+    isPartial, paidAmount, remainingAmount, createdAt,
+  } = invoiceData;
+  const supplier = supplierRaw || customer || "";
+  const products = productsRaw || items || [];
   const sp         = loadShopProfile();
   const ownerLines = sp.owners.filter(o => o.name || o.nameUr);
 
@@ -195,6 +202,9 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
     colAmt:       "رقم",
     subtotalLbl:  "ذیلی کل",
     totalLbl:     "کل رقم",
+    payLbl:       "ادائیگی",
+    paidNowLbl:   "ادا کردہ",
+    remainingLbl: "قابل ادائیگی",
     timeLbl:      "وقت",
     softPhone:    "03057903867",
   } : {
@@ -213,6 +223,9 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
     colAmt:       "Amt",
     subtotalLbl:  "Subtotal",
     totalLbl:     "TOTAL",
+    payLbl:       "Payment",
+    paidNowLbl:   "Paid",
+    remainingLbl: "Payable",
     timeLbl:      "Time",
     softPhone:    "03057903867",
   };
@@ -334,11 +347,11 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
               </colgroup>
               <thead>
                 <tr>
-                  <th style={thS("8%",  "center")}>{L.colSN}</th>
-                  <th style={thS("40%", "left")}>{L.colItem}</th>
-                  <th style={thS("12%", "center")}>{L.colQty}</th>
-                  <th style={thS("20%", "right")}>{L.colPrice}</th>
-                  <th style={thS("20%", "right")}>{L.colAmt}</th>
+                  <th style={thS(COL_SN,  "center")}>{L.colSN}</th>
+                  <th style={thS(COL_ITEM, "left")}>{L.colItem}</th>
+                  <th style={thS(COL_QTY, "center")}>{L.colQty}</th>
+                  <th style={thS(COL_PRICE, "right")}>{L.colPrice}</th>
+                  <th style={thS(COL_AMT, "right")}>{L.colAmt}</th>
                 </tr>
               </thead>
               <tbody>
@@ -384,6 +397,30 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
               <span>{formatPKR(grandTotal)}</span>
             </div>
 
+            {(paymentMethod || isPartial || Number(remainingAmount) > 0) && (
+              <>
+                <div style={dash} />
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 600 }}>
+                  <span>{L.payLbl}</span>
+                  <span>
+                    {getPaymentLabel(paymentMethod, accountName || bankName, isUrdu)}
+                  </span>
+                </div>
+                {(isPartial || Number(remainingAmount) > 0) && (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 600, marginTop: 4 }}>
+                      <span>{L.paidNowLbl}</span>
+                      <span>{formatPKR(paidAmount)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 700, marginTop: 4 }}>
+                      <span>{L.remainingLbl}</span>
+                      <span>{formatPKR(remainingAmount)}</span>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
             <div style={dash} />
 
             {/* Time */}
@@ -392,7 +429,7 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
                 <tr>
                   <td style={{ ...tdS("left"), padding: "6px 3px" }}>{L.timeLbl}</td>
                   <td colSpan={4} style={{ ...tdS("right"), padding: "6px 3px", whiteSpace: "nowrap" }}>
-                    {new Date().toLocaleTimeString(isUrdu ? "ur-PK" : "en-PK", { hour: "2-digit", minute: "2-digit" })}
+                    {new Date(createdAt || Date.now()).toLocaleTimeString(isUrdu ? "ur-PK" : "en-PK", { hour: "2-digit", minute: "2-digit" })}
                   </td>
                 </tr>
               </tbody>
@@ -419,7 +456,7 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
     invoice, date, customer, items = [],
     grandTotal = 0, paymentMethod = "cash", bankName = "",
     isPartial = false, paidAmount = 0, remainingAmount = 0,
-    loaderName = "", loaderFee = 0, bindingFee = 0,
+    loaderName = "", loaderFee = 0, bindingFee = 0, isPurchase = false,
   } = invoiceData;
 
   const sp         = loadShopProfile();
@@ -435,7 +472,7 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
     address:       sp.addressUr || sp.address,
     billNoLbl:     "رسید نمبر",
     dateLbl:       "تاریخ",
-    customerLbl:   "گاہک",
+    customerLbl:   isPurchase ? "سپلائر" : "گاہک",
     colSN:         "نمبر",
     colItem:       "آئٹم",
     colQty:        "مقدار",
@@ -461,7 +498,7 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
     address:       sp.address,
     billNoLbl:     "Bill No",
     dateLbl:       "Date",
-    customerLbl:   "Customer",
+    customerLbl:   isPurchase ? "Supplier" : "Customer",
     colSN:         "SN",
     colItem:       "Item",
     colQty:        "Qty",
@@ -574,11 +611,11 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
               </colgroup>
               <thead>
                 <tr>
-                  <th style={thS("8%",  "center")}>{L.colSN}</th>
-                  <th style={thS("40%", "left")}>{L.colItem}</th>
-                  <th style={thS("12%", "center")}>{L.colQty}</th>
-                  <th style={thS("20%", "right")}>{L.colPrice}</th>
-                  <th style={thS("20%", "right")}>{L.colAmt}</th>
+                  <th style={thS(COL_SN,  "center")}>{L.colSN}</th>
+                  <th style={thS(COL_ITEM, "left")}>{L.colItem}</th>
+                  <th style={thS(COL_QTY, "center")}>{L.colQty}</th>
+                  <th style={thS(COL_PRICE, "right")}>{L.colPrice}</th>
+                  <th style={thS(COL_AMT, "right")}>{L.colAmt}</th>
                 </tr>
               </thead>
               <tbody>

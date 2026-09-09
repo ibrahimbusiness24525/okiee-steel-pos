@@ -73,7 +73,7 @@ const getUrduItemLabel = (cat) => {
 
 // ─── Print Styles (same as BillingSaleInvoice) ────────────────────────────────
 const thermalPrintStyles = `
-@page { size: 65mm 297mm; margin: 4mm 3mm; }
+@page { size: 3in 297mm; margin: 1.5mm; }
 @media print {
   html, body { margin:0 !important; padding:0 !important; background:#fff !important; }
   body * { visibility:hidden !important; }
@@ -136,17 +136,16 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
 
   // ── Styles — identical to BillingSaleInvoice ──
   const page = {
-    width: "65mm", margin: "0 auto",
+    width: "3in", margin: "0 auto",
     fontFamily: "Arial, sans-serif", fontSize: "14px",
     color: "#000", background: "#fff",
-    padding: "8px 8px 12px", boxSizing: "border-box",
+    padding: "6px 4px 10px", boxSizing: "border-box",
   };
   const center  = { textAlign: "center" };
   const bold500 = { fontWeight: 500 };
   const dash    = { borderTop: "1px dashed #000", margin: "8px 0" };
   const tbl     = {
     width: "100%", borderCollapse: "collapse", tableLayout: "fixed",
-    border: "1px solid #cfcfcf", borderRadius: "8px", overflow: "hidden",
   };
   const thS = (w, align) => ({
     width: w, padding: "6px 3px", fontWeight: 600, fontSize: "11px",
@@ -162,11 +161,11 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
     textAlign: align || "right", whiteSpace: "nowrap",
   });
 
-  const COL_SN    = "10%";
-  const COL_ITEM  = "36%";
-  const COL_QTY   = "14%";
-  const COL_PRICE = "20%";
-  const COL_AMT   = "20%";
+  const COL_SN    = "8%";
+  const COL_ITEM  = "40%";
+  const COL_QTY   = "16%";
+  const COL_PRICE = "18%";
+  const COL_AMT   = "18%";
 
   // ── Parse each product's rows → flat numbered lineItems ──
   const parseRow = (row, cat, productName, pp) => {
@@ -303,11 +302,11 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
               </colgroup>
               <thead>
                 <tr>
-                  <th style={thS("8%",  "center")}>{L.colSN}</th>
-                  <th style={thS("40%", "left")}>{L.colItem}</th>
-                  <th style={thS("12%", "center")}>{L.colQty}</th>
-                  <th style={thS("20%", "right")}>{L.colPrice}</th>
-                  <th style={thS("20%", "right")}>{L.colAmt}</th>
+                  <th style={thS(COL_SN, "center")}>{L.colSN}</th>
+                  <th style={thS(COL_ITEM, "left")}>{L.colItem}</th>
+                  <th style={thS(COL_QTY, "center")}>{L.colQty}</th>
+                  <th style={thS(COL_PRICE, "right")}>{L.colPrice}</th>
+                  <th style={thS(COL_AMT, "right")}>{L.colAmt}</th>
                 </tr>
               </thead>
               <tbody>
