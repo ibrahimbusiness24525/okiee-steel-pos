@@ -5,7 +5,7 @@ import { useResponsive, Icon, ICONS, Modal, StatCard, Table, WeightKgGInput, use
 import { api } from "../utils/api";
 import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, printThermalOrA4 } from "../utils/helpers";
 import { convertQuantity, convertPrice, getUnitLabel, canConvert, unitOptions, productUnitOf } from "../utils/unitConversion";
-import { shortenPipeName, OkiieeBrandFooter } from "../components/InvoiceComponents";
+import { OkiieeBrandFooter, parseSaleInvoiceRow } from "../components/InvoiceComponents";
 import { productDisplayName } from "../utils/constants";
 import PaymentTerms, { useAccounts, derivePayment, isPayValid } from "../components/PaymentTerms";
 import { recordTradeFinance } from "../utils/tradeFinance";
@@ -365,27 +365,7 @@ function BillingSaleInvoice({ invoiceData, onClose, isUrdu }) {
   // Parse invoice row desc into flat line-items (SN / Item / Qty / Price / Amt)
   // Each product block can contain multiple rows — every row becomes its own
   // numbered line, exactly like the sample bill (SN goes 1,2,3... across ALL items).
-  const parseRow = (row, category, productName) => {
-    const desc = row.desc || "";
-    if (category === "Pipe") {
-      const qM = desc.match(/^(\d+\.?\d*)pc/);
-      const pM = desc.match(/Rs(\d+\.?\d*)\/pc/);
-      return { item: shortenPipeName(productName), qty: qM ? qM[1] : "1", price: pM ? Number(pM[1]) : 0, amount: row.amount };
-    }
-    if (category === "Chader") {
-      const qM = desc.match(/^(\d+\.?\d*)kg/);
-      const pM = desc.match(/Rs(\d+\.?\d*)\/kg/);
-      return { item: productName, qty: qM ? formatWeightKgG(parseFloat(qM[1])) : "1", price: pM ? Number(pM[1]) : 0, amount: row.amount };
-    }
-    if (category === "Net") {
-      const qM = desc.match(/^(\d+\.?\d*)ft/);
-      const pM = desc.match(/Rs(\d+\.?\d*)\/ft/);
-      return { item: productName, qty: qM ? `${qM[1]}ft` : "1", price: pM ? Number(pM[1]) : 0, amount: row.amount };
-    }
-    const qM = desc.match(/^(\d+\.?\d*)pc/);
-    const pM = desc.match(/Rs(\d+\.?\d*)\/pc/);
-    return { item: productName, qty: qM ? qM[1] : "1", price: pM ? Number(pM[1]) : 0, amount: row.amount };
-  };
+  const parseRow = (row, category, productName) => parseSaleInvoiceRow(row, category, productName);
 
   // Flatten all items/rows into a single numbered list for the receipt body
   const lineItems = [];
@@ -1666,7 +1646,7 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
         const sp = r.salePrice !== undefined && r.salePrice !== "" ? r.salePrice : (Number(prod?.price) || 0);
         const c  = hwBillCalc(sp, r.qty);
         const uLbl = getUnitLabel(saleUnit);
-        rows = [{ desc:`${r.qty||0} ${uLbl} × Rs${Number(sp).toFixed(0)}/${uLbl}`, amount:c.total, unit: saleUnit }];
+        rows = [{ desc:`${r.qty||0} ${uLbl} × Rs${Number(sp).toFixed(0)}/${uLbl}`, amount:c.total, unit: saleUnit, qty: Number(r.qty)||0 }];
         const costPerSaleUnit = canConvert(pUnit, saleUnit) ? convertPrice(pp, pUnit, saleUnit) : pp;
         costTotal = costPerSaleUnit * (Number(r.qty)||0);
       }

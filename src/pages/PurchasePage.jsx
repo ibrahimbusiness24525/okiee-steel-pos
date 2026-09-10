@@ -5,6 +5,7 @@ import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table, We
 import { api } from "../utils/api";
 import { savePurchaseReturn, removePurchaseReturn } from "../utils/returnsStore";
 import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, inDateFilter, formatDateTime, printThermalOrA4 } from "../utils/helpers";
+import { convertQuantity, convertPrice, getUnitLabel, canConvert, unitOptions, productUnitOf } from "../utils/unitConversion";
 import { safeProductName, productDisplayName } from "../utils/constants";
 import { PurchaseReturnModal, ReturnsTable } from "../components/StockReturns";
 import InventoryStockTable, { inventoryStats } from "../components/InventoryStockTable";
@@ -595,8 +596,8 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
   };
 
   const filteredProducts = products.filter(p =>
-    p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.category.toLowerCase().includes(searchQuery.toLowerCase())
+    (p.name || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (p.category || "").toLowerCase().includes(searchQuery.toLowerCase())
   );
   const { open: showDropdown, setOpen: setShowDropdown, hi, setHi, onKeyDown: navKeys, listRef } = useTypeaheadNav(filteredProducts, handleSelectProduct);
 

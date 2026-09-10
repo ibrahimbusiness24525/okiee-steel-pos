@@ -48,6 +48,38 @@ export const shortenPipeName = (name) => {
   return n;
 };
 
+/** Turn a saved sale row (`desc` + `amount`) into Qty / Price for the thermal slip. */
+export function parseSaleInvoiceRow(row, category, productName) {
+  const desc   = String(row?.desc || "");
+  const amount = Number(row?.amount) || 0;
+  const fallbackQty = row?.qty != null && row.qty !== "" ? String(row.qty) : "1";
+
+  if (category === "Pipe") {
+    const qM = desc.match(/^(\d+\.?\d*)\s*pc/i);
+    const pM = desc.match(/Rs\s*(\d+\.?\d*)\s*\/\s*pc/i);
+    return { item: shortenPipeName(productName), qty: qM ? qM[1] : fallbackQty, price: pM ? Number(pM[1]) : 0, amount };
+  }
+  if (category === "Chader") {
+    const qM = desc.match(/^(\d+\.?\d*)\s*kg/i);
+    const pM = desc.match(/Rs\s*(\d+\.?\d*)\s*\/\s*kg/i);
+    return { item: productName, qty: qM ? formatWeightKgG(parseFloat(qM[1])) : fallbackQty, price: pM ? Number(pM[1]) : 0, amount };
+  }
+  if (category === "Net") {
+    const qM = desc.match(/^(\d+\.?\d*)/);
+    const pM = desc.match(/Rs\s*(\d+\.?\d*)/i);
+    return { item: productName, qty: qM ? `${qM[1]}ft` : fallbackQty, price: pM ? Number(pM[1]) : 0, amount };
+  }
+
+  // Hardware / Custom: "10 Piece × Rs36/Piece" (not "10pc × Rs36/pc")
+  const qM = desc.match(/^(\d+\.?\d*)/);
+  const pM = desc.match(/Rs\s*(\d+\.?\d*)/i);
+  const qtyNum = qM ? qM[1] : fallbackQty;
+  let price = pM ? Number(pM[1]) : 0;
+  const qn = parseFloat(qtyNum);
+  if (!price && qn > 0 && amount) price = Math.round((amount / qn) * 10) / 10;
+  return { item: productName, qty: qtyNum, price, amount };
+}
+
 export const pipeCalc = (row, price) => {
   const length    = parseLength(row.length);
   const pieces    = Number(row.quantity) || 0;
@@ -519,28 +551,7 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
   };
 
   // ── Parse each item's rows → flat numbered lineItems ──────────────────────
-  const parseRow = (row, category, productName) => {
-    const desc   = row.desc   || "";
-    const amount = Number(row.amount) || 0;
-    if (category === "Pipe") {
-      const qM = desc.match(/^(\d+\.?\d*)pc/);
-      const pM = desc.match(/Rs(\d+\.?\d*)\/pc/);
-      return { item: shortenPipeName(productName), qty: qM ? qM[1] : "1", price: pM ? Number(pM[1]) : 0, amount };
-    }
-    if (category === "Chader") {
-      const qM = desc.match(/^(\d+\.?\d*)kg/);
-      const pM = desc.match(/Rs(\d+\.?\d*)\/kg/);
-      return { item: productName, qty: qM ? formatWeightKgG(parseFloat(qM[1])) : "1", price: pM ? Number(pM[1]) : 0, amount };
-    }
-    if (category === "Net") {
-      const qM = desc.match(/^(\d+\.?\d*)ft/);
-      const pM = desc.match(/Rs(\d+\.?\d*)\/ft/);
-      return { item: productName, qty: qM ? `${qM[1]}ft` : "1", price: pM ? Number(pM[1]) : 0, amount };
-    }
-    const qM = desc.match(/^(\d+\.?\d*)pc/);
-    const pM = desc.match(/Rs(\d+\.?\d*)\/pc/);
-    return { item: productName, qty: qM ? qM[1] : "1", price: pM ? Number(pM[1]) : 0, amount };
-  };
+  const parseRow = (row, category, productName) => parseSaleInvoiceRow(row, category, productName);
 
   const lineItems = [];
   (items || []).forEach(item => {
