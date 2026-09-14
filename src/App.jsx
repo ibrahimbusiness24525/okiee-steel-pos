@@ -200,9 +200,9 @@ function AppInner() {
       {user.role === "admin" && (
         <>
           {active === "dashboard"    && <Dashboard products={productsView} purchases={purchases} sales={sales} staff={staff} loaders={loaders} saleReturns={saleReturns} purchaseReturns={purchaseReturns} parties={parties} expenses={expenses} loadParties={loadParties} loadExpenses={loadExpenses} />}
-          {active === "products"     && <ProductsPage products={productsView} purchases={purchases} loadProducts={loadProducts} loadPurchases={loadPurchases} />}
+          {active === "products"     && <ProductsPage products={productsView} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} loadProducts={loadProducts} loadPurchases={loadPurchases} />}
           {active === "purchase"     && <PurchasePage purchases={purchases} products={productsView} loadPurchases={loadPurchases} loadProducts={loadProducts} purchaseReturns={purchaseReturns} loadPurchaseReturns={loadPurchaseReturns} sales={sales} saleReturns={saleReturns} />}
-          {active === "sales"        && <SalesPage sales={sales} products={productsView} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} saleReturns={saleReturns} loadSaleReturns={loadSaleReturns} />}
+          {active === "sales"        && <SalesPage sales={sales} products={productsView} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} saleReturns={saleReturns} loadSaleReturns={loadSaleReturns} purchases={purchases} purchaseReturns={purchaseReturns} />}
           {active === "accounts"     && <AccountsPage />}
           {active === "expenses"     && <ExpensesPage loadExpenses={loadExpenses} loadParties={loadParties} />}
           {active === "ledger"       && <LedgerPage purchases={purchases} sales={sales} />}
@@ -215,7 +215,7 @@ function AppInner() {
       )}
       {user.role === "staff" && (
         <>
-          {active === "billing" && <BillingPage sales={sales} products={productsView} loadSales={loadSales} loadProducts={loadProducts} currentUser={user} loaders={loaders} />}
+          {active === "billing" && <BillingPage sales={sales} products={productsView} loadSales={loadSales} loadProducts={loadProducts} currentUser={user} loaders={loaders} purchases={purchases} purchaseReturns={purchaseReturns} saleReturns={saleReturns} />}
           {active === "loaders" && <LoadersPage loaders={loaders} loadLoaders={loadLoaders} />}
         </>
       )}

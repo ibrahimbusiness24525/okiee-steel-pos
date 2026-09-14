@@ -6,7 +6,7 @@ import { formatPKR, todayStr, formatWeightKgG } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
 import { returnsForSale } from "../utils/returnsStore";
 import { invoicePayInfo, liveBalance } from "../utils/tradeFinance";
-import { useAccounts, accId, accLabel } from "./PaymentTerms";
+import { useAccounts, accId, accLabel, AccountOptGroups } from "./PaymentTerms";
 
 export function pidOf(v) {
   if (!v) return "";
@@ -136,12 +136,16 @@ function L(isUrdu) {
     customer: "گاہک", supplier: "سپلائر", invoice: "انوائس",
     samePrice: "اصل قیمت", changePrice: "قیمت تبدیل", perPiece: "فی پیس",
     credit: "ادھار", paid: "ادا شدہ", partial: "جزوی", due: "باقی",
+    onThisInvoice: "اس انوائس پر", paidOnInv: "ادا شدہ", creditOnInv: "ادھار",
     addAnother: "اور انوائس شامل کریں",
     added: "شامل شدہ", removeInv: "ہٹائیں",
     reversePayable: "سپلائر پے ایبل سے یہ رقم واپس کریں",
     reverseReceivable: "گاہک ریسیویبل سے یہ رقم واپس کریں",
+    refundToCustomer: "گاہک کو یہ ادا شدہ رقم واپس ہو گی",
     reverseHintPay: "واپسی کی رقم اس سپلائر کے قابل ادا سے کم ہو گی",
     reverseHintRec: "واپسی کی رقم اس گاہک کے قابل وصول سے کم ہو گی",
+    refundToCustomerHint: "جو رقم گاہک نے ادا کی ہے وہی اسے بینک / والٹ سے واپس ہو گی",
+    creditAlsoCut: "ادھار ریسیویبل سے کم ہو گا",
     refundFrom: "رقم کس بینک / والٹ سے واپس؟",
     receiveInto: "رقم کس بینک / والٹ میں آئے گی؟",
     refundHint: "ادا شدہ انوائس کی واپسی اسی بینک / والٹ سے نکلے گی",
@@ -172,12 +176,16 @@ function L(isUrdu) {
     customer: "Customer", supplier: "Supplier", invoice: "Invoice",
     samePrice: "Same price", changePrice: "Change price", perPiece: "Per piece",
     credit: "Credit", paid: "Paid", partial: "Partial", due: "Due",
+    onThisInvoice: "On this invoice", paidOnInv: "Paid", creditOnInv: "Credit",
     addAnother: "Add another invoice",
     added: "Added", removeInv: "Remove",
     reversePayable: "Reverse this amount from supplier payable",
     reverseReceivable: "Reverse this amount from customer receivable",
+    refundToCustomer: "This paid amount will be returned to the customer",
     reverseHintPay: "The return amount will be deducted from this supplier's payable",
     reverseHintRec: "The return amount will be deducted from this customer's receivable",
+    refundToCustomerHint: "The amount the customer paid will be refunded from bank / wallet",
+    creditAlsoCut: "Credit will be deducted from receivable",
     refundFrom: "Refund from bank / wallet",
     receiveInto: "Receive into bank / wallet",
     refundHint: "Paid invoice refund will leave this bank / wallet",
@@ -224,6 +232,22 @@ function remainingGroupSaleLines(group, products, returns) {
   return Object.values(byId);
 }
 
+function groupAlreadyReturned(group, products, returns) {
+  if (!remainingGroupSaleLines(group, products, returns).length) return true;
+  const seen = new Set();
+  let retAmt = 0;
+  (group?.rows || []).forEach((sale) => {
+    returnsForSale(sale, returns).forEach((r) => {
+      const id = String(r._id || r.id || r.returnInvoice || "");
+      if (id && seen.has(id)) return;
+      if (id) seen.add(id);
+      retAmt += Number(r.total) || 0;
+    });
+  });
+  const invoiceAmt = Number(group?.amount) || 0;
+  return invoiceAmt > 0 && retAmt + 0.51 >= invoiceAmt;
+}
+
 function qKey(groupKey, id) {
   return `${groupKey}::${id}`;
 }
@@ -244,8 +268,30 @@ function purchaseLinesForGroup(group, already) {
   });
 }
 
+function defaultReverseOn(pay) {
+  return Number(pay?.paid) > 0.5 || Number(pay?.remaining) <= 0.5;
+}
+
 function CreditBadge({ info, T }) {
   if (!info) return null;
+  if (info.settlement === "partial" || ((Number(info.paid) || 0) > 0.5 && (Number(info.remaining) || 0) > 0.5)) {
+    return (
+      <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        <span style={{
+          display: "inline-block", fontSize: 11, fontWeight: 800, padding: "2px 8px", borderRadius: 20,
+          background: "rgba(251,191,36,0.18)", color: "#d97706", whiteSpace: "nowrap",
+        }}>{T.partial}</span>
+        <span style={{
+          display: "inline-block", fontSize: 11, fontWeight: 800, padding: "2px 8px", borderRadius: 20,
+          background: "rgba(52,211,153,0.16)", color: "#34d399", whiteSpace: "nowrap",
+        }}>{T.paidOnInv} {formatPKR(info.paid)}</span>
+        <span style={{
+          display: "inline-block", fontSize: 11, fontWeight: 800, padding: "2px 8px", borderRadius: 20,
+          background: "rgba(248,113,113,0.16)", color: "#f87171", whiteSpace: "nowrap",
+        }}>{T.creditOnInv} {formatPKR(info.remaining)}</span>
+      </span>
+    );
+  }
   if (!info.isCredit) {
     return (
       <span style={{
@@ -254,13 +300,12 @@ function CreditBadge({ info, T }) {
       }}>{T.paid}</span>
     );
   }
-  const label = info.settlement === "partial" ? T.partial : T.credit;
   return (
     <span style={{
       display: "inline-block", fontSize: 11, fontWeight: 800, padding: "2px 8px", borderRadius: 20,
       background: "rgba(248,113,113,0.16)", color: "#f87171", whiteSpace: "nowrap",
     }}>
-      {label}{info.remaining > 0 ? ` · ${T.due} ${formatPKR(info.remaining)}` : ""}
+      {T.credit}{info.remaining > 0 ? ` · ${T.due} ${formatPKR(info.remaining)}` : ""}
     </span>
   );
 }
@@ -281,12 +326,18 @@ function InvoiceSuggestRow({ invoice, amount, partyKind, party, date, th, pay, T
   );
 }
 
-function LedgerAdjustBox({ kind, party, amount, remaining, enabled, onToggle, T, th }) {
+function LedgerAdjustBox({ kind, party, amount, remaining, paid, enabled, onToggle, T, th }) {
   const ret = Math.round((Number(amount) || 0) * 100) / 100;
   const rem = Math.round((Number(remaining) || 0) * 100) / 100;
-  const cut = rem > 0.5 ? Math.min(ret, rem) : ret;
-  if (cut <= 0) return null;
+  const pay = Math.round((Number(paid) || 0) * 100) / 100;
   const isSale = kind === "sale";
+  const creditCut = rem > 0.5 ? Math.min(ret, rem) : 0;
+  const refundAmt = isSale
+    ? Math.min(ret, pay > 0.5 ? pay : (rem <= 0.5 ? ret : 0))
+    : (rem > 0.5 ? Math.min(ret, rem) : ret);
+  const showAmt = isSale && refundAmt > 0 ? refundAmt : (refundAmt || creditCut);
+  if (showAmt <= 0) return null;
+  const refunding = isSale && refundAmt > 0;
   return (
     <label style={{
       display: "flex", gap: 12, alignItems: "flex-start",
@@ -302,17 +353,38 @@ function LedgerAdjustBox({ kind, party, amount, remaining, enabled, onToggle, T,
       />
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ color: th.text, fontWeight: 800, fontSize: 13 }}>
-          {isSale ? T.reverseReceivable : T.reversePayable}
+          {refunding ? T.refundToCustomer : (isSale ? T.reverseReceivable : T.reversePayable)}
           {party ? ` · ${party}` : ""}
         </div>
         <div style={{ color: enabled ? (th.dark ? "#2dd4bf" : "#0f766e") : th.textMuted, fontWeight: 900, fontSize: 16, marginTop: 4 }}>
-          {formatPKR(cut)}
+          {formatPKR(showAmt)}
         </div>
         <div style={{ color: th.textDim, fontSize: 12, marginTop: 4, fontWeight: 600 }}>
-          {isSale ? T.reverseHintRec : T.reverseHintPay}
+          {refunding ? T.refundToCustomerHint : (isSale ? T.reverseHintRec : T.reverseHintPay)}
         </div>
+        {refunding && creditCut > 0 && (
+          <div style={{ color: "#b45309", fontSize: 12, marginTop: 4, fontWeight: 700 }}>
+            {T.creditAlsoCut} · {formatPKR(creditCut)}
+          </div>
+        )}
       </div>
     </label>
+  );
+}
+
+function InvoicePaySplit({ pay, T, th }) {
+  if (!pay || !((Number(pay.paid) || 0) > 0.5 && (Number(pay.remaining) || 0) > 0.5)) return null;
+  return (
+    <div style={{
+      display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap",
+      padding: "10px 12px", borderRadius: 12, border: `1px solid ${th.border}`, background: th.bgCard,
+    }}>
+      <span style={{ color: th.textMuted, fontSize: 12, fontWeight: 700 }}>{T.onThisInvoice}</span>
+      <span style={{ display: "inline-flex", gap: 12, flexWrap: "wrap", fontSize: 13, fontWeight: 800 }}>
+        <span style={{ color: "#0f766e" }}>{T.paidOnInv} · {formatPKR(pay.paid)}</span>
+        <span style={{ color: "#b45309" }}>{T.creditOnInv} · {formatPKR(pay.remaining)}</span>
+      </span>
+    </div>
   );
 }
 
@@ -331,17 +403,12 @@ function lineReturnTotal(lines, groupKey, qtys, hidden, priceMode, customRate, i
 function cashRefundAmount(returnTotal, remaining, reverseLedger) {
   const ret = Math.round((Number(returnTotal) || 0) * 100) / 100;
   const rem = Math.round((Number(remaining) || 0) * 100) / 100;
-  if (!reverseLedger) return ret;
+  if (!reverseLedger) return 0;
   if (rem > 0.5) return Math.max(0, Math.round((ret - Math.min(ret, rem)) * 100) / 100);
-  return 0;
+  return ret;
 }
 
-function RefundAccountField({ kind, value, onChange, accounts, required, T, th }) {
-  const cash = (accounts || []).filter((a) => (a.type || a.accountType) === "cash");
-  const banks = (accounts || []).filter((a) => (a.type || a.accountType) === "bank");
-  const wallets = (accounts || []).filter((a) => (a.type || a.accountType) === "wallet");
-  const grouped = new Set([...cash, ...banks, ...wallets].map((a) => accId(a)));
-  const other = (accounts || []).filter((a) => accId(a) && !grouped.has(accId(a)));
+function RefundAccountField({ kind, value, onChange, accounts, required, T, th, isUrdu }) {
   const inpS = {
     background: th.input, border: `1px solid ${th.inputBorder}`, color: th.text,
     borderRadius: 12, padding: "11px 14px", fontSize: 14, outline: "none",
@@ -364,38 +431,7 @@ function RefundAccountField({ kind, value, onChange, accounts, required, T, th }
           style={inpS}
         >
           <option value="">{T.pickAccount}</option>
-          {cash.length > 0 && (
-            <optgroup label={T.cashGrp}>
-              {cash.map((a) => (
-                <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>
-                  {accLabel(a)} · {formatPKR(liveBalance(a))}
-                </option>
-              ))}
-            </optgroup>
-          )}
-          {banks.length > 0 && (
-            <optgroup label={T.bankGrp}>
-              {banks.map((a) => (
-                <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>
-                  {accLabel(a)} · {formatPKR(liveBalance(a))}
-                </option>
-              ))}
-            </optgroup>
-          )}
-          {wallets.length > 0 && (
-            <optgroup label={T.walletGrp}>
-              {wallets.map((a) => (
-                <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>
-                  {accLabel(a)} · {formatPKR(liveBalance(a))}
-                </option>
-              ))}
-            </optgroup>
-          )}
-          {other.length > 0 && other.map((a) => (
-            <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>
-              {accLabel(a)} · {formatPKR(liveBalance(a))}
-            </option>
-          ))}
+          <AccountOptGroups accounts={accounts} th={th} isUrdu={isUrdu} />
         </select>
       )}
       {required && (
@@ -657,6 +693,7 @@ export function SaleReturnModal({ sales, products, returns, onClose, onSave }) {
   const hits = useMemo(() => {
     const q = search.trim().toLowerCase();
     return groups
+      .filter((g) => !groupAlreadyReturned(g, products, returns))
       .filter((g) => {
         if (!q) return true;
         return [g.invoice, g.customer, g.date, formatPKR(g.amount), ...(g.items || []).map((it) => it.name)]
@@ -673,7 +710,7 @@ export function SaleReturnModal({ sales, products, returns, onClose, onSave }) {
         pay: g.pay,
         label: `${g.invoice} · ${formatPKR(g.amount)} · ${g.customer || "—"}`,
       }));
-  }, [groups, search]);
+  }, [groups, search, products, returns]);
 
   const selectedGroups = pickedKeys.map((k) => groups.find((g) => g.key === k)).filter(Boolean);
 
@@ -700,7 +737,7 @@ export function SaleReturnModal({ sales, products, returns, onClose, onSave }) {
     const g = groups.find((x) => x.key === hit.value);
     if (!g) return;
     setPickedKeys((prev) => prev.includes(hit.value) ? prev : [...prev, hit.value]);
-    setReverseByKey((p) => (p[g.key] == null ? { ...p, [g.key]: !!g.pay?.isCredit } : p));
+    setReverseByKey((p) => (p[g.key] == null ? { ...p, [g.key]: defaultReverseOn(g.pay) } : p));
     setRefundAccountId((prev) => prev || g.pay?.accountId || "");
     setSearch("");
     setOpen(false);
@@ -727,7 +764,6 @@ export function SaleReturnModal({ sales, products, returns, onClose, onSave }) {
     const accountName = acc ? accLabel(acc) : "";
     const payloads = [];
     let anyAllReturned = false;
-    let cashNeeded = 0;
     for (const g of selectedGroups) {
       const sale = g.rows?.[0];
       if (!sale) continue;
@@ -744,8 +780,6 @@ export function SaleReturnModal({ sales, products, returns, onClose, onSave }) {
         })
         .filter((it) => it.qty > 0);
       if (items.length) {
-        const ret = items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.rate) || 0), 0);
-        cashNeeded += cashRefundAmount(ret, g.pay?.remaining || 0, !!reverseByKey[g.key]);
         payloads.push({
           saleId: sale._id, date, notes: note, items,
           reverseLedger: !!reverseByKey[g.key],
@@ -755,7 +789,8 @@ export function SaleReturnModal({ sales, products, returns, onClose, onSave }) {
       }
     }
     if (!payloads.length) { alert(anyAllReturned ? T.allReturned : T.needQty); return; }
-    if (cashNeeded > 0.5 && accounts.length > 0 && !refundAccountId) { alert(T.needAccount); return; }
+    const anyReverse = selectedGroups.some((g) => !!reverseByKey[g.key]);
+    if (anyReverse && !refundAccountId) { alert(T.needAccount); return; }
     setSaving(true);
     for (const payload of payloads) {
       const res = await onSave(payload);
@@ -771,11 +806,11 @@ export function SaleReturnModal({ sales, products, returns, onClose, onSave }) {
 
   const inp = { background: th.input, border: `1px solid ${th.inputBorder}`, color: th.text, borderRadius: 10, padding: "8px 10px", fontSize: 14, outline: "none", width: "100%", boxSizing: "border-box" };
 
-  const saleCashNeeded = selectedGroups.reduce((sum, g) => {
+  const saleNeedAccount = selectedGroups.some((g) => {
     const lines = remainingGroupSaleLines(g, products, returns);
     const ret = lineReturnTotal(lines, g.key, qtys, hidden, priceMode, customRate, "productId");
-    return sum + cashRefundAmount(ret, g.pay?.remaining || 0, !!reverseByKey[g.key]);
-  }, 0);
+    return cashRefundAmount(ret, g.pay?.remaining || 0, !!reverseByKey[g.key]) > 0.5;
+  });
 
   return (
     <>
@@ -835,6 +870,7 @@ export function SaleReturnModal({ sales, products, returns, onClose, onSave }) {
                 th={th}
                 pay={g.pay}
               />
+              <InvoicePaySplit pay={g.pay} T={T} th={th} />
               {lines.length === 0 && (
                 <p style={{ margin: 0, color: "#f87171", fontWeight: 700, fontSize: 13 }}>{T.allReturned}</p>
               )}
@@ -872,6 +908,7 @@ export function SaleReturnModal({ sales, products, returns, onClose, onSave }) {
                 party={g.customer}
                 amount={lineReturnTotal(lines, g.key, qtys, hidden, priceMode, customRate, "productId")}
                 remaining={g.pay?.remaining || 0}
+                paid={g.pay?.paid || 0}
                 enabled={!!reverseByKey[g.key]}
                 onToggle={(v) => setReverseByKey((p) => ({ ...p, [g.key]: v }))}
                 T={T}
@@ -888,14 +925,15 @@ export function SaleReturnModal({ sales, products, returns, onClose, onSave }) {
               value={refundAccountId}
               onChange={setRefundAccountId}
               accounts={accounts}
-              required={saleCashNeeded > 0.5}
+              required={saleNeedAccount}
               T={T}
               th={th}
+              isUrdu={isUrdu}
             />
           )}
         </div>
         <FInput label={T.note} value={note} onChange={setNote} placeholder="..." />
-        <SaveBtn onClick={save} loading={saving} label={saving ? "..." : T.save} />
+        <SaveBtn onClick={save} loading={saving} disabled={saleNeedAccount && !refundAccountId} label={saving ? "..." : T.save} />
       </div>
     </Modal>
     {viewHit && (
@@ -1082,7 +1120,7 @@ export function PurchaseReturnModal({ purchases, products = [], returns, onClose
     setStockId("");
     setStockHidden(false);
     setInvoiceKeys((prev) => prev.includes(key) ? prev : [...prev, key]);
-    setReverseByKey((p) => (p[key] == null ? { ...p, [key]: !!g.pay?.isCredit } : p));
+    setReverseByKey((p) => (p[key] == null ? { ...p, [key]: defaultReverseOn(g.pay) } : p));
     setRefundAccountId((prev) => prev || g.pay?.accountId || "");
     if (hit.supplier && hit.supplier !== "—") setSupplier(hit.supplier);
     const next = {};
@@ -1274,6 +1312,7 @@ export function PurchaseReturnModal({ purchases, products = [], returns, onClose
                 th={th}
                 pay={g.pay}
               />
+              <InvoicePaySplit pay={g.pay} T={T} th={th} />
               {lines.filter((ln) => !hidden[qKey(g.key, ln.purchaseId)]).map((ln) => {
                 const k = qKey(g.key, ln.purchaseId);
                 return (
@@ -1304,6 +1343,7 @@ export function PurchaseReturnModal({ purchases, products = [], returns, onClose
                 party={g.supplier}
                 amount={lineReturnTotal(lines, g.key, qtys, hidden, priceMode, customRate, "purchaseId")}
                 remaining={g.pay?.remaining || 0}
+                paid={g.pay?.paid || 0}
                 enabled={!!reverseByKey[g.key]}
                 onToggle={(v) => setReverseByKey((p) => ({ ...p, [g.key]: v }))}
                 T={T}
@@ -1324,6 +1364,7 @@ export function PurchaseReturnModal({ purchases, products = [], returns, onClose
               required={purchaseCashNeeded > 0.5}
               T={T}
               th={th}
+              isUrdu={isUrdu}
             />
           )}
         </div>

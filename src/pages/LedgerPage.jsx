@@ -3,13 +3,13 @@ import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn } from "../components/shared";
 import { formatPKR, todayStr, printThermalOrA4, downloadInvoicePdf } from "../utils/helpers";
-import { ledgerApi } from "../utils/ledgerStore";
+import { ledgerApi, signedOpeningBalance, openingKindOf } from "../utils/ledgerStore";
 import { ensureParty, liveBalance } from "../utils/tradeFinance";
 import { adjustAccountBalance } from "../utils/accountBalance";
-import { useAccounts, accId, accLabel } from "../components/PaymentTerms";
+import { useAccounts, accId, accLabel, AccountOptGroups } from "../components/PaymentTerms";
 import PartyLedgerSheet, { buildPartyLedger } from "../components/PartyLedgerSheet";
 
-const EMPTY_PARTY = { name: "", phone: "", partyType: "", address: "", notes: "" };
+const EMPTY_PARTY = { name: "", phone: "", partyType: "", address: "", notes: "", openingBalance: "", openingKind: "lana" };
 const EMPTY_TX = { role: "", partyId: "", amount: "", note: "", accountId: "" };
 
 function LedgerPage({ purchases = [], sales = [] }) {
@@ -32,6 +32,7 @@ function LedgerPage({ purchases = [], sales = [] }) {
   const [showTx, setShowTx] = useState(false);
   const [txKind, setTxKind] = useState("take");
   const [txForm, setTxForm] = useState(EMPTY_TX);
+  const [txSearch, setTxSearch] = useState("");
   const [savingTx, setSavingTx] = useState(false);
   const accounts = useAccounts();
 
@@ -43,12 +44,15 @@ function LedgerPage({ purchases = [], sales = [] }) {
 
   const L = isUrdu ? {
     createSupplier: "سپلائر بنائیں", createCustomer: "گاہک بنائیں",
-    takeCredit: "کریڈٹ لیں", giveCredit: "کریڈٹ دیں",
+    takeCredit: "میں نے لیے", giveCredit: "میں نے دیے",
     name: "نام", number: "نمبر", type: "قسم", address: "پتہ", note: "نوٹ",
+    openingBal: "اوپننگ بیلنس",
+    lana: "میں نے لینا ہے",
+    dena: "میں نے دینا ہے",
     amount: "رقم", save: "محفوظ کریں",
     who: "سپلائر ہے یا گاہک؟", pick: "منتخب کریں",
     supplier: "سپلائر", customer: "گاہک",
-    all: "سب", payable: "ادائیگی", receivable: "وصولی",
+    all: "سب", payable: "میں دوں گا", receivable: "میں لوں گا",
     search: "نام یا نمبر سے تلاش...",
     none: "ابھی کوئی کھاتہ نہیں",
     needName: "نام ضروری ہے", needPhone: "نمبر ضروری ہے",
@@ -57,23 +61,26 @@ function LedgerPage({ purchases = [], sales = [] }) {
     account: "بینک / والٹ",
     takeHint: "رقم منتخب بینک / والٹ میں آئے گی",
     giveHint: "رقم منتخب بینک / والٹ سے نکلے گی",
-    youOwe: "آپ ادا کریں گے", theyOwe: "وہ ادا کریں گے", settled: "حساب صاف",
+    youOwe: "میں دوں گا", theyOwe: "میں لوں گا", settled: "حساب صاف",
     edit: "ترمیم", del: "حذف", delParty: "کیا یہ کھاتہ حذف کریں؟",
     delTx: "کیا یہ اندراج حذف کریں؟",
     loading: "لوڈ ہو رہا ہے...", importBtn: "خریداری/فروخت سے درآمد",
     history: "اندراجات",
     printA4: "A4 پرنٹ", printThermal: "تھرمل", printPdf: "PDF",
     from: "سے", to: "تک",
-    source: "حوالہ", desc: "تفصیل", debit: "ڈیبٹ", credit: "کریڈٹ", balance: "بیلنس",
+    source: "حوالہ", desc: "تفصیل", debit: "میں نے دیے", credit: "میں نے لیے", balance: "بیلنس",
     opening: "اوپننگ بیلنس", total: "کل",
   } : {
     createSupplier: "Create Supplier", createCustomer: "Create Customer",
-    takeCredit: "Take Credit", giveCredit: "Give Credit",
+    takeCredit: "Maine Liye", giveCredit: "Maine Diye",
     name: "Name", number: "Number", type: "Type", address: "Address", note: "Note",
+    openingBal: "Opening balance",
+    lana: "Maine lana hain",
+    dena: "Maine dena hain",
     amount: "Amount", save: "Save",
     who: "Supplier or Customer?", pick: "Select",
     supplier: "Supplier", customer: "Customer",
-    all: "All", payable: "Payable", receivable: "Receivable",
+    all: "All", payable: "I will give", receivable: "I will get",
     search: "Search by name or number...",
     none: "No accounts yet",
     needName: "Name is required", needPhone: "Number is required",
@@ -82,14 +89,14 @@ function LedgerPage({ purchases = [], sales = [] }) {
     account: "Bank / Wallet",
     takeHint: "Money will come IN to this bank or wallet",
     giveHint: "Money will go OUT of this bank or wallet",
-    youOwe: "You will pay", theyOwe: "They will pay you", settled: "Settled",
+    youOwe: "I will give", theyOwe: "I will get", settled: "Settled",
     edit: "Edit", del: "Delete", delParty: "Delete this account?",
     delTx: "Delete this entry?",
     loading: "Loading...", importBtn: "Import from Purchases / Sales",
     history: "Entries",
     printA4: "A4 Print", printThermal: "Thermal", printPdf: "PDF",
     from: "From", to: "To",
-    source: "Source", desc: "Description", debit: "Debit", credit: "Credit", balance: "Balance",
+    source: "Source", desc: "Description", debit: "Maine Diye", credit: "Maine Liye", balance: "Balance",
     opening: "Opening Balance", total: "Total",
   };
 
@@ -164,6 +171,14 @@ function LedgerPage({ purchases = [], sales = [] }) {
       return (p.name || "").toLowerCase().includes(q)
         || (p.phone || "").toLowerCase().includes(q)
         || (p.address || "").toLowerCase().includes(q);
+    }).sort((a, b) => {
+      const na = Math.abs(Number(a.balance) || 0);
+      const nb = Math.abs(Number(b.balance) || 0);
+      const aOpen = na > 0.5 ? 1 : 0;
+      const bOpen = nb > 0.5 ? 1 : 0;
+      if (aOpen !== bOpen) return bOpen - aOpen;
+      if (nb !== na) return nb - na;
+      return (a.name || "").localeCompare(b.name || "");
     });
   }, [directory, search, filter]);
 
@@ -171,22 +186,35 @@ function LedgerPage({ purchases = [], sales = [] }) {
     () => directory.filter((p) => p.type === txForm.role && !p.ghost).sort((a, b) => (a.name || "").localeCompare(b.name || "")),
     [directory, txForm.role]
   );
+  const txMatches = useMemo(() => {
+    const q = txSearch.trim().toLowerCase();
+    if (!q) return dropdownParties;
+    return dropdownParties.filter((p) =>
+      (p.name || "").toLowerCase().includes(q)
+      || (p.phone || "").toLowerCase().includes(q)
+      || (p.address || "").toLowerCase().includes(q)
+    );
+  }, [dropdownParties, txSearch]);
+  const txPicked = dropdownParties.find((p) => p._id === txForm.partyId);
 
   const openCreate = (role) => {
     setCreateRole(role);
     setEditingId(null);
-    setPartyForm(EMPTY_PARTY);
+    setPartyForm({ ...EMPTY_PARTY, openingKind: role === "supplier" ? "dena" : "lana" });
     setShowParty(true);
   };
   const openEdit = (p) => {
     setCreateRole(p.type);
     setEditingId(p._id);
+    const stored = Number(p.openingBalance) || 0;
     setPartyForm({
       name: p.name || "",
       phone: p.phone || "",
       partyType: p.partyType || "",
       address: p.address || "",
       notes: p.notes || "",
+      openingBalance: stored ? String(Math.abs(stored)) : "",
+      openingKind: openingKindOf(p.type, stored),
     });
     setShowParty(true);
   };
@@ -201,6 +229,7 @@ function LedgerPage({ purchases = [], sales = [] }) {
       partyType: partyForm.partyType.trim(),
       address: partyForm.address.trim(),
       notes: partyForm.notes.trim(),
+      openingBalance: signedOpeningBalance(createRole, partyForm.openingBalance, partyForm.openingKind),
     };
     const res = editingId ? await ledgerApi.update(editingId, payload) : await ledgerApi.add(payload);
     if (res.success) {
@@ -217,6 +246,7 @@ function LedgerPage({ purchases = [], sales = [] }) {
   const openTx = (kind) => {
     setTxKind(kind);
     setTxForm(EMPTY_TX);
+    setTxSearch("");
     setShowTx(true);
   };
   const saveTx = async () => {
@@ -335,12 +365,10 @@ function LedgerPage({ purchases = [], sales = [] }) {
         <div style={{ padding: 16, borderRadius: 16, background: "rgba(220,38,38,0.08)", border: "1px solid rgba(220,38,38,0.3)" }}>
           <div style={{ color: "#dc2626", fontSize: 12, fontWeight: 800, letterSpacing: "0.06em" }}>{L.payable}</div>
           <div style={{ color: "#dc2626", fontWeight: 900, fontSize: isMobile ? 18 : 22, marginTop: 4 }}>{formatPKR(totals.payable)}</div>
-          <div style={{ color: "#dc2626", fontSize: 12, marginTop: 2 }}>{L.youOwe}</div>
         </div>
         <div style={{ padding: 16, borderRadius: 16, background: "rgba(22,163,74,0.08)", border: "1px solid rgba(22,163,74,0.3)" }}>
           <div style={{ color: "#16a34a", fontSize: 12, fontWeight: 800, letterSpacing: "0.06em" }}>{L.receivable}</div>
           <div style={{ color: "#16a34a", fontWeight: 900, fontSize: isMobile ? 18 : 22, marginTop: 4 }}>{formatPKR(totals.receivable)}</div>
-          <div style={{ color: "#16a34a", fontSize: 12, marginTop: 2 }}>{L.theyOwe}</div>
         </div>
       </div>
 
@@ -422,6 +450,32 @@ function LedgerPage({ purchases = [], sales = [] }) {
             <FInput label={L.number} value={partyForm.phone} onChange={(v) => setPartyForm((p) => ({ ...p, phone: v }))} required placeholder="03xx-xxxxxxx" />
             <FInput label={L.type} value={partyForm.partyType} onChange={(v) => setPartyForm((p) => ({ ...p, partyType: v }))} placeholder={isUrdu ? "مثلاً ہول سیل / لوکل" : "e.g. Wholesale / Local"} />
             <FInput label={L.address} value={partyForm.address} onChange={(v) => setPartyForm((p) => ({ ...p, address: v }))} placeholder={isUrdu ? "پتہ" : "Address"} />
+            <FInput
+              label={L.openingBal}
+              value={partyForm.openingBalance}
+              onChange={(v) => setPartyForm((p) => ({ ...p, openingBalance: v.replace(/[^0-9.]/g, "") }))}
+              placeholder="0"
+            />
+            <div style={{ display: "flex", gap: 8, marginTop: -6 }}>
+              {[
+                { id: "lana", label: L.lana, color: "#16a34a" },
+                { id: "dena", label: L.dena, color: "#dc2626" },
+              ].map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setPartyForm((p) => ({ ...p, openingKind: opt.id }))}
+                  style={{
+                    flex: 1, padding: "10px", borderRadius: 12, cursor: "pointer", fontWeight: 800, fontSize: 13,
+                    border: partyForm.openingKind === opt.id ? "none" : `1px solid ${th.border}`,
+                    background: partyForm.openingKind === opt.id ? opt.color : th.bgCard,
+                    color: partyForm.openingKind === opt.id ? "#fff" : th.textMuted,
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
             <FInput label={L.note} value={partyForm.notes} onChange={(v) => setPartyForm((p) => ({ ...p, notes: v }))} placeholder="..." />
             <SaveBtn onClick={saveParty} loading={savingParty} label={savingParty ? "..." : L.save} />
           </div>
@@ -435,7 +489,7 @@ function LedgerPage({ purchases = [], sales = [] }) {
               <label style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, display: "block", marginBottom: 6 }}>{L.who} <span style={{ color: "#f87171" }}>*</span></label>
               <div style={{ display: "flex", gap: 8 }}>
                 {["supplier", "customer"].map((role) => (
-                  <button key={role} onClick={() => setTxForm((p) => ({ ...p, role, partyId: "" }))} style={{
+                  <button key={role} onClick={() => { setTxForm((p) => ({ ...p, role, partyId: "" })); setTxSearch(""); }} style={{
                     flex: 1, padding: "10px", borderRadius: 12, cursor: "pointer", fontWeight: 800, fontSize: 13,
                     border: txForm.role === role ? "none" : `1px solid ${th.border}`,
                     background: txForm.role === role ? (role === "supplier" ? "#d97706" : "#2563eb") : th.bgCard,
@@ -447,17 +501,70 @@ function LedgerPage({ purchases = [], sales = [] }) {
             {txForm.role && (
               <div>
                 <label style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, display: "block", marginBottom: 6 }}>{txForm.role === "supplier" ? L.supplier : L.customer} <span style={{ color: "#f87171" }}>*</span></label>
-                <select value={txForm.partyId} onChange={(e) => setTxForm((p) => ({ ...p, partyId: e.target.value }))} style={inpS}>
-                  <option value="">— {L.pick} —</option>
-                  {dropdownParties.map((p) => (
-                    <option key={p._id} value={p._id} style={{ background: th.bgModal }}>{p.name} {p.phone ? `(${p.phone})` : ""}</option>
-                  ))}
-                </select>
-                {dropdownParties.length === 0 && (
-                  <div style={{ color: "#d97706", fontSize: 12, marginTop: 6 }}>
-                    {isUrdu ? "پہلے کھاتہ بنائیں" : "Create a party first"}
+                <div style={{ position: "relative" }}>
+                  <span style={{ position: "absolute", left: 12, top: 12, color: th.textMuted, pointerEvents: "none" }}>
+                    <Icon path={ICONS.search} size={14} />
+                  </span>
+                  <input
+                    value={txSearch}
+                    onChange={(e) => {
+                      setTxSearch(e.target.value);
+                      setTxForm((p) => (p.partyId ? { ...p, partyId: "" } : p));
+                    }}
+                    placeholder={L.search}
+                    autoFocus
+                    style={{ ...inpS, paddingLeft: 36 }}
+                  />
+                </div>
+                {txPicked && (
+                  <div style={{
+                    marginTop: 8, padding: "8px 10px", borderRadius: 10,
+                    border: `1px solid ${txForm.role === "supplier" ? "rgba(217,119,6,0.35)" : "rgba(37,99,235,0.35)"}`,
+                    background: txForm.role === "supplier" ? "rgba(217,119,6,0.08)" : "rgba(37,99,235,0.08)",
+                    color: th.text, fontSize: 13, fontWeight: 700,
+                  }}>
+                    {txPicked.name}{txPicked.phone ? ` · ${txPicked.phone}` : ""}
                   </div>
                 )}
+                <div style={{
+                  marginTop: 8, maxHeight: 220, overflowY: "auto",
+                  border: `1px solid ${th.border}`, borderRadius: 12,
+                  background: th.bgCard,
+                }}>
+                  {dropdownParties.length === 0 && (
+                    <div style={{ padding: 14, color: "#d97706", fontSize: 12, fontWeight: 600 }}>
+                      {isUrdu ? "پہلے کھاتہ بنائیں" : "Create a party first"}
+                    </div>
+                  )}
+                  {dropdownParties.length > 0 && txMatches.length === 0 && (
+                    <div style={{ padding: 14, color: th.textDim, fontSize: 13, textAlign: "center" }}>
+                      {isUrdu ? "کوئی نام نہیں ملا" : "No name matched"}
+                    </div>
+                  )}
+                  {txMatches.map((p) => {
+                    const on = txForm.partyId === p._id;
+                    return (
+                      <button
+                        key={p._id}
+                        type="button"
+                        onClick={() => {
+                          setTxForm((f) => ({ ...f, partyId: p._id }));
+                          setTxSearch(p.name || "");
+                        }}
+                        style={{
+                          display: "block", width: "100%", textAlign: "left",
+                          padding: "10px 12px", cursor: "pointer",
+                          border: "none", borderBottom: `1px solid ${th.border}`,
+                          background: on ? (txForm.role === "supplier" ? "rgba(217,119,6,0.16)" : "rgba(37,99,235,0.16)") : "transparent",
+                          color: th.text, fontWeight: on ? 800 : 600, fontSize: 13,
+                        }}
+                      >
+                        <div>{p.name}</div>
+                        {p.phone ? <div style={{ color: th.textMuted, fontSize: 11, marginTop: 2 }}>{p.phone}</div> : null}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
             <FInput label={L.amount} value={txForm.amount} onChange={(v) => setTxForm((p) => ({ ...p, amount: v.replace(/[^0-9.]/g, "") }))} required placeholder="0" />
@@ -472,27 +579,7 @@ function LedgerPage({ purchases = [], sales = [] }) {
               ) : (
                 <select value={txForm.accountId} onChange={(e) => setTxForm((p) => ({ ...p, accountId: e.target.value }))} style={inpS}>
                   <option value="">— {L.account} —</option>
-                  {accounts.filter((a) => (a.type || a.accountType) === "cash").length > 0 && (
-                    <optgroup label={isUrdu ? "نقد" : "Cash"}>
-                      {accounts.filter((a) => (a.type || a.accountType) === "cash").map((a) => (
-                        <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>{accLabel(a)} · {formatPKR(liveBalance(a))}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {accounts.filter((a) => (a.type || a.accountType) === "bank").length > 0 && (
-                    <optgroup label={isUrdu ? "بینک" : "Bank"}>
-                      {accounts.filter((a) => (a.type || a.accountType) === "bank").map((a) => (
-                        <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>{accLabel(a)} · {formatPKR(liveBalance(a))}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {accounts.filter((a) => (a.type || a.accountType) === "wallet").length > 0 && (
-                    <optgroup label={isUrdu ? "والٹ" : "Wallet"}>
-                      {accounts.filter((a) => (a.type || a.accountType) === "wallet").map((a) => (
-                        <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>{accLabel(a)} · {formatPKR(liveBalance(a))}</option>
-                      ))}
-                    </optgroup>
-                  )}
+                  <AccountOptGroups accounts={accounts} th={th} isUrdu={isUrdu} />
                 </select>
               )}
               <div style={{ color: txKind === "take" ? "#16a34a" : "#dc2626", fontSize: 12, fontWeight: 700, marginTop: 6 }}>

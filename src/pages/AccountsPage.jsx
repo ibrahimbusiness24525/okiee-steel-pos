@@ -134,14 +134,12 @@ function AccountsPage() {
   };
   useEffect(() => { loadAccounts(); }, []);
 
-  const bankAccounts    = accounts.filter(a=>a.type==="bank");
   const cashAccounts    = accounts.filter(a=>a.type==="cash");
-  const walletAccounts  = accounts.filter(a=>a.type==="wallet");
+  const bankWalletAccounts = accounts.filter(a=>a.type!=="cash");
   const live = (a) => liveBalance(a);
-  const totalBankBal    = bankAccounts.reduce((s,a)=>s+live(a),0);
   const totalCashBal    = cashAccounts.reduce((s,a)=>s+live(a),0);
-  const totalWalletBal  = walletAccounts.reduce((s,a)=>s+live(a),0);
-  const totalAll        = totalBankBal + totalCashBal + totalWalletBal;
+  const totalBankWalletBal = bankWalletAccounts.reduce((s,a)=>s+live(a),0);
+  const totalAll        = totalCashBal + totalBankWalletBal;
 
   const getAccId = (acc) => acc.id || acc._id;
 
@@ -239,7 +237,7 @@ function AccountsPage() {
     return (
       <div
         onClick={() => openStatement(acc)}
-        style={{borderRadius:16,padding:isMobile?14:20,border:`1px solid ${bdr}`,background:bg,display:"flex",flexDirection:"column",gap:12,cursor:"pointer"}}
+        style={{borderRadius:16,padding:isMobile?14:20,border:`1px solid ${bdr}`,background:bg,display:"flex",flexDirection:"column",gap:12,cursor:"pointer",height:"100%",boxSizing:"border-box"}}
       >
         <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between"}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -280,10 +278,9 @@ function AccountsPage() {
     <div style={{display:"flex",flexDirection:"column",gap:20}}>
       {/* ── Stats ── */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:12}}>
-        <StatCard label={isUrdu?"بینک":"Banks"}        value={bankAccounts.length}   icon={ICONS.bank}   color="#60a5fa" sub={formatPKR(totalBankBal)}/>
-        <StatCard label={isUrdu?"نقد":"Cash"}          value={cashAccounts.length}   icon={ICONS.wallet} color="#34d399" sub={formatPKR(totalCashBal)}/>
-        <StatCard label={isUrdu?"والٹ":"Wallets"}      value={walletAccounts.length} icon={ICONS.coins}  color="#a78bfa" sub={formatPKR(totalWalletBal)}/>
-        <StatCard label={isUrdu?"کل بیلنس":"Total"}    value={formatPKR(totalAll)}   icon={ICONS.coins}  color="#fbbf24" sub={`${accounts.length} ${isUrdu ? "بینک / والٹ" : "banks / wallets"}`}/>
+        <StatCard label={isUrdu?"بینک / والٹ":"Bank / Wallet"} value={bankWalletAccounts.length} icon={ICONS.bank}   color="#60a5fa" sub={formatPKR(totalBankWalletBal)}/>
+        <StatCard label={isUrdu?"نقد":"Cash"}                   value={cashAccounts.length}      icon={ICONS.wallet} color="#34d399" sub={formatPKR(totalCashBal)}/>
+        <StatCard label={isUrdu?"کل بیلنس":"Total"}             value={formatPKR(totalAll)}      icon={ICONS.coins}  color="#fbbf24" sub={`${accounts.length} ${isUrdu ? "اکاؤنٹس" : "accounts"}`}/>
       </div>
 
       {/* ── Header ── */}
@@ -294,37 +291,24 @@ function AccountsPage() {
         </button>
       </div>
 
-      {/* ── Bank Accounts ── */}
-      {bankAccounts.length>0 && (
+      {bankWalletAccounts.length>0 && (
         <div>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
             <span style={{fontSize:16}}>🏦</span>
-            <h3 style={{color:th.text,fontWeight:700,margin:0,fontSize:14}}>{isUrdu?"بینک":"Banks"}</h3>
-            <span style={{fontSize:11,padding:"2px 10px",borderRadius:20,background:"rgba(96,165,250,0.15)",color:"#60a5fa",fontWeight:600}}>{bankAccounts.length}</span>
-            <span style={{marginLeft:"auto",color:"#60a5fa",fontWeight:700,fontSize:13}}>{formatPKR(totalBankBal)}</span>
+            <h3 style={{color:th.text,fontWeight:700,margin:0,fontSize:14}}>{isUrdu?"بینک / والٹ":"Bank / Wallet"}</h3>
+            <span style={{fontSize:11,padding:"2px 10px",borderRadius:20,background:"rgba(96,165,250,0.15)",color:"#60a5fa",fontWeight:600}}>{bankWalletAccounts.length}</span>
+            <span style={{marginLeft:"auto",color:"#60a5fa",fontWeight:700,fontSize:13}}>{formatPKR(totalBankWalletBal)}</span>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:14}}>
-            {bankAccounts.map(acc=><AccountCard key={getAccId(acc)} acc={acc}/>)}
-          </div>
-        </div>
-      )}
-
-      {/* ── Wallet Accounts ── */}
-      {walletAccounts.length>0 && (
-        <div>
-          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
-            <span style={{fontSize:16}}>📱</span>
-            <h3 style={{color:th.text,fontWeight:700,margin:0,fontSize:14}}>{isUrdu?"موبائل والٹ":"Mobile Wallets"}</h3>
-            <span style={{fontSize:11,padding:"2px 10px",borderRadius:20,background:"rgba(167,139,250,0.15)",color:"#a78bfa",fontWeight:600}}>{walletAccounts.length}</span>
-            <span style={{marginLeft:"auto",color:"#a78bfa",fontWeight:700,fontSize:13}}>{formatPKR(totalWalletBal)}</span>
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:14}}>
-            {walletAccounts.map(acc=><AccountCard key={getAccId(acc)} acc={acc}/>)}
+          <div style={{display:"flex",flexWrap:"wrap",gap:14,alignItems:"stretch"}}>
+            {bankWalletAccounts.map(acc=>(
+              <div key={getAccId(acc)} style={{flex:"0 0 280px",maxWidth:"100%"}}>
+                <AccountCard acc={acc}/>
+              </div>
+            ))}
           </div>
         </div>
       )}
 
-      {/* ── Cash Accounts ── */}
       {cashAccounts.length>0 && (
         <div>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
@@ -333,8 +317,12 @@ function AccountsPage() {
             <span style={{fontSize:11,padding:"2px 10px",borderRadius:20,background:"rgba(52,211,153,0.15)",color:"#34d399",fontWeight:600}}>{cashAccounts.length}</span>
             <span style={{marginLeft:"auto",color:"#34d399",fontWeight:700,fontSize:13}}>{formatPKR(totalCashBal)}</span>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:14}}>
-            {cashAccounts.map(acc=><AccountCard key={getAccId(acc)} acc={acc}/>)}
+          <div style={{display:"flex",flexWrap:"wrap",gap:14,alignItems:"stretch"}}>
+            {cashAccounts.map(acc=>(
+              <div key={getAccId(acc)} style={{flex:"0 0 280px",maxWidth:"100%"}}>
+                <AccountCard acc={acc}/>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -355,20 +343,33 @@ function AccountsPage() {
         <Modal title={editing ? (t.editAccount||"Edit Bank / Wallet") : (t.addAccount||"Add Bank / Wallet")} onClose={()=>setShowModal(false)}>
           <div style={{display:"flex",flexDirection:"column",gap:16}}>
 
-            {/* Account Type — 3 options */}
             <div>
               <label style={{color:th.textMuted,fontSize:11,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8,display:"block"}}>{t.accountType||"Type"} <span style={{color:"#f87171"}}>*</span></label>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                 {[
-                  {val:"bank",   icon:ICONS.bank,   label:isUrdu?"🏦 بینک":"🏦 Bank",   color:"#60a5fa"},
-                  {val:"wallet", icon:ICONS.coins,  label:isUrdu?"📱 والٹ":"📱 Wallet", color:"#a78bfa"},
-                  {val:"cash",   icon:ICONS.wallet, label:isUrdu?"💵 نقد":"💵 Cash",   color:"#34d399"},
-                ].map(({val,icon,label,color})=>(
-                  <button key={val} onClick={()=>f("type")(val)} style={{padding:"12px 6px",borderRadius:12,border:`2px solid ${form.type===val?color:th.border}`,background:form.type===val?`${color}18`:"transparent",color:form.type===val?color:th.textMuted,cursor:"pointer",fontWeight:700,fontSize:12,display:"flex",flexDirection:"column",alignItems:"center",gap:5}}>
-                    <Icon path={icon} size={20}/><span>{label}</span>
-                  </button>
-                ))}
+                  {val:"bankwallet", icon:ICONS.bank,   label:isUrdu?"بینک / والٹ":"Bank / Wallet", color:"#60a5fa"},
+                  {val:"cash",       icon:ICONS.wallet, label:isUrdu?"💵 نقد":"💵 Cash",           color:"#34d399"},
+                ].map(({val,icon,label,color})=>{
+                  const on = val==="cash" ? form.type==="cash" : form.type!=="cash";
+                  return (
+                    <button key={val} type="button" onClick={()=>f("type")(val==="cash"?"cash":(form.type==="wallet"?"wallet":"bank"))} style={{padding:"12px 6px",borderRadius:12,border:`2px solid ${on?color:th.border}`,background:on?`${color}18`:"transparent",color:on?color:th.textMuted,cursor:"pointer",fontWeight:700,fontSize:12,display:"flex",flexDirection:"column",alignItems:"center",gap:5}}>
+                      <Icon path={icon} size={20}/><span>{label}</span>
+                    </button>
+                  );
+                })}
               </div>
+              {form.type!=="cash" && (
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:8}}>
+                  {[
+                    {val:"bank", label:isUrdu?"بینک":"Bank", color:"#60a5fa"},
+                    {val:"wallet", label:isUrdu?"والٹ":"Wallet", color:"#a78bfa"},
+                  ].map(({val,label,color})=>(
+                    <button key={val} type="button" onClick={()=>f("type")(val)} style={{padding:"8px 6px",borderRadius:10,border:`1.5px solid ${form.type===val?color:th.border}`,background:form.type===val?`${color}18`:"transparent",color:form.type===val?color:th.textMuted,cursor:"pointer",fontWeight:700,fontSize:12}}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Bank selector */}

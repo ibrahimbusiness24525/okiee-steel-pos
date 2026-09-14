@@ -1,4 +1,4 @@
-import { useState, useRef, useLayoutEffect } from "react";
+import { useState, useRef, useLayoutEffect, useMemo } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, StatCard, Table, WeightKgGInput, useTypeaheadNav } from "../components/shared";
@@ -10,6 +10,7 @@ import { productDisplayName } from "../utils/constants";
 import PaymentTerms, { useAccounts, derivePayment, isPayValid } from "../components/PaymentTerms";
 import { recordTradeFinance } from "../utils/tradeFinance";
 import PartyNamePicker from "../components/PartyNamePicker";
+import { stockLotsForProduct, makeLotContext } from "../components/InventoryStockTable";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BILLING PAGE — COMPLETE UPDATE
@@ -80,9 +81,20 @@ const hwBillCalc = (salePricePerPc, qty) => {
   const sp = Number(salePricePerPc)||0; const q = Number(qty)||0;
   return { salePricePerPc: sp, total: sp * q };
 };
+const fmtAvgCost = (n) => {
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  if (!v) return "0";
+  return Number.isInteger(v) ? String(v) : v.toFixed(2);
+};
+const fmtQtyNice = (n) => {
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  if (!Number.isFinite(v)) return "0";
+  if (Math.abs(v - Math.round(v)) < 0.001) return String(Math.round(v));
+  return v.toFixed(2);
+};
 const roundUnitAmt = (n) => {
   const x = Math.round((Number(n) || 0) * 100) / 100;
-  return String(x);
+  return Number.isInteger(x) ? String(x) : x.toFixed(2);
 };
 const stockUnitLabel = (cat, product) => {
   if (cat === "Chader") return "kg";
@@ -115,11 +127,11 @@ const getBillingBlockStockError = (block, products, isUrdu) => {
       return s + convertQuantity(Number(r.qty) || 0, saleUnit, pUnit);
     }, 0);
   }
-  if (entered > 0 && entered > stock) {
+  if (entered > 0 && entered > stock + 0.08) {
     const unit = cat === "Chader" ? "kg" : cat === "Net" ? "ft" : getUnitLabel(productUnitOf(prod));
     return isUrdu
-      ? `🚫 Stock صرف ${stock} ${unit} ہے — آپ نے ${entered} ${unit} داخل کیا`
-      : `🚫 Only ${stock} ${unit} in stock — you entered ${entered} ${unit}`;
+      ? `🚫 Stock صرف ${fmtQtyNice(stock)} ${unit} ہے — آپ نے ${fmtQtyNice(entered)} ${unit} داخل کیا`
+      : `🚫 Only ${fmtQtyNice(stock)} ${unit} in stock — you entered ${fmtQtyNice(entered)} ${unit}`;
   }
   return null;
 };
@@ -293,16 +305,19 @@ function BillingSaleInvoice({ invoiceData, onClose, isUrdu }) {
     invoice, date, customer, items, grandTotal,
     paymentMethod, bankName, accountName,
     paidAmount, remainingAmount, isPartial,
-    loaderName, loaderFee, bindingFee
+    loaderName, loaderFee, bindingFee,
+    discount, cashReceived, changeDue,
   } = invoiceData;
 
   const sp         = loadShopProfile();
   const ownerLines = sp.owners.filter(o => o.name || o.nameUr);
   const paid       = Number(paidAmount)      || 0;
   const remaining  = Number(remainingAmount) || 0;
-  // grandTotal already includes loaderFee + bindingFee (bill total charged to customer).
-  // Subtotal row should show products-only amount, so subtract both back out.
-  const productsSubtotal = Number(grandTotal) - (Number(loaderFee) || 0) - (Number(bindingFee) || 0);
+  const discountAmt = Number(discount) || 0;
+  const cashIn = Number(cashReceived) || 0;
+  const changeAmt = Number(changeDue) || 0;
+  // grandTotal already includes loaderFee + bindingFee - discount (bill total charged to customer).
+  const productsSubtotal = Number(grandTotal) - (Number(loaderFee) || 0) - (Number(bindingFee) || 0) + discountAmt;
 
   const L = isUrdu ? {
     shopName:      sp.shopNameUr || sp.shopName,
@@ -674,10 +689,28 @@ colSpan={2}
             <div style={dash}/>
 
             {/* ── TOTAL ── */}
+            {discountAmt > 0 && (
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:"12px", fontWeight:700, marginBottom:4 }}>
+                <span>{isUrdu ? "رعایت" : "Discount"}</span>
+                <span>- {formatPKR(discountAmt)}</span>
+              </div>
+            )}
             <div style={{ display:"flex", justifyContent:"space-between", fontSize:"15px", fontWeight:900 }}>
               <span>{L.totalLbl}</span>
               <span>{formatPKR(grandTotal)}</span>
             </div>
+            {cashIn > 0 && (
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:"12px", fontWeight:700, marginTop:4 }}>
+                <span>{isUrdu ? "وصول رقم" : "Cash received"}</span>
+                <span>{formatPKR(cashIn)}</span>
+              </div>
+            )}
+            {changeAmt > 0 && (
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:"13px", fontWeight:900, marginTop:4 }}>
+                <span>{isUrdu ? "واپسی (چینج)" : "Change"}</span>
+                <span>{formatPKR(changeAmt)}</span>
+              </div>
+            )}
 
             {/* ── Partial payment breakdown (kept, styled plainly) ── */}
             {isPartial && paid > 0 && (
@@ -843,8 +876,24 @@ minute:"2-digit"
   );
 }
 
+function CostEyeBtn({ show, onToggle, color }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggle(); }}
+      title={show ? "Hide cost" : "Show cost"}
+      style={{
+        border: "none", background: "transparent", cursor: "pointer", padding: 2,
+        display: "inline-flex", alignItems: "center", color: color || "inherit", lineHeight: 0,
+      }}
+    >
+      <Icon path={show ? ICONS.eye_off : ICONS.eye} size={14} />
+    </button>
+  );
+}
+
 // ─── PIPE BILLING ROWS ────────────────────────────────────────────────────────
-function PipeBillingRows({ rows, onChange, purchasePrice, availStock, isUrdu }) {
+function PipeBillingRows({ rows, onChange, purchasePrice, avgCost = 0, availStock, isUrdu, showCost = false, onToggleCost }) {
   const th = useTheme();
   const inpS = { background:th.input, border:`1px solid ${th.inputBorder}`, color:th.text, borderRadius:10, padding:"9px 11px", fontSize:14, outline:"none", width:"100%", boxSizing:"border-box" };
   const currentRows = rows.length > 0 ? rows : [{ _id:Date.now()+Math.random(), length:"", qty:"", percentage:"" }];
@@ -857,12 +906,12 @@ function PipeBillingRows({ rows, onChange, purchasePrice, availStock, isUrdu }) 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:8}}>
       <div style={{padding:"7px 11px",borderRadius:8,background:"rgba(96,165,250,0.08)",border:"1px solid rgba(96,165,250,0.2)",fontSize:13,color:"#60a5fa",fontWeight:600}}>
-        🔩 Purchase Price: Rs {purchasePrice}/ft — {isUrdu ? "مارکپ % داخل کریں" : "Enter markup % for sale price"}
+        🔩 {isUrdu ? "اوسط لاگت" : "Avg cost"}{showCost ? `: Rs ${fmtAvgCost(avgCost || purchasePrice)}/pc` : ""} <CostEyeBtn show={showCost} onToggle={onToggleCost} /> — {isUrdu ? "مارکپ % داخل کریں" : "Enter markup % for sale price"}
       </div>
       <div style={{padding:"6px 11px",borderRadius:8,background:availStock===0?"rgba(248,113,113,0.1)":"rgba(52,211,153,0.08)",border:`1px solid ${availStock===0?"rgba(248,113,113,0.3)":"rgba(52,211,153,0.2)"}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <span style={{fontSize:12,color:th.textMuted}}>{isUrdu?"دستیاب Stock:":"Available Stock:"}</span>
         <span style={{fontWeight:900,fontSize:14,color:availStock===0?"#f87171":availStock<10?"#fbbf24":"#34d399"}}>
-          {availStock} pcs {availStock===0?"🚫":availStock<10?"⚠️":""}
+          {fmtQtyNice(availStock)} pcs {availStock===0?"🚫":availStock<10?"⚠️":""}
         </span>
       </div>
       <div style={{padding:10,borderRadius:10,border:`1px solid ${stockErr?"rgba(248,113,113,0.5)":th.border}`,background:th.bgCard}}>
@@ -906,7 +955,7 @@ function PipeBillingRows({ rows, onChange, purchasePrice, availStock, isUrdu }) 
 }
 
 // ─── CHADER BILLING ROWS ──────────────────────────────────────────────────────
-function ChaderBillingRows({ rows, onChange, purchasePrice, availStock, isUrdu }) {
+function ChaderBillingRows({ rows, onChange, purchasePrice, avgCost = 0, availStock, isUrdu, showCost = false, onToggleCost }) {
   const th = useTheme();
   const inpS = { background:th.input, border:`1px solid ${th.inputBorder}`, color:th.text, borderRadius:10, padding:"9px 11px", fontSize:14, outline:"none", width:"100%", boxSizing:"border-box" };
   // Sale price is only pre-filled once when the product is first selected (see makeDefaultRow).
@@ -917,19 +966,20 @@ function ChaderBillingRows({ rows, onChange, purchasePrice, availStock, isUrdu }
   const c = chaderBillCalc(row.salePrice, row.weight);
   const enteredKg = Number(row.weight) || 0;
   const stockErr  = enteredKg > 0 && enteredKg > availStock;
-  const ppZero    = !purchasePrice || purchasePrice === 0;
+  const shownCost = Number(avgCost) > 0 ? Number(avgCost) : purchasePrice;
+  const ppZero    = !shownCost || shownCost === 0;
   return (
     <div style={{display:"flex",flexDirection:"column",gap:8}}>
       <div style={{padding:"7px 11px",borderRadius:8,background:ppZero?"rgba(251,191,36,0.08)":"rgba(52,211,153,0.08)",border:ppZero?"1px solid rgba(251,191,36,0.3)":"1px solid rgba(52,211,153,0.2)",fontSize:13,color:ppZero?"#fbbf24":"#34d399",fontWeight:600}}>
         📋 {ppZero
-          ? (isUrdu ? "⚠️ خریداری قیمت سیٹ نہیں — Sale price نیچے خود داخل کریں" : "⚠️ Purchase price not set — enter sale price/kg manually below")
-          : (isUrdu ? `خریداری قیمت: Rs ${purchasePrice}/kg — Sale price نیچے تبدیل کریں` : `Purchase Price: Rs ${purchasePrice}/kg — Sale price editable below`)
+          ? (isUrdu ? "⚠️ اوسط لاگت سیٹ نہیں — Sale price نیچے خود داخل کریں" : "⚠️ Avg cost not set — enter sale price/kg manually below")
+          : <>{isUrdu ? "اوسط لاگت" : "Avg cost"}{showCost ? `: Rs ${fmtAvgCost(shownCost)}/kg` : ""} <CostEyeBtn show={showCost} onToggle={onToggleCost} /> — {isUrdu ? "Sale price نیچے تبدیل کریں" : "Sale price editable below"}</>
         }
       </div>
       <div style={{padding:"6px 11px",borderRadius:8,background:availStock===0?"rgba(248,113,113,0.1)":"rgba(52,211,153,0.08)",border:`1px solid ${availStock===0?"rgba(248,113,113,0.3)":"rgba(52,211,153,0.2)"}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <span style={{fontSize:12,color:th.textMuted}}>{isUrdu?"دستیاب Stock:":"Available Stock:"}</span>
         <span style={{fontWeight:900,fontSize:14,color:availStock===0?"#f87171":availStock<10?"#fbbf24":"#34d399"}}>
-          {availStock} kg {availStock===0?"🚫":availStock<10?"⚠️":""}
+          {fmtQtyNice(availStock)} kg {availStock===0?"🚫":availStock<10?"⚠️":""}
         </span>
       </div>
       <div style={{padding:10,borderRadius:10,border:`1px solid ${stockErr?"rgba(248,113,113,0.5)":th.border}`,background:th.bgCard}}>
@@ -970,7 +1020,7 @@ function ChaderBillingRows({ rows, onChange, purchasePrice, availStock, isUrdu }
 }
 
 // ─── NET BILLING ROWS ─────────────────────────────────────────────────────────
-function NetBillingRows({ rows, onChange, purchasePrice, availStock, isUrdu }) {
+function NetBillingRows({ rows, onChange, purchasePrice, avgCost = 0, availStock, isUrdu, showCost = false, onToggleCost }) {
   const th = useTheme();
   const inpS = { background:th.input, border:`1px solid ${th.inputBorder}`, color:th.text, borderRadius:10, padding:"9px 11px", fontSize:14, outline:"none", width:"100%", boxSizing:"border-box" };
   // Sale price is only pre-filled once when the product is first selected (see makeDefaultRow).
@@ -981,19 +1031,20 @@ function NetBillingRows({ rows, onChange, purchasePrice, availStock, isUrdu }) {
   const c = netBillCalc(row.salePrice, row.feet);
   const enteredFt = Number(row.feet) || 0;
   const stockErr  = enteredFt > 0 && enteredFt > availStock;
-  const ppZero    = !purchasePrice || purchasePrice === 0;
+  const shownCost = Number(avgCost) > 0 ? Number(avgCost) : purchasePrice;
+  const ppZero    = !shownCost || shownCost === 0;
   return (
     <div style={{display:"flex",flexDirection:"column",gap:8}}>
       <div style={{padding:"7px 11px",borderRadius:8,background:ppZero?"rgba(251,191,36,0.08)":"rgba(244,114,182,0.08)",border:ppZero?"1px solid rgba(251,191,36,0.3)":"1px solid rgba(244,114,182,0.2)",fontSize:13,color:ppZero?"#fbbf24":"#f472b6",fontWeight:600}}>
         🕸️ {ppZero
-          ? (isUrdu ? "⚠️ خریداری قیمت سیٹ نہیں — Sale price نیچے خود داخل کریں" : "⚠️ Purchase price not set — enter sale price/ft manually below")
-          : (isUrdu ? `خریداری قیمت: Rs ${purchasePrice}/ft — Sale price نیچے تبدیل کریں` : `Purchase Price: Rs ${purchasePrice}/ft — Sale price editable below`)
+          ? (isUrdu ? "⚠️ اوسط لاگت سیٹ نہیں — Sale price نیچے خود داخل کریں" : "⚠️ Avg cost not set — enter sale price/ft manually below")
+          : <>{isUrdu ? "اوسط لاگت" : "Avg cost"}{showCost ? `: Rs ${fmtAvgCost(shownCost)}/ft` : ""} <CostEyeBtn show={showCost} onToggle={onToggleCost} /> — {isUrdu ? "Sale price نیچے تبدیل کریں" : "Sale price editable below"}</>
         }
       </div>
       <div style={{padding:"6px 11px",borderRadius:8,background:availStock===0?"rgba(248,113,113,0.1)":"rgba(244,114,182,0.08)",border:`1px solid ${availStock===0?"rgba(248,113,113,0.3)":"rgba(244,114,182,0.2)"}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <span style={{fontSize:12,color:th.textMuted}}>{isUrdu?"دستیاب Stock:":"Available Stock:"}</span>
         <span style={{fontWeight:900,fontSize:14,color:availStock===0?"#f87171":availStock<10?"#fbbf24":"#f472b6"}}>
-          {availStock} ft {availStock===0?"🚫":availStock<10?"⚠️":""}
+          {fmtQtyNice(availStock)} ft {availStock===0?"🚫":availStock<10?"⚠️":""}
         </span>
       </div>
       <div style={{padding:10,borderRadius:10,border:`1px solid ${stockErr?"rgba(248,113,113,0.5)":th.border}`,background:th.bgCard}}>
@@ -1039,7 +1090,7 @@ function NetBillingRows({ rows, onChange, purchasePrice, availStock, isUrdu }) {
 }
 
 // ─── HW/CUSTOM BILLING ROWS ───────────────────────────────────────────────────
-function HwBillingRows({ rows, onChange, purchasePrice, purchaseUnit, productSalePrice, catLabel, catColor, catBg, availStock, isUrdu }) {
+function HwBillingRows({ rows, onChange, purchasePrice, avgCost = 0, purchaseUnit, productSalePrice, catLabel, catColor, catBg, availStock, isUrdu, showCost = false, onToggleCost }) {
   const th = useTheme();
   const color      = catColor || "#fbbf24";
   const bgTint     = catBg    || "rgba(251,191,36,0.08)";
@@ -1067,41 +1118,29 @@ function HwBillingRows({ rows, onChange, purchasePrice, purchaseUnit, productSal
     onChange([newRow]);
   };
   
+  const costPrice = Number(avgCost) > 0 ? Number(avgCost) : purchasePrice;
   const enteredQty = Number(row.qty) || 0;
-  const qtyInStockUnit = canConvert(saleUnit, pUnit)
-    ? convertQuantity(enteredQty, saleUnit, pUnit)
-    : enteredQty;
-  const stockErr = qtyInStockUnit > 0 && qtyInStockUnit > availStock;
-  
   const c = hwBillCalc(row.salePrice, enteredQty);
-  const ppZero = !purchasePrice || purchasePrice === 0;
-  const costInSaleUnit = canConvert(pUnit, saleUnit) && purchasePrice > 0
-    ? convertPrice(purchasePrice, pUnit, saleUnit)
-    : purchasePrice;
-  
-  // Display purchase info with unit and related unit price
-  const purchaseInfo = ppZero
-    ? (isUrdu ? "⚠️ خریداری قیمت سیٹ نہیں — Sale price نیچے خود داخل کریں" : "⚠️ Purchase price not set — enter sale price manually below")
-    : saleUnit !== pUnit && canConvert(pUnit, saleUnit)
-      ? (isUrdu
-        ? `خریداری: Rs ${purchasePrice}/${getUnitLabel(pUnit)} → cost Rs ${Math.round(costInSaleUnit * 100) / 100}/${getUnitLabel(saleUnit)}`
-        : `Purchase: Rs ${purchasePrice}/${getUnitLabel(pUnit)} → cost Rs ${Math.round(costInSaleUnit * 100) / 100}/${getUnitLabel(saleUnit)}`)
-      : (isUrdu
-        ? `خریداری قیمت: Rs ${purchasePrice}/${getUnitLabel(pUnit)}`
-        : `Purchase Price: Rs ${purchasePrice}/${getUnitLabel(pUnit)}`);
-  const maxInSaleUnit = canConvert(pUnit, saleUnit)
+  const costInSaleUnit = canConvert(pUnit, saleUnit) && costPrice > 0
+    ? convertPrice(costPrice, pUnit, saleUnit)
+    : costPrice;
+  const saleInSaleUnit = canConvert(pUnit, saleUnit) && Number(productSalePrice) > 0
+    ? convertPrice(productSalePrice, pUnit, saleUnit)
+    : Number(productSalePrice) || 0;
+  const stockInSaleUnit = canConvert(pUnit, saleUnit)
     ? convertQuantity(availStock, pUnit, saleUnit)
     : availStock;
+  const stockErr = enteredQty > 0 && Number(fmtQtyNice(enteredQty)) > Number(fmtQtyNice(stockInSaleUnit)) + 1e-9;
+  const uLbl = getUnitLabel(saleUnit);
+  const maxInSaleUnit = stockInSaleUnit;
+  const stockLow = stockInSaleUnit > 0 && stockInSaleUnit < 10;
   
   return (
     <div style={{display:"flex",flexDirection:"column",gap:8}}>
-      <div style={{padding:"7px 11px",borderRadius:8,background:ppZero?"rgba(251,191,36,0.08)":bgTint,border:ppZero?"1px solid rgba(251,191,36,0.3)":`1px solid ${borderTint}`,fontSize:13,color:ppZero?"#fbbf24":color,fontWeight:600}}>
-        🔧 {purchaseInfo}
-      </div>
       <div style={{padding:"6px 11px",borderRadius:8,background:availStock===0?"rgba(248,113,113,0.1)":bgTint,border:`1px solid ${availStock===0?"rgba(248,113,113,0.3)":borderTint}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <span style={{fontSize:12,color:th.textMuted}}>{isUrdu?"دستیاب Stock:":"Available Stock:"}</span>
-        <span style={{fontWeight:900,fontSize:14,color:availStock===0?"#f87171":availStock<10?"#fbbf24":color}}>
-          {availStock} {getUnitLabel(pUnit)} {availStock===0?"🚫":availStock<10?"⚠️":""}
+        <span style={{fontWeight:900,fontSize:14,color:availStock===0?"#f87171":stockLow?"#fbbf24":color}}>
+          {fmtQtyNice(stockInSaleUnit)} {uLbl} {availStock===0?"🚫":stockLow?"⚠️":""}
         </span>
       </div>
       <div style={{padding:10,borderRadius:10,border:`1px solid ${stockErr?"rgba(248,113,113,0.5)":th.border}`,background:th.bgCard}}>
@@ -1124,17 +1163,18 @@ function HwBillingRows({ rows, onChange, purchasePrice, purchaseUnit, productSal
           </div>
           <div>
             <label style={{color:stockErr?"#f87171":th.textMuted,fontSize:11,display:"block",marginBottom:3,fontWeight:stockErr?700:400}}>
-              Qty {availStock>0&&<span style={{color:th.textDim,fontWeight:400}}>(max: {maxInSaleUnit} {getUnitLabel(saleUnit)})</span>}
+              Qty {availStock>0&&<span style={{color:th.textDim,fontWeight:400}}>(max: {fmtQtyNice(maxInSaleUnit)} {uLbl})</span>}
             </label>
             <input type="text" inputMode="decimal" value={row.qty} onChange={e=>update("qty",e.target.value)} placeholder="0"
               style={{...inpS,border:stockErr?"2px solid rgba(248,113,113,0.7)":inpS.border}}/>
           </div>
           <div>
             <label style={{color:th.textMuted,fontSize:11,display:"block",marginBottom:3}}>
-              Sale Price/{getUnitLabel(saleUnit)} (Rs)
-              {canConvert(pUnit, saleUnit) && purchasePrice > 0 && (
-                <span style={{color:"#34d399",fontSize:10,marginLeft:4,fontWeight:600}}>
-                  (Cost: {Math.round(costInSaleUnit * 100) / 100})
+              Sale Price/{uLbl} (Rs)
+              {costPrice > 0 && (
+                <span style={{color:"#34d399",fontSize:10,marginLeft:4,fontWeight:600,display:"inline-flex",alignItems:"center",gap:3,verticalAlign:"middle"}}>
+                  {showCost ? `(Cost: ${fmtAvgCost(costInSaleUnit)})` : "(Cost)"}
+                  <CostEyeBtn show={showCost} onToggle={onToggleCost} color="#34d399" />
                 </span>
               )}
             </label>
@@ -1143,19 +1183,19 @@ function HwBillingRows({ rows, onChange, purchasePrice, purchaseUnit, productSal
               inputMode="decimal" 
               value={row.salePrice} 
               onChange={e=>update("salePrice",e.target.value)} 
-              placeholder={canConvert(pUnit, saleUnit) && purchasePrice > 0 ? String(Math.round(costInSaleUnit * 100) / 100) : String(purchasePrice)} 
+              placeholder={costPrice > 0 ? fmtAvgCost(costInSaleUnit) : (saleInSaleUnit > 0 ? fmtAvgCost(saleInSaleUnit) : "0")} 
               style={{...inpS,border:`2px solid ${borderTint}`}}
             />
           </div>
         </div>
         {stockErr && (
           <div style={{marginTop:8,padding:"7px 10px",borderRadius:8,background:"rgba(248,113,113,0.12)",border:"1px solid rgba(248,113,113,0.4)",color:"#f87171",fontSize:13,fontWeight:700}}>
-            🚫 {isUrdu?`Stock صرف ${availStock} ${getUnitLabel(pUnit)} ہے`:`Only ${availStock} ${getUnitLabel(pUnit)} in stock`}
+            🚫 {isUrdu?`Stock صرف ${fmtQtyNice(stockInSaleUnit)} ${uLbl} ہے`:`Only ${fmtQtyNice(stockInSaleUnit)} ${uLbl} in stock`}
           </div>
         )}
         {c.total > 0 && !stockErr && (
           <div style={{marginTop:8,padding:"5px 10px",borderRadius:8,background:bgTint,display:"flex",justifyContent:"space-between",fontSize:13}}>
-            <span style={{color:th.textMuted}}>{enteredQty} {getUnitLabel(saleUnit)} × Rs{Number(row.salePrice).toFixed(0)}/{getUnitLabel(saleUnit)}</span>
+            <span style={{color:th.textMuted}}>{fmtQtyNice(enteredQty)} {uLbl} × Rs{fmtAvgCost(row.salePrice)}/{uLbl}</span>
             <span style={{color,fontWeight:700}}>{formatPKR(c.total)}</span>
           </div>
         )}
@@ -1171,16 +1211,18 @@ function HwBillingRows({ rows, onChange, purchasePrice, purchaseUnit, productSal
 }
 
 // ─── BILLING PRODUCT BLOCK ────────────────────────────────────────────────────
-function BillingProductBlock({ index, products, block, onChange, onRemove, canRemove, isUrdu }) {
+function BillingProductBlock({ index, products, block, onChange, onRemove, canRemove, isUrdu, lotOpts = {} }) {
   const th = useTheme();
   const wrapRef = useRef(null);
   const keepInViewRef = useRef(false);
   const [open, setOpen] = useState(true);
+  const [showCost, setShowCost] = useState(false);
   const [search, setSearch] = useState(() => {
     const found = products.find(p => (p._id || p.id) === block.productId);
     return found ? productDisplayName(found) : "";
   });
   const selectedProduct = products.find(p => (p._id || p.id) === block.productId);
+  const avgCost = selectedProduct ? (Number(stockLotsForProduct(selectedProduct, lotOpts).avgCost) || 0) : 0;
   const category   = selectedProduct?.category || "";
   const availStock = Number(selectedProduct?.stock) || 0;
   const catColors  = { Pipe:"#60a5fa", Chader:"#34d399", Net:"#f472b6", Hardware:"#fbbf24", Custom:"#a78bfa" };
@@ -1194,7 +1236,7 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
     if (cat === "Pipe")   return { _id:Date.now()+Math.random(), length:"", qty:"", percentage:"" };
     if (cat === "Chader") return { _id:Date.now()+Math.random(), weight:"", salePrice: pp };
     if (cat === "Net")    return { _id:Date.now()+Math.random(), feet:"", width:"", salePrice: pp };
-    return { _id:Date.now()+Math.random(), unit: productUnitOf(product), qty:"", salePrice: pp };
+    return { _id:Date.now()+Math.random(), unit: productUnitOf(product), qty:"", salePrice: pp ? roundUnitAmt(pp) : "" };
   };
   const handleSelectProduct = (product) => {
     const pp = product.category === "Pipe"
@@ -1254,9 +1296,9 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
                             style={{padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${th.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:14,color:th.text,background:i===hi?"rgba(26,188,156,0.16)":"transparent"}}>
                             <span>{productDisplayName(p)}</span>
                             <div style={{display:"flex",alignItems:"center",gap:6}}>
-                              <span style={{fontSize:11,color:Number(p.stock)===0?"#f87171":Number(p.stock)<10?"#fbbf24":"#34d399",fontWeight:700}}>Stock: {p.stock||0}</span>
+                              <span style={{fontSize:11,color:Number(p.stock)===0?"#f87171":Number(p.stock)<10?"#fbbf24":"#34d399",fontWeight:700}}>Stock: {fmtQtyNice(p.stock||0)}</span>
                               <span style={{fontSize:12,color:displayPrice>0?"#34d399":"#f87171",fontWeight:600}}>
-                                {displayPrice>0 ? `Rs ${displayPrice}/${displayUnit}` : "⚠️ price 0"}
+                                {displayPrice>0 ? `Rs ${fmtAvgCost(displayPrice)}/${displayUnit}` : "⚠️ price 0"}
                               </span>
                               <span style={{fontSize:11,padding:"2px 7px",borderRadius:20,background:catBgs[p.category]||"transparent",color:catColors[p.category]||th.text,fontWeight:600}}>{p.category}</span>
                             </div>
@@ -1269,23 +1311,41 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
             </div>
           </div>
           {selectedProduct && (() => {
-            const displayPrice = (selectedProduct.category==="Pipe" || selectedProduct.category==="Hardware") ? (Number(selectedProduct.price)||Number(selectedProduct.purchasePrice)||0) : (Number(selectedProduct.purchasePrice)||Number(selectedProduct.price)||0);
-            const displayUnit  = stockUnitLabel(category, selectedProduct);
+            const pUnit = productUnitOf(selectedProduct);
+            const saleUnit = (category === "Hardware" || category === "Custom")
+              ? (block.hwRows?.[0]?.unit || pUnit)
+              : pUnit;
+            const uLbl = (category === "Hardware" || category === "Custom")
+              ? getUnitLabel(saleUnit)
+              : stockUnitLabel(category, selectedProduct);
+            const rawSale = (selectedProduct.category==="Pipe" || selectedProduct.category==="Hardware")
+              ? (Number(selectedProduct.price)||Number(selectedProduct.purchasePrice)||0)
+              : (Number(selectedProduct.purchasePrice)||Number(selectedProduct.price)||0);
+            const displayPrice = (category === "Hardware" || category === "Custom") && canConvert(pUnit, saleUnit)
+              ? convertPrice(rawSale, pUnit, saleUnit)
+              : rawSale;
+            const displayAvg = (category === "Hardware" || category === "Custom") && canConvert(pUnit, saleUnit)
+              ? convertPrice(avgCost, pUnit, saleUnit)
+              : avgCost;
             return (
-            <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderRadius:8,background:catBgs[category]||"transparent",border:`1px solid ${(catColors[category]||"#aaa")}40`}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderRadius:8,background:catBgs[category]||"transparent",border:`1px solid ${(catColors[category]||"#aaa")}40`,flexWrap:"wrap"}}>
               <span style={{color:catColors[category],fontSize:12,fontWeight:700}}>{category}</span>
               <span style={{color:th.text,fontSize:13,fontWeight:600}}>{productDisplayName(selectedProduct)}</span>
-              <span style={{marginLeft:"auto",color:displayPrice>0?catColors[category]:"#f87171",fontSize:12,fontWeight:600,padding:"2px 8px",borderRadius:8,background:th.input}}>
-                {displayPrice>0 ? `${selectedProduct.category==="Hardware"?"Sale":"Purchase"}: Rs ${displayPrice}/${displayUnit}` : "⚠️ Purchase price not set"}
+              <span style={{marginLeft:"auto",color:"#fbbf24",fontSize:12,fontWeight:700,padding:"2px 8px",borderRadius:8,background:th.input,display:"inline-flex",alignItems:"center",gap:4}}>
+                {isUrdu ? "اوسط لاگت" : "Avg cost"}{showCost ? `: Rs ${fmtAvgCost(displayAvg)}/${uLbl}` : ""}
+                <CostEyeBtn show={showCost} onToggle={() => setShowCost((v) => !v)} color="#fbbf24" />
+              </span>
+              <span style={{color:displayPrice>0?catColors[category]:"#f87171",fontSize:12,fontWeight:600,padding:"2px 8px",borderRadius:8,background:th.input}}>
+                {displayPrice>0 ? `${isUrdu?"فروخت":"Sale"}: Rs ${fmtAvgCost(displayPrice)}/${uLbl}` : "⚠️ Sale price not set"}
               </span>
             </div>
             );
           })()}
-          {category==="Pipe"     && <PipeBillingRows    rows={block.pipeRows||[]}   onChange={rows=>onChange({...block,pipeRows:rows})}   purchasePrice={Number(selectedProduct?.price)||Number(selectedProduct?.purchasePrice)||0} availStock={availStock} isUrdu={isUrdu}/>}
-          {category==="Chader"   && <ChaderBillingRows  rows={block.chaderRows||[]} onChange={rows=>onChange({...block,chaderRows:rows})} purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu}/>}
-          {category==="Net"      && <NetBillingRows     rows={block.netRows||[]}    onChange={rows=>onChange({...block,netRows:rows})}    purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu}/>}
-          {category==="Hardware" && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} catLabel="Hardware Total" catColor="#fbbf24" catBg="rgba(251,191,36,0.08)"/>}
-          {category==="Custom"   && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} catLabel="Custom Total"   catColor="#a78bfa" catBg="rgba(167,139,250,0.08)"/>}
+          {category==="Pipe"     && <PipeBillingRows    rows={block.pipeRows||[]}   onChange={rows=>onChange({...block,pipeRows:rows})}   purchasePrice={Number(selectedProduct?.price)||Number(selectedProduct?.purchasePrice)||0} avgCost={avgCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
+          {category==="Chader"   && <ChaderBillingRows  rows={block.chaderRows||[]} onChange={rows=>onChange({...block,chaderRows:rows})} purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} avgCost={avgCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
+          {category==="Net"      && <NetBillingRows     rows={block.netRows||[]}    onChange={rows=>onChange({...block,netRows:rows})}    purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} avgCost={avgCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
+          {category==="Hardware" && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} avgCost={avgCost} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)} catLabel="Hardware Total" catColor="#fbbf24" catBg="rgba(251,191,36,0.08)"/>}
+          {category==="Custom"   && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} avgCost={avgCost} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)} catLabel="Custom Total"   catColor="#a78bfa" catBg="rgba(167,139,250,0.08)"/>}
           {!category && (
             <div style={{padding:"12px",textAlign:"center",color:th.textDim,fontSize:13,borderRadius:8,border:`1px dashed ${th.border}`}}>
               {isUrdu ? "👆 Product منتخب کریں billing شروع کریں" : "👆 Select a product to start billing"}
@@ -1547,7 +1607,7 @@ function TodayBindingFeeSummary({ sales, isUrdu }) {
 }
 
 // ─── NEW SALE MODAL ───────────────────────────────────────────────────────────
-function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loaders=[], extraNames=[] }) {
+function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loaders=[], extraNames=[], purchases=[], sales=[], purchaseReturns=[], saleReturns=[] }) {
   const th = useTheme();
   const accounts = useAccounts();
   const [customer,      setCustomer]      = useState(prefill?.customer || "");
@@ -1566,6 +1626,13 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
   });
   const [loaderForm, setLoaderForm] = useState({ selectedId:"", customName:"", fee:"" });
   const [bindingFee, setBindingFee] = useState("");
+  const [discount, setDiscount] = useState(() => prefill?.discount != null && prefill.discount !== "" ? String(prefill.discount) : "");
+  const [cashReceived, setCashReceived] = useState(() => prefill?.cashReceived != null && prefill.cashReceived !== "" ? String(prefill.cashReceived) : "");
+  const lotOpts = useMemo(() => {
+    const o = { purchases, sales, purchaseReturns, saleReturns, products };
+    o.ctx = makeLotContext(o);
+    return o;
+  }, [purchases, sales, purchaseReturns, saleReturns, products]);
 
   const newBlock = () => ({
     _id: Date.now()+Math.random(), productId:"",
@@ -1585,13 +1652,18 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
   // Chader item, same pass-through-charge treatment as loaderFee.
   const hasChaderItem = blocks.some(b => products.find(p => (p._id||p.id) === b.productId)?.category === "Chader");
   const bindingFeeAmt = hasChaderItem ? (Number(bindingFee) || 0) : 0;
-  const grandTotal = productsTotal + loaderFeeAmt + bindingFeeAmt; // full bill total shown/charged to customer
+  const discountAmt = Math.max(0, Number(discount) || 0);
+  const billBeforeDiscount = productsTotal + loaderFeeAmt + bindingFeeAmt;
+  const grandTotal = Math.max(0, Math.round((billBeforeDiscount - discountAmt) * 100) / 100);
   const finalTotal = grandTotal;
   const pay = derivePayment(finalTotal, payForm, accounts);
   const paid       = pay.paidAmount;
   const remaining  = pay.remainingAmount;
   const paidError  = pay.paidError;
   const anyStockError = blocks.some(b => getBillingBlockStockError(b, products, isUrdu) !== null);
+  const tendered = Number(cashReceived) || 0;
+  const amountNow = pay.settlement === "full" ? grandTotal : (Number(paid) || 0);
+  const changeDue = tendered > 0 ? Math.max(0, Math.round((tendered - amountNow) * 100) / 100) : 0;
 
   const canSave = customer.trim()
     && blocks.every(b => b.productId)
@@ -1606,9 +1678,11 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
     const items = blocks.map(block => {
       const prod = products.find(p => (p._id||p.id) === block.productId);
       const cat  = prod?.category || "";
+      const avg  = prod ? (Number(stockLotsForProduct(prod, lotOpts).avgCost) || 0) : 0;
       const pp   = (cat === "Pipe")
         ? (Number(prod?.price) || Number(prod?.purchasePrice) || 0)
         : (Number(prod?.purchasePrice) || 0);
+      const costRate = avg > 0 ? avg : pp;
       let rows   = [];
       let costTotal = 0; // total cost for this item (purchase price × qty)
       if (cat === "Pipe") {
@@ -1622,23 +1696,20 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
         const actualCostPerFt = pp * (1 + purchPct / 100);
         const costPerPc = actualCostPerFt * (Number(r.length)||0);
         const rawCost = costPerPc * (Number(r.qty)||0);
-        // Store the real cost as-is (even if higher than sale price).
-        // Dashboard is responsible for showing Pipe profit as always-positive; we must not
-        // zero out the real cost here or that profit/loss info is lost permanently.
-        costTotal = rawCost;
+        costTotal = avg > 0 ? costRate * (Number(r.qty)||0) : rawCost;
       } else if (cat === "Chader") {
         const r  = block.chaderRows[0] || {};
         const sp = r.salePrice !== undefined && r.salePrice !== "" ? r.salePrice : pp;
         const c  = chaderBillCalc(sp, r.weight);
         rows = [{ desc:`${r.weight}kg × Rs${Number(sp).toFixed(0)}/kg`, amount:c.total }];
-        costTotal = pp * (Number(r.weight)||0);
+        costTotal = costRate * (Number(r.weight)||0);
       } else if (cat === "Net") {
         const r  = block.netRows[0] || {};
         const sp = r.salePrice !== undefined && r.salePrice !== "" ? r.salePrice : pp;
         const c  = netBillCalc(sp, r.feet);
         const widthPart = r.width ? `ft×${r.width}×` : "ft×";
         rows = [{ desc:`${r.feet}${widthPart} Rs${Number(sp).toFixed(0)}/ft`, amount:c.total }];
-        costTotal = pp * (Number(r.feet)||0) * (Number(r.width)||1);
+        costTotal = costRate * (Number(r.feet)||0) * (Number(r.width)||1);
       } else {
         const r  = block.hwRows[0] || {};
         const pUnit = productUnitOf(prod);
@@ -1646,8 +1717,8 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
         const sp = r.salePrice !== undefined && r.salePrice !== "" ? r.salePrice : (Number(prod?.price) || 0);
         const c  = hwBillCalc(sp, r.qty);
         const uLbl = getUnitLabel(saleUnit);
-        rows = [{ desc:`${r.qty||0} ${uLbl} × Rs${Number(sp).toFixed(0)}/${uLbl}`, amount:c.total, unit: saleUnit, qty: Number(r.qty)||0 }];
-        const costPerSaleUnit = canConvert(pUnit, saleUnit) ? convertPrice(pp, pUnit, saleUnit) : pp;
+        rows = [{ desc:`${fmtQtyNice(r.qty||0)} ${uLbl} × Rs${fmtAvgCost(sp)}/${uLbl}`, amount:c.total, unit: saleUnit, qty: Number(r.qty)||0 }];
+        const costPerSaleUnit = canConvert(pUnit, saleUnit) ? convertPrice(costRate, pUnit, saleUnit) : costRate;
         costTotal = costPerSaleUnit * (Number(r.qty)||0);
       }
       const subtotal = rows.reduce((s,r) => s + r.amount, 0);
@@ -1664,9 +1735,11 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
         itemQty = canConvert(saleUnit, pUnit)
           ? convertQuantity(Number(r.qty) || 0, saleUnit, pUnit)
           : (Number(r.qty) || 0);
+        const stockQty = Number(prod?.stock) || 0;
+        if (itemQty > stockQty && itemQty <= stockQty + 0.1) itemQty = stockQty;
       }
       return {
-        productName: productDisplayName(prod), category: cat, rows, subtotal, costPrice: pp, costTotal,
+        productName: productDisplayName(prod), category: cat, rows, subtotal, costPrice: costRate, costTotal,
         productId: block.productId || (prod?._id || prod?.id || ""),
         qty: itemQty,
       };
@@ -1681,6 +1754,9 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
       accountId: pay.accountId, accountName: pay.accountName, settlement: pay.settlement,
       items, grandTotal,
       total: grandTotal,
+      discount: discountAmt,
+      cashReceived: tendered,
+      changeDue,
       isPartial:       pay.isPartial,
       paidAmount:      pay.paidAmount,
       remainingAmount: pay.remainingAmount,
@@ -1742,7 +1818,8 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
           onChange={updated => setBlocks(bs=>bs.map((b,i)=>i===idx?updated:b))}
           onRemove={()=>setBlocks(bs=>bs.filter((_,i)=>i!==idx))}
           canRemove={blocks.length>1}
-          isUrdu={isUrdu}/>
+          isUrdu={isUrdu}
+          lotOpts={lotOpts}/>
       ))}
 
       {/* Stock error banner */}
@@ -1761,7 +1838,7 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
         style={{width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:6,padding:"9px",borderRadius:10,border:`2px dashed ${th.border}`,background:"transparent",color:th.textMuted,fontSize:13,fontWeight:600,cursor:"pointer"}}
         onMouseEnter={e=>{e.currentTarget.style.borderColor="#1abc9c";e.currentTarget.style.color="#1abc9c";}}
         onMouseLeave={e=>{e.currentTarget.style.borderColor=th.border;e.currentTarget.style.color=th.textMuted;}}>
-        <Icon path={ICONS.plus} size={14}/> + {isUrdu?"Product شامل کریں":"Add Product"}
+        {isUrdu?"Product شامل کریں":"Add Product"}
         <span style={{ fontSize: 11, fontWeight: 600, opacity: 0.75 }}>(Ctrl+A)</span>
       </button>
 
@@ -1778,7 +1855,7 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
       )}
 
       {/* Grand total summary */}
-      {grandTotal > 0 && (
+      {billBeforeDiscount > 0 && (
         <div style={{padding:"12px 16px",borderRadius:12,border:"1px solid rgba(26,188,156,0.3)",background:"rgba(26,188,156,0.08)",display:"flex",flexDirection:"column",gap:6}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <span style={{color:th.textMuted,fontSize:14}}>{isUrdu?"Items کل:":"Items total:"}</span>
@@ -1796,10 +1873,52 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
               <span style={{color:"#fbbf24",fontWeight:700,fontSize:16}}>{formatPKR(bindingFeeAmt)}</span>
             </div>
           )}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:4}}>
+            <div>
+              <label style={{color:th.textMuted,fontSize:11,fontWeight:700,display:"block",marginBottom:4}}>{isUrdu?"رعایت (Rs)":"Discount (Rs)"}</label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={discount}
+                onChange={(e)=>setDiscount(e.target.value.replace(/[^0-9.]/g,""))}
+                placeholder="0"
+                style={inpS}
+              />
+            </div>
+            <div>
+              <label style={{color:th.textMuted,fontSize:11,fontWeight:700,display:"block",marginBottom:4}}>{isUrdu?"گاہک نے دیے (Rs)":"Cash received (Rs)"}</label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={cashReceived}
+                onChange={(e)=>setCashReceived(e.target.value.replace(/[^0-9.]/g,""))}
+                placeholder="0"
+                style={inpS}
+              />
+            </div>
+          </div>
+          {discountAmt > 0 && (
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{color:th.textMuted,fontSize:13}}>{isUrdu?"رعایت:":"Discount:"}</span>
+              <span style={{color:"#f87171",fontWeight:800,fontSize:15}}>- {formatPKR(discountAmt)}</span>
+            </div>
+          )}
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <span style={{color:th.text,fontWeight:700,fontSize:15}}>{isUrdu?"کل رقم:":"Grand Total:"}</span>
             <span style={{color:"#34d399",fontWeight:900,fontSize:21}}>{formatPKR(grandTotal)}</span>
           </div>
+          {tendered > 0 && (
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{color:th.textMuted,fontSize:13}}>{isUrdu?"وصول رقم:":"Cash received:"}</span>
+              <span style={{color:"#60a5fa",fontWeight:800,fontSize:15}}>{formatPKR(tendered)}</span>
+            </div>
+          )}
+          {changeDue > 0 && (
+            <div style={{padding:"8px 10px",borderRadius:10,background:"rgba(251,191,36,0.12)",border:"1px solid rgba(251,191,36,0.35)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{color:"#fbbf24",fontWeight:800,fontSize:14}}>{isUrdu?"واپسی (چینج):":"Change to return:"}</span>
+              <span style={{color:"#fbbf24",fontWeight:900,fontSize:18}}>{formatPKR(changeDue)}</span>
+            </div>
+          )}
           {pay.isPartial && paid > 0 && !paidError && (
             <>
               <div style={{borderTop:"1px dashed rgba(26,188,156,0.3)",paddingTop:6,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -1844,7 +1963,7 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
 }
 
 // ─── MAIN BILLING PAGE ────────────────────────────────────────────────────────
-function BillingPage({ sales, products, loadSales, loadProducts, currentUser, loaders=[] }) {
+function BillingPage({ sales, products, loadSales, loadProducts, currentUser, loaders=[], purchases=[], purchaseReturns=[], saleReturns=[] }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
@@ -1929,6 +2048,9 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       loaderName: payload.loaderName || "",
       loaderFee:  payload.loaderFee  || 0,
       bindingFee: payload.bindingFee || 0,
+      discount: payload.discount || 0,
+      cashReceived: payload.cashReceived || 0,
+      changeDue: payload.changeDue || 0,
       items:payload.items, rows:resolvedRows,
       saleItems,
       product:productId,
@@ -1949,6 +2071,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       items: s.items || [{ productName:s.productName||safeProductName(s.product), category:"", rows:[{ desc:`1pc × Rs${s.total}/pc`, amount:s.total }], subtotal:s.total }],
       grandTotal:s.grandTotal||s.total, paymentMethod:s.paymentMethod||"cash", bankName:s.accountName||s.bankName||"",
       loaderName:s.loaderName||"", loaderFee:s.loaderFee||0, bindingFee:s.bindingFee||0,
+      discount:s.discount||0, cashReceived:s.cashReceived||0, changeDue:s.changeDue||0,
       isPartial:s.isPartial||false,
       paidAmount: (s.isPartial || s.settlement === "credit") ? (Number(s.paidAmount)||0) : (Number(s.paidAmount)||s.total),
       remainingAmount:s.remainingAmount||0,
@@ -2007,7 +2130,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       {/* New sale modal */}
       {showSaleModal && (
         <Modal title={isUrdu?"نئی Sale — Invoice بنائیں":"New Sale — Create Invoice"} onClose={()=>setShowSaleModal(false)} wide>
-          <BillingNewSaleModal products={products} onSave={handleSave} onClose={()=>setShowSaleModal(false)} isUrdu={isUrdu} loaders={loaders} extraNames={sales.map(s=>s.customer)}/>
+          <BillingNewSaleModal products={products} onSave={handleSave} onClose={()=>setShowSaleModal(false)} isUrdu={isUrdu} loaders={loaders} extraNames={sales.map(s=>s.customer)} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns}/>
         </Modal>
       )}
 

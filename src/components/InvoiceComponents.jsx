@@ -48,36 +48,45 @@ export const shortenPipeName = (name) => {
   return n;
 };
 
+function priceFromAmount(qtyStr, amount, parsedPrice) {
+  let price = Number(parsedPrice) || 0;
+  const qn = parseFloat(qtyStr);
+  if ((!price || !Number.isFinite(price)) && qn > 0 && amount) {
+    price = Math.round((amount / qn) * 100) / 100;
+  }
+  return price;
+}
+
 /** Turn a saved sale row (`desc` + `amount`) into Qty / Price for the thermal slip. */
 export function parseSaleInvoiceRow(row, category, productName) {
   const desc   = String(row?.desc || "");
   const amount = Number(row?.amount) || 0;
   const fallbackQty = row?.qty != null && row.qty !== "" ? String(row.qty) : "1";
+  const genericQty = (desc.match(/^(\d+\.?\d*)/) || [])[1] || fallbackQty;
+  const genericPrice = (desc.match(/Rs\s*(\d+\.?\d*)/i) || [])[1];
 
   if (category === "Pipe") {
     const qM = desc.match(/^(\d+\.?\d*)\s*pc/i);
     const pM = desc.match(/Rs\s*(\d+\.?\d*)\s*\/\s*pc/i);
-    return { item: shortenPipeName(productName), qty: qM ? qM[1] : fallbackQty, price: pM ? Number(pM[1]) : 0, amount };
+    const qty = qM ? qM[1] : genericQty;
+    return { item: shortenPipeName(productName), qty, price: priceFromAmount(qty, amount, pM ? pM[1] : genericPrice), amount };
   }
   if (category === "Chader") {
     const qM = desc.match(/^(\d+\.?\d*)\s*kg/i);
     const pM = desc.match(/Rs\s*(\d+\.?\d*)\s*\/\s*kg/i);
-    return { item: productName, qty: qM ? formatWeightKgG(parseFloat(qM[1])) : fallbackQty, price: pM ? Number(pM[1]) : 0, amount };
+    const qtyNum = qM ? qM[1] : genericQty;
+    return { item: productName, qty: qM ? formatWeightKgG(parseFloat(qM[1])) : fallbackQty, price: priceFromAmount(qtyNum, amount, pM ? pM[1] : genericPrice), amount };
   }
   if (category === "Net") {
     const qM = desc.match(/^(\d+\.?\d*)/);
     const pM = desc.match(/Rs\s*(\d+\.?\d*)/i);
-    return { item: productName, qty: qM ? `${qM[1]}ft` : fallbackQty, price: pM ? Number(pM[1]) : 0, amount };
+    const qty = qM ? qM[1] : genericQty;
+    return { item: productName, qty: qM ? `${qM[1]}ft` : fallbackQty, price: priceFromAmount(qty, amount, pM ? pM[1] : genericPrice), amount };
   }
 
   // Hardware / Custom: "10 Piece × Rs36/Piece" (not "10pc × Rs36/pc")
-  const qM = desc.match(/^(\d+\.?\d*)/);
-  const pM = desc.match(/Rs\s*(\d+\.?\d*)/i);
-  const qtyNum = qM ? qM[1] : fallbackQty;
-  let price = pM ? Number(pM[1]) : 0;
-  const qn = parseFloat(qtyNum);
-  if (!price && qn > 0 && amount) price = Math.round((amount / qn) * 10) / 10;
-  return { item: productName, qty: qtyNum, price, amount };
+  const qtyNum = genericQty;
+  return { item: productName, qty: qtyNum, price: priceFromAmount(qtyNum, amount, genericPrice), amount };
 }
 
 export const pipeCalc = (row, price) => {
@@ -266,26 +275,7 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
   const parseRow = (row, cat, productName, pp) => {
     // desc/amount format
     if (row.desc !== undefined && row.amount !== undefined) {
-      const desc   = row.desc || "";
-      const amount = Number(row.amount) || 0;
-      if (cat === "Pipe") {
-        const qM = desc.match(/^(\d+\.?\d*)pc/);
-        const pM = desc.match(/Rs(\d+\.?\d*)\/pc/);
-        return { item: shortenPipeName(productName), qty: qM ? qM[1] : "1", price: pM ? Number(pM[1]) : 0, amount };
-      }
-      if (cat === "Chader") {
-        const qM = desc.match(/^(\d+\.?\d*)kg/);
-        const pM = desc.match(/Rs(\d+\.?\d*)\/kg/);
-        return { item: productName, qty: qM ? formatWeightKgG(parseFloat(qM[1])) : "1", price: pM ? Number(pM[1]) : 0, amount };
-      }
-      if (cat === "Net") {
-        const qM = desc.match(/^(\d+\.?\d*)ft/);
-        const pM = desc.match(/Rs(\d+\.?\d*)\/ft/);
-        return { item: productName, qty: qM ? `${qM[1]}ft` : "1", price: pM ? Number(pM[1]) : 0, amount };
-      }
-      const qM = desc.match(/^(\d+\.?\d*)pc/);
-      const pM = desc.match(/Rs(\d+\.?\d*)\/pc/);
-      return { item: productName, qty: qM ? qM[1] : "1", price: pM ? Number(pM[1]) : 0, amount };
+      return parseSaleInvoiceRow(row, cat, productName);
     }
     // Native purchase row format
     if (cat === "Pipe") {
@@ -489,12 +479,17 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
     grandTotal = 0, paymentMethod = "cash", bankName = "",
     isPartial = false, paidAmount = 0, remainingAmount = 0,
     loaderName = "", loaderFee = 0, bindingFee = 0, isPurchase = false,
+    discount = 0, cashReceived = 0, changeDue = 0,
   } = invoiceData;
 
   const sp         = loadShopProfile();
   const ownerLines = sp.owners.filter(o => o.name || o.nameUr);
   const paid       = Number(paidAmount) || 0;
   const remaining  = Number(remainingAmount) || 0;
+  const discountAmt = Number(discount) || 0;
+  const cashIn = Number(cashReceived) || 0;
+  const changeAmt = Number(changeDue) || 0;
+  const productsSubtotal = Number(grandTotal) - (Number(loaderFee) || 0) - (Number(bindingFee) || 0) + discountAmt;
 
   const L = isUrdu ? {
     shopName:      sp.shopNameUr || sp.shopName,
@@ -659,7 +654,7 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
                 <tr>
                   <td style={{ ...tdS("left"), fontWeight: 600 }} colSpan={2}>{L.subtotalLbl}</td>
                   <td style={tdNum("center")}>{lineItems.length}</td>
-                  <td style={tdNum("right")} colSpan={2}>{formatPKR(grandTotal)}</td>
+                  <td style={tdNum("right")} colSpan={2}>{formatPKR(productsSubtotal)}</td>
                 </tr>
               </tbody>
             </table>
@@ -667,10 +662,28 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
             <div style={dash} />
 
             {/* TOTAL */}
+            {discountAmt > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 700, marginBottom: 4 }}>
+                <span>{isUrdu ? "رعایت" : "Discount"}</span>
+                <span>- {formatPKR(discountAmt)}</span>
+              </div>
+            )}
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: "15px", fontWeight: 900 }}>
               <span>{L.totalLbl}</span>
               <span>{formatPKR(grandTotal)}</span>
             </div>
+            {cashIn > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 700, marginTop: 4 }}>
+                <span>{isUrdu ? "وصول رقم" : "Cash received"}</span>
+                <span>{formatPKR(cashIn)}</span>
+              </div>
+            )}
+            {changeAmt > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", fontWeight: 900, marginTop: 4 }}>
+                <span>{isUrdu ? "واپسی (چینج)" : "Change"}</span>
+                <span>{formatPKR(changeAmt)}</span>
+              </div>
+            )}
 
             {/* Partial payment */}
             {isPartial && paid > 0 && (

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, Table } from "../components/shared";
@@ -6,13 +6,14 @@ import { api } from "../utils/api";
 import { formatPKR, todayStr } from "../utils/helpers";
 import { CHADER_TYPES, NET_TYPES, NET_CHORUS_GAUGES, ROUND_INCHES, SQUARE_INCHES, PIPE_GAUGES, productDisplayName } from "../utils/constants";
 import HardwareManageModal from "../components/HardwareManageModal";
+import { stockLotsForProduct, makeLotContext } from "../components/InventoryStockTable";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PRODUCTS PAGE
 // ═══════════════════════════════════════════════════════════════════════════
 const EMPTY_FORM = { category:"", name:"", pipeType:"", pipeSubType:"", pipeInch:"", gauge:"", length:"", weight:"", basePrice:"", percentage:"", price:"", purchasePrice:"", subType:"", stock:"", unit:"piece", width:"" };
 
-function ProductsPage({ products, purchases = [], loadProducts, loadPurchases }) {
+function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = [], saleReturns = [], loadProducts, loadPurchases }) {
   const th = useTheme(); const {t,lang} = useLang(); const { isMobile } = useResponsive();
   const isUrdu = lang === "ur";
   const [showModal,setShowModal]=useState(false); const [form,setForm]=useState(EMPTY_FORM);
@@ -20,6 +21,11 @@ function ProductsPage({ products, purchases = [], loadProducts, loadPurchases })
   const [catTab,setCatTab]=useState("all"); const [search,setSearch]=useState("");
   const [showHwModal,setShowHwModal]=useState(false); const [hwSeed,setHwSeed]=useState(null);
   const [revealedCost,setRevealedCost]=useState(() => new Set());
+
+  const lotCtx = useMemo(
+    () => makeLotContext({ purchases, sales, purchaseReturns, saleReturns, products }),
+    [purchases, sales, purchaseReturns, saleReturns, products]
+  );
 
   const toggleCostPrice = (id, e) => {
     e?.stopPropagation?.();
@@ -185,29 +191,34 @@ function ProductsPage({ products, purchases = [], loadProducts, loadPurchases })
         </div>
       </div>
       <Table
-        cols={[t.number, t.pipeProduct, isUrdu ? "خریداری / فروخت قیمت" : "Cost / Sale Price", t.type, t.subType||"Sub Type"]}
+        cols={[t.number, t.pipeProduct, isUrdu ? "اوسط لاگت / فروخت قیمت" : "Avg cost / Sale Price", t.type, t.subType||"Sub Type"]}
         rows={displayed.map((p,i)=>{
           const cc=catColor[p.category]||catColor.Custom;
           const isPipe = p.category==="Pipe";
-          const cost = Number(p.purchasePrice) || 0;
-          const sale = Number(p.price) || 0;
-          const costOpen = revealedCost.has(p._id);
-          const fmtRs = (n) => (!isNaN(n) && n > 0) ? `Rs ${n.toLocaleString("en-PK")}` : "—";
-          const costText = costOpen ? fmtRs(cost) : (cost > 0 ? "••••" : "—");
+          const lots = stockLotsForProduct(p, { ctx: lotCtx });
+          const cost = Number(lots.avgCost) || 0;
+          const sale = Number(lots.sale) || Number(p.price) || 0;
+          const costShown = revealedCost.has(p._id);
+          const fmtRs = (n) => {
+            const v = Math.round((Number(n) || 0) * 100) / 100;
+            if (!v) return "—";
+            return `Rs ${v.toLocaleString("en-PK", { maximumFractionDigits: 2 })}`;
+          };
+          const costText = costShown ? fmtRs(cost) : (cost > 0 ? "••••" : "—");
           const eyeBtn = cost > 0 ? (
             <button
               type="button"
-              title={costOpen ? (isUrdu ? "خریداری چھپائیں" : "Hide cost") : (isUrdu ? "خریداری دکھائیں" : "Show cost")}
+              title={costShown ? (isUrdu ? "اوسط لاگت چھپائیں" : "Hide avg cost") : (isUrdu ? "اوسط لاگت دکھائیں" : "Show avg cost")}
               onClick={(e) => toggleCostPrice(p._id, e)}
               style={{
                 display:"inline-flex", alignItems:"center", justifyContent:"center",
                 width:22, height:22, padding:0, marginLeft:4, flexShrink:0,
                 border:`1px solid ${th.border}`, borderRadius:6, cursor:"pointer",
-                background: costOpen ? "rgba(148,163,184,0.18)" : th.bgCard,
-                color: costOpen ? th.text : th.textMuted, verticalAlign:"middle",
+                background: costShown ? "rgba(148,163,184,0.18)" : th.bgCard,
+                color: costShown ? th.text : th.textMuted, verticalAlign:"middle",
               }}
             >
-              <Icon path={costOpen ? ICONS.eye_off : ICONS.eye} size={13}/>
+              <Icon path={costShown ? ICONS.eye_off : ICONS.eye} size={13}/>
             </button>
           ) : null;
           return {data:p,cells:[

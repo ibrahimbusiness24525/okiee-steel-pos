@@ -4,7 +4,7 @@ import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table, DateFilterBar } from "../components/shared";
 import { formatPKR, todayStr, inDateFilter } from "../utils/helpers";
 import { expenseApi, applyExpenseFinance, reverseExpenseFinance, ensurePendingAccountCuts, DEFAULT_EXPENSE_TYPES } from "../utils/expenseStore";
-import { useAccounts } from "../components/PaymentTerms";
+import { useAccounts, AccountOptGroups } from "../components/PaymentTerms";
 import { liveBalance } from "../utils/tradeFinance";
 
 const EMPTY = {
@@ -425,11 +425,7 @@ export default function ExpensesPage({ loadExpenses: reloadExpensesInApp, loadPa
               <label style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, display: "block", marginBottom: 6 }}>{L.fromAccount} <span style={{ color: "#f87171" }}>*</span></label>
               <select value={form.accountId} onChange={(e) => setForm((p) => ({ ...p, accountId: e.target.value }))} style={inpS}>
                 <option value="">— {L.account} —</option>
-                {accounts.map((a) => (
-                  <option key={a._id || a.id} value={a._id || a.id} style={{ background: th.bgModal }}>
-                    {accLabel(a)}
-                  </option>
-                ))}
+                <AccountOptGroups accounts={accounts} th={th} isUrdu={isUrdu} />
               </select>
               {accounts.length === 0 && (
                 <p style={{ color: "#d97706", fontSize: 12, margin: "6px 0 0" }}>

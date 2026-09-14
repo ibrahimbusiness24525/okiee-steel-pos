@@ -3,9 +3,18 @@ import { CombinedSaleInvoice } from "../components/InvoiceComponents";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal } from "../components/shared";
-import { formatPKR, formatDateTime, loadShopProfile, printThermalOrA4, todayStr } from "../utils/helpers";
+import { formatPKR, formatDateTime, printThermalOrA4, downloadInvoicePdf, todayStr } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
-import { ledgerApi, partyTotals } from "../utils/ledgerStore";
+import { ledgerApi, partyTotals, openingKindOf } from "../utils/ledgerStore";
+import PartyLedgerSheet, { buildPartyLedger } from "../components/PartyLedgerSheet";
+
+function partyOpening(p) {
+  if (!p) return 0;
+  const n = Number(p.openingBalance);
+  if (Number.isFinite(n) && n !== 0) return n;
+  const alt = Number(p.opening);
+  return Number.isFinite(alt) ? alt : (Number.isFinite(n) ? n : 0);
+}
 
 function groupByInvoice(list) {
   const map = new Map();
@@ -226,6 +235,9 @@ function salesToInvoiceData(salesList, invoiceTitle, customerName) {
     loaderName: salesList.find((s) => s.loaderName)?.loaderName || "",
     loaderFee: Number(head.loaderFee) || 0,
     bindingFee: Number(head.bindingFee) || 0,
+    discount: Number(head.discount) || 0,
+    cashReceived: Number(head.cashReceived) || 0,
+    changeDue: Number(head.changeDue) || 0,
   };
 }
 
@@ -289,76 +301,6 @@ function OutlineBtn({ onClick, color, children, disabled }) {
   );
 }
 
-function StatementSheet({ party, entries, invoices, kind, isUrdu }) {
-  const sp = loadShopProfile();
-  const ownerLines = (sp.owners || []).filter((o) => o.name || o.nameUr);
-  const net = Number(party.balance) || 0;
-  const shopName = isUrdu ? (sp.shopNameUr || sp.shopName) : sp.shopName;
-  const address = isUrdu ? (sp.addressUr || sp.address) : sp.address;
-  const phoneLine = (o) => isUrdu
-    ? `${o.nameUr || o.name}: ${o.phone}`
-    : `${o.name}: ${o.phone}`;
-  const dash = { borderTop: "1px dashed #000", margin: "8px 0" };
-  const page = {
-    width: "65mm", margin: "0 auto", fontFamily: "Arial, sans-serif", fontSize: "12px",
-    color: "#000", background: "#fff", padding: "8px 8px 12px", boxSizing: "border-box",
-  };
-  return (
-    <div style={{ background: "#f0f0f0", padding: 14, borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto" }}>
-      <div id="thermal-invoice" style={page}>
-        {sp.logoBase64 && (
-          <div style={{ textAlign: "center", marginBottom: 6 }}>
-            <img src={sp.logoBase64} alt="logo" style={{ maxWidth: 56, maxHeight: 40, objectFit: "contain" }} />
-          </div>
-        )}
-        <div style={{ textAlign: "center", fontSize: 18, fontWeight: 800, lineHeight: "24px" }}>{shopName}</div>
-        {address && <div style={{ textAlign: "center", fontSize: 10, marginTop: 4 }}>{address}</div>}
-        {ownerLines.slice(0, 3).map((o, i) => (
-          <div key={i} style={{ textAlign: "center", fontSize: 10, marginTop: 1 }}>{phoneLine(o)}</div>
-        ))}
-        <div style={dash} />
-        <div style={{ textAlign: "center", fontWeight: 800, fontSize: 13 }}>
-          {isUrdu ? "کھاتہ / ریکارڈ" : "Account statement"}
-        </div>
-        <div style={{ marginTop: 8, fontWeight: 800, fontSize: 12 }}>
-          {isUrdu ? (kind === "supplier" ? "سپلائر" : "گاہک") : (kind === "supplier" ? "Supplier" : "Customer")}: {party.name}
-        </div>
-        {party.phone ? <div style={{ fontSize: 11 }}>{isUrdu ? "نمبر" : "Phone"}: {party.phone}</div> : null}
-        {party.address ? <div style={{ fontSize: 11 }}>{party.address}</div> : null}
-        <div style={{ marginTop: 6, fontWeight: 800, fontSize: 13 }}>
-          {isUrdu ? "بیلنس" : "Balance"}: {formatPKR(Math.abs(net))}
-          {" · "}
-          {net > 0.5 ? (isUrdu ? "وصولی" : "Receivable") : net < -0.5 ? (isUrdu ? "ادائیگی" : "Payable") : (isUrdu ? "صاف" : "Settled")}
-        </div>
-        <div style={dash} />
-        <div style={{ fontWeight: 800, fontSize: 11, marginBottom: 4 }}>{isUrdu ? "کھاتہ" : "Ledger"}</div>
-        {entries.length === 0 && <div style={{ fontSize: 11 }}>—</div>}
-        {entries.map((e) => (
-          <div key={e._id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "3px 0", borderBottom: "1px dotted #ccc" }}>
-            <span>{e.date} · {e.label}</span>
-            <span style={{ fontWeight: 700 }}>{formatPKR(e.amount)}</span>
-          </div>
-        ))}
-        <div style={dash} />
-        <div style={{ fontWeight: 800, fontSize: 11, marginBottom: 4 }}>
-          {kind === "supplier" ? (isUrdu ? "خریداری" : "Purchases") : (isUrdu ? "فروخت" : "Sales")}
-        </div>
-        {invoices.length === 0 && <div style={{ fontSize: 11 }}>—</div>}
-        {invoices.map((inv) => (
-          <div key={inv.key} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "3px 0", borderBottom: "1px dotted #ccc" }}>
-            <span>{inv.no} · {inv.date}</span>
-            <span style={{ fontWeight: 700 }}>{formatPKR(inv.total)}</span>
-          </div>
-        ))}
-        <div style={dash} />
-        <div style={{ textAlign: "center", fontSize: 10, fontWeight: 700 }}>
-          {isUrdu ? "شکریہ" : "Thank you"}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function RecordsPage({ products = [], purchases = [], sales = [] }) {
   const th = useTheme();
   const { isUrdu } = useLang();
@@ -387,8 +329,8 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
     view: "دیکھیں",
     phone: "نمبر",
     balance: "بیلنس",
-    receivable: "وہ ادا کریں گے",
-    payable: "آپ ادا کریں گے",
+    receivable: "میں لوں گا",
+    payable: "میں دوں گا",
     settled: "حساب صاف",
     total: "کل",
     loading: "لوڈ ہو رہا ہے...",
@@ -418,8 +360,8 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
     view: "View",
     phone: "Phone",
     balance: "Balance",
-    receivable: "They will pay you",
-    payable: "You will pay",
+    receivable: "I will get",
+    payable: "I will give",
     settled: "Settled",
     total: "Total",
     loading: "Loading...",
@@ -439,6 +381,7 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
   const [invoiceModal, setInvoiceModal] = useState(null);
   const [statementOpen, setStatementOpen] = useState(false);
   const [pendingSend, setPendingSend] = useState(null);
+  const [pendingPrint, setPendingPrint] = useState(null);
 
   const loadParties = async () => {
     try {
@@ -460,7 +403,7 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
       have.add(key);
       list.push({
         _id: `ghost:${type}:${n.toLowerCase()}`,
-        type, name: n, phone: "", balance: 0, payable: 0, receivable: 0, ghost: true,
+        type, name: n, phone: "", balance: 0, payable: 0, receivable: 0, openingBalance: 0, opening: 0, ghost: true,
       });
     };
     (purchases || []).forEach((p) => addGhost("supplier", p.supplier || p.supplierName));
@@ -478,7 +421,15 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
           || (p.phone || "").toLowerCase().includes(q)
           || (p.address || "").toLowerCase().includes(q);
       })
-      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+      .sort((a, b) => {
+        const na = Math.abs(Number(a.balance) || 0);
+        const nb = Math.abs(Number(b.balance) || 0);
+        const aOpen = na > 0.5 ? 1 : 0;
+        const bOpen = nb > 0.5 ? 1 : 0;
+        if (aOpen !== bOpen) return bOpen - aOpen;
+        if (nb !== na) return nb - na;
+        return (a.name || "").localeCompare(b.name || "");
+      });
   }, [directory, roleTab, partySearch]);
 
   const openParty = async (p) => {
@@ -488,7 +439,9 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
     try {
       const r = await ledgerApi.get(p._id);
       if (r.success) {
-        setSelected({ ...p, ...r.party });
+        const next = { ...p, ...r.party };
+        next.openingBalance = partyOpening(r.party) || partyOpening(p);
+        setSelected(next);
         setEntries(r.entries || []);
       } else setEntries([]);
     } catch { setEntries([]); }
@@ -519,26 +472,6 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
     return L.settled;
   };
   const toneColor = (net) => (net > 0.5 ? "#16a34a" : net < -0.5 ? "#dc2626" : th.textMuted);
-
-  const entryLabel = (e, type) => {
-    if (e.kind === "take") return isUrdu ? "کریڈٹ لیں" : "Take credit";
-    if (e.kind === "give") return isUrdu ? "کریڈٹ دیں" : "Give credit";
-    if (e.kind === "credit") return type === "supplier"
-      ? (isUrdu ? "خریداری ادھار" : "Purchase credit")
-      : (isUrdu ? "فروخت ادھار" : "Sale credit");
-    if (e.kind === "cash_in") return isUrdu ? "نقد وصول" : "Cash in";
-    if (e.kind === "cash_out") return isUrdu ? "نقد ادا" : "Cash out";
-    return e.kind || "—";
-  };
-
-  const labeledEntries = entries.map((e) => ({ ...e, label: entryLabel(e, selected?.type) }));
-
-  const statementInvoices = partyHistory.map((g) => ({
-    key: `${invoiceNo(g.head)}|${g.head.date}`,
-    no: invoiceNo(g.head) || "—",
-    date: g.head.date || "—",
-    total: groupTotal(g, historyKind),
-  }));
 
   const findPhone = (name, type) => {
     const p = directory.find((x) => x.type === type && nameEq(x.name, name));
@@ -582,6 +515,21 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
     }, 450);
     return () => clearTimeout(t);
   }, [invoiceModal, pendingSend]);
+
+  useEffect(() => {
+    if (!pendingPrint || !selected) return;
+    const mode = pendingPrint;
+    const t = setTimeout(() => {
+      const file = `ledger-${String(selected.name || "party").replace(/\s+/g, "-")}`;
+      try {
+        if (mode === "pdf") downloadInvoicePdf(file);
+        else printThermalOrA4(mode, file);
+      } finally {
+        setPendingPrint(null);
+      }
+    }, 80);
+    return () => clearTimeout(t);
+  }, [pendingPrint, selected]);
 
   const invoiceHits = useMemo(() => {
     const q = invQuery.trim().toLowerCase();
@@ -649,7 +597,7 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
 
   const partyDetail = selected && (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ ...card, padding: 16, borderTop: `2px solid ${selected.type === "supplier" ? "#d97706" : "#2563eb"}` }}>
+      <div style={{ ...card, padding: 16, borderTop: `3px solid ${selected.type === "supplier" ? "#d97706" : "#2563eb"}` }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
           <div>
             <div style={{ color: th.text, fontWeight: 800, fontSize: 18 }}>{selected.name}</div>
@@ -665,8 +613,28 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
             {selected.type === "supplier" ? L.suppliers : L.customers}
           </span>
         </div>
-        <div style={{ marginTop: 12, color: toneColor(netOf(selected)), fontWeight: 900, fontSize: 20 }}>{formatPKR(Math.abs(netOf(selected)))}</div>
-        <div style={{ color: toneColor(netOf(selected)), fontSize: 12, fontWeight: 700 }}>{toneLabel(netOf(selected))}</div>
+        {(() => {
+          const net = netOf(selected);
+          const openAmt = partyOpening(selected);
+          const kind = openingKindOf(selected.type, openAmt);
+          const kindLbl = kind === "lana" ? (isUrdu ? "میں نے لینا ہے" : "Maine lana hain") : (isUrdu ? "میں نے دینا ہے" : "Maine dena hain");
+          return (
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10, marginTop: 14 }}>
+              <div style={{ padding: "10px 12px", borderRadius: 12, background: th.dark ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.04)", border: `1px solid ${th.border}` }}>
+                <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase" }}>{isUrdu ? "اوپننگ بیلنس" : "Opening balance"}</div>
+                <div style={{ color: th.text, fontWeight: 900, fontSize: 18, marginTop: 4 }}>{formatPKR(Math.abs(openAmt))}</div>
+                <div style={{ color: openAmt ? (kind === "lana" ? "#16a34a" : "#dc2626") : th.textDim, fontSize: 12, fontWeight: 700, marginTop: 2 }}>
+                  {openAmt ? kindLbl : (isUrdu ? "کوئی اوپننگ نہیں" : "No opening")}
+                </div>
+              </div>
+              <div style={{ padding: "10px 12px", borderRadius: 12, background: net > 0.5 ? "rgba(22,163,74,0.08)" : net < -0.5 ? "rgba(220,38,38,0.08)" : (th.dark ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.04)"), border: `1px solid ${net > 0.5 ? "rgba(22,163,74,0.3)" : net < -0.5 ? "rgba(220,38,38,0.3)" : th.border}` }}>
+                <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase" }}>{isUrdu ? "موجودہ بیلنس" : "Current balance"}</div>
+                <div style={{ color: toneColor(net), fontWeight: 900, fontSize: 18, marginTop: 4 }}>{formatPKR(Math.abs(net))}</div>
+                <div style={{ color: toneColor(net), fontSize: 12, fontWeight: 700, marginTop: 2 }}>{toneLabel(net)}</div>
+              </div>
+            </div>
+          );
+        })()}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
           <OutlineBtn color="#0f766e" onClick={() => setStatementOpen(true)}>
             <Icon path={ICONS.print} size={13} /> {L.statement}
@@ -688,24 +656,61 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
       </div>
 
       <div style={card}>
-        <div style={{ padding: "10px 14px", borderBottom: `1px solid ${th.border}`, color: th.textMuted, fontSize: 12, fontWeight: 800, letterSpacing: "0.04em", textTransform: "uppercase" }}>
-          {L.ledger} · {labeledEntries.length}
-        </div>
-        {labeledEntries.length === 0 && <div style={{ padding: 18, color: th.textDim, fontSize: 13 }}>—</div>}
-        {labeledEntries.map((e) => {
-          const isTake = e.kind === "take" || (e.kind === "credit" && selected.type === "supplier");
-          const isGive = e.kind === "give" || (e.kind === "credit" && selected.type === "customer");
-          const color = isTake ? "#dc2626" : isGive ? "#16a34a" : th.text;
+        {(() => {
+          const pack = buildPartyLedger({ party: selected, entries, isUrdu });
+          const thS = { textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 800, color: th.textMuted, borderBottom: `1px solid ${th.border}`, whiteSpace: "nowrap" };
+          const tdS = { padding: "8px 10px", borderBottom: `1px solid ${th.border}`, fontSize: 13, color: th.text };
+          const numS = { ...tdS, textAlign: "right", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" };
+          const rows = pack.rows.length ? pack.rows : [{ date: "—", source: "—", description: "—", debit: 0, credit: 0, balance: pack.opening }];
           return (
-            <div key={e._id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "10px 14px", borderBottom: `1px solid ${th.border}` }}>
-              <div>
-                <div style={{ fontWeight: 800, fontSize: 12, color }}>{e.label}</div>
-                <div style={{ fontSize: 11, color: th.textDim }}>{formatDateTime(e.date, e.createdAt, isUrdu ? "ur-PK" : "en-PK")}{e.note ? ` · ${e.note}` : ""}</div>
+            <>
+              <div style={{ padding: "10px 14px", borderBottom: `1px solid ${th.border}`, display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ color: th.textMuted, fontSize: 12, fontWeight: 800, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+                  {L.ledger} · {pack.rows.length}
+                </span>
+                <span style={{ color: th.text, fontSize: 12, fontWeight: 800 }}>
+                  {isUrdu ? "اوپننگ بیلنس" : "Opening"}: {formatPKR(Math.abs(partyOpening(selected) || pack.opening))}
+                </span>
               </div>
-              <span style={{ fontWeight: 900, color }}>{formatPKR(e.amount)}</span>
-            </div>
+              <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: 360 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+                  <thead>
+                    <tr style={{ background: th.dark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.03)" }}>
+                      <th style={thS}>#</th>
+                      <th style={thS}>{isUrdu ? "تاریخ" : "Date"}</th>
+                      <th style={thS}>{isUrdu ? "حوالہ" : "Source"}</th>
+                      <th style={thS}>{isUrdu ? "تفصیل" : "Description"}</th>
+                      <th style={{ ...thS, textAlign: "right" }}>{isUrdu ? "میں نے دیے" : "Maine Diye"}</th>
+                      <th style={{ ...thS, textAlign: "right" }}>{isUrdu ? "میں نے لیے" : "Maine Liye"}</th>
+                      <th style={{ ...thS, textAlign: "right" }}>{isUrdu ? "بیلنس" : "Balance"}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r, i) => (
+                      <tr key={i}>
+                        <td style={tdS}>{i + 1}</td>
+                        <td style={{ ...tdS, whiteSpace: "nowrap" }}>{r.date}</td>
+                        <td style={tdS}>{r.source}</td>
+                        <td style={tdS}>{r.description}</td>
+                        <td style={numS}>{formatPKR(r.debit)}</td>
+                        <td style={numS}>{formatPKR(r.credit)}</td>
+                        <td style={{ ...numS, fontWeight: 800 }}>{formatPKR(r.balance)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td style={{ ...tdS, borderBottom: "none", fontWeight: 800 }} colSpan={4}>{L.total}</td>
+                      <td style={{ ...numS, borderBottom: "none", fontWeight: 800 }}>{formatPKR(pack.totalDebit)}</td>
+                      <td style={{ ...numS, borderBottom: "none", fontWeight: 800 }}>{formatPKR(pack.totalCredit)}</td>
+                      <td style={{ ...numS, borderBottom: "none", fontWeight: 800 }}>{formatPKR(pack.closing)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </>
           );
-        })}
+        })()}
       </div>
 
       <div style={{ ...card, borderTop: `2px solid ${historyKind === "sale" ? "#10b981" : "#d97706"}` }}>
@@ -715,9 +720,11 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
           </span>
           <span style={{ color: historyKind === "sale" ? "#059669" : "#d97706", fontSize: 12, fontWeight: 800 }}>{partyHistory.length}</span>
         </div>
+        <div style={{ maxHeight: 320, overflowY: "auto" }}>
         {partyHistory.length === 0
           ? <div style={{ padding: 18, color: th.textDim, fontSize: 13 }}>—</div>
           : partyHistory.map((g) => renderHistoryRow(g, historyKind))}
+        </div>
       </div>
     </div>
   );
@@ -745,30 +752,84 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
           {loading ? (
             <div style={{ textAlign: "center", padding: 48, color: th.textDim }}>{L.loading}</div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "minmax(240px, 320px) 1fr", gap: 14, alignItems: "start" }}>
-              <div style={card}>
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: isMobile ? "1fr" : "minmax(260px, 300px) minmax(0, 1fr)",
+              gap: 14,
+              alignItems: "stretch",
+              minHeight: isMobile ? undefined : "calc(100dvh - 230px)",
+            }}>
+              <div style={{
+                ...card,
+                display: "flex",
+                flexDirection: "column",
+                minHeight: 0,
+                maxHeight: isMobile ? 380 : "calc(100dvh - 230px)",
+              }}>
+                <div style={{
+                  padding: "10px 14px",
+                  borderBottom: `1px solid ${th.border}`,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexShrink: 0,
+                  background: th.dark ? "rgba(255,255,255,0.03)" : "rgba(15,23,42,0.03)",
+                }}>
+                  <span style={{ color: th.textMuted, fontSize: 11, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                    {roleTab === "supplier" ? L.suppliers : L.customers}
+                  </span>
+                  <span style={{
+                    fontSize: 11, fontWeight: 800, padding: "2px 8px", borderRadius: 999,
+                    background: roleTab === "supplier" ? "rgba(217,119,6,0.15)" : "rgba(37,99,235,0.15)",
+                    color: roleTab === "supplier" ? "#d97706" : "#2563eb",
+                  }}>{filteredParties.length}</span>
+                </div>
+                <div style={{ overflowY: "auto", overflowX: "hidden", flex: 1, minHeight: 0, WebkitOverflowScrolling: "touch" }}>
                 {filteredParties.length === 0 && <div style={{ padding: 28, textAlign: "center", color: th.textDim, fontSize: 13 }}>{L.noneParty}</div>}
                 {filteredParties.map((p) => {
                   const net = Number(p.balance) || 0;
+                  const openAmt = partyOpening(p);
                   const on = selected && selected._id === p._id;
+                  const accent = p.type === "supplier" ? "#d97706" : "#2563eb";
+                  const initial = String(p.name || "?").trim().charAt(0).toUpperCase();
                   return (
                     <div
                       key={p._id}
                       onClick={() => openParty(p)}
                       style={{
-                        padding: "12px 14px",
+                        padding: "11px 12px",
                         borderBottom: `1px solid ${th.border}`,
                         cursor: "pointer",
-                        background: on ? (th.dark ? "rgba(37,99,235,0.12)" : "rgba(37,99,235,0.06)") : "transparent",
-                        borderLeft: on ? `3px solid ${p.type === "supplier" ? "#d97706" : "#2563eb"}` : "3px solid transparent",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        background: on ? (th.dark ? "rgba(37,99,235,0.14)" : "rgba(37,99,235,0.07)") : "transparent",
+                        borderLeft: on ? `3px solid ${accent}` : "3px solid transparent",
                       }}
                     >
-                      <div style={{ color: th.text, fontWeight: 800, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
-                      <div style={{ color: th.textMuted, fontSize: 12, marginTop: 2 }}>{p.phone || "—"}</div>
-                      <div style={{ color: toneColor(net), fontSize: 12, fontWeight: 800, marginTop: 4 }}>{formatPKR(Math.abs(net))}</div>
+                      <div style={{
+                        width: 34, height: 34, borderRadius: 10, flexShrink: 0,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontWeight: 800, fontSize: 13, color: accent,
+                        background: p.type === "supplier" ? "rgba(217,119,6,0.14)" : "rgba(37,99,235,0.14)",
+                      }}>{initial}</div>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ color: th.text, fontWeight: 800, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                        <div style={{ color: th.textMuted, fontSize: 11, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.phone && p.phone !== "-" ? p.phone : (isUrdu ? "نمبر نہیں" : "No number")}</div>
+                        {openAmt ? (
+                          <div style={{ color: th.textDim, fontSize: 10, fontWeight: 700, marginTop: 2 }}>
+                            {isUrdu ? "اوپننگ" : "Opening"} {formatPKR(Math.abs(openAmt))}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div style={{ textAlign: "right", flexShrink: 0 }}>
+                        <div style={{ color: toneColor(net), fontSize: 12, fontWeight: 800 }}>{formatPKR(Math.abs(net))}</div>
+                        <div style={{ color: toneColor(net), fontSize: 10, fontWeight: 700, marginTop: 2 }}>{toneLabel(net)}</div>
+                      </div>
                     </div>
                   );
                 })}
+                </div>
               </div>
               {isMobile ? (
                 selected && (
@@ -777,9 +838,11 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
                   </Modal>
                 )
               ) : (
-                selected ? partyDetail : (
-                  <div style={{ ...card, padding: 48, textAlign: "center", color: th.textDim, fontSize: 14 }}>{L.pickParty}</div>
-                )
+                <div style={{ minHeight: 0, maxHeight: "calc(100dvh - 230px)", overflowY: "auto", overflowX: "hidden" }}>
+                  {selected ? partyDetail : (
+                    <div style={{ ...card, padding: 48, textAlign: "center", color: th.textDim, fontSize: 14 }}>{L.pickParty}</div>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -847,30 +910,26 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
       )}
 
       {statementOpen && selected && (
-        <Modal title={`${selected.name} · ${L.statement}`} onClose={() => setStatementOpen(false)}>
+        <Modal title={`${selected.name} · ${L.statement}`} onClose={() => { setStatementOpen(false); setPendingPrint(null); }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <OutlineBtn color="#0f766e" onClick={() => printThermalOrA4("thermal")}>
+              <OutlineBtn color="#0f766e" onClick={() => setPendingPrint("thermal")}>
                 <Icon path={ICONS.print} size={13} /> {L.print}
               </OutlineBtn>
-              <OutlineBtn color="#3b82f6" onClick={() => printThermalOrA4("a4")}>A4</OutlineBtn>
+              <OutlineBtn color="#3b82f6" onClick={() => setPendingPrint("a4")}>A4</OutlineBtn>
               <OutlineBtn color="#7c3aed" onClick={() => {
-                printThermalOrA4("pdf", `statement-${selected.name}`);
+                setPendingPrint("pdf");
                 const href = whatsappHref(selected.phone, isUrdu
                   ? `السلام علیکم ${selected.name}، آپ کا کھاتہ بیان منسلک ہے۔ بیلنس: ${formatPKR(Math.abs(netOf(selected)))}۔`
                   : `Assalamualaikum ${selected.name}, your account statement is attached. Balance: ${formatPKR(Math.abs(netOf(selected)))}.`);
-                if (href) setTimeout(() => window.open(href, "_blank"), 600);
+                if (href) setTimeout(() => window.open(href, "_blank"), 700);
               }}>
                 {L.send}
               </OutlineBtn>
             </div>
-            <StatementSheet
-              party={selected}
-              entries={labeledEntries}
-              invoices={statementInvoices}
-              kind={selected.type}
-              isUrdu={isUrdu}
-            />
+            <div style={{ background: "#f0f0f0", padding: 14, borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto" }}>
+              <PartyLedgerSheet party={selected} entries={entries} isUrdu={isUrdu} compact={pendingPrint === "thermal"} />
+            </div>
           </div>
         </Modal>
       )}

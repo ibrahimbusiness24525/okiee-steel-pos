@@ -6,6 +6,9 @@ import { api } from "../utils/api";
 import { formatPKR, todayStr } from "../utils/helpers";
 import { hardwareSalePrice } from "../utils/productPrices";
 import { getUnitLabel, unitOptions } from "../utils/unitConversion";
+import { ledgerApi } from "../utils/ledgerStore";
+import { useAccounts, accId, accLabel, AccountOptGroups } from "./PaymentTerms";
+import { liveBalance, recordTradeFinance } from "../utils/tradeFinance";
 
 const LS = {
   brands: "steelpos_hw_brands",
@@ -47,25 +50,6 @@ function mainSupplierName(p) {
   const list = Array.isArray(p.suppliers) ? p.suppliers : [];
   const main = list.find(s => s.isMain) || list[0];
   return main?.name || "";
-}
-function resizeImage(file) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      const max = 180;
-      let w = img.width, h = img.height;
-      if (w > h && w > max) { h = (h * max) / w; w = max; }
-      else if (h > max) { w = (w * max) / h; h = max; }
-      const canvas = document.createElement("canvas");
-      canvas.width = w; canvas.height = h;
-      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-      URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL("image/jpeg", 0.72));
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("image")); };
-    img.src = url;
-  });
 }
 function Field({ label, required, children, labelS }) {
   return (
@@ -144,7 +128,6 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
   const { lang } = useLang();
   const { isMobile, width } = useResponsive();
   const isUrdu = lang === "ur";
-  const fileRef = useRef(null);
   const saveRef = useRef(null);
   const panelRef = useRef(null);
 
@@ -156,6 +139,9 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
   const [searchBy, setSearchBy] = useState("name");
   const [search, setSearch] = useState("");
   const [supplierName, setSupplierName] = useState("");
+  const [allSuppliers, setAllSuppliers] = useState([]);
+  const [accountId, setAccountId] = useState("");
+  const accounts = useAccounts();
   const [variationName, setVariationName] = useState("");
   const [showVarInput, setShowVarInput] = useState(false);
 
@@ -171,8 +157,10 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
     auto: "آٹو", cost: "خریداری قیمت", sale: "فروخت قیمت", brand: "برانڈ",
     category: "قسم", subCat: "ذیلی قسم", group: "گروپ", stock: "موجودہ اسٹاک",
     lowStock: "کم اسٹاک ویلیو", location: "لوکیشن / ریک", composite: "کمپوزٹ ہے",
-    picture: "تصویر (اختیاری)", upload: "اپلوڈ", clear: "صاف",
     addVar: "ویری ایشن شامل کریں", suppliers: "سپلائرز", setMain: "مین بنائیں",
+    pickSupplier: "سپلائر منتخب کریں",
+    payFrom: "بینک / والٹ", pickAccount: "بینک یا والٹ منتخب کریں",
+    cashGrp: "نقد", bankGrp: "بینک", walletGrp: "والٹ",
     unit: "اکائی",
     tax: "ٹیکس", selectTax: "ٹیکس منتخب کریں", included: "فروخت قیمت میں شامل",
     addTax: "فروخت قیمت پر شامل کریں", save: "محفوظ (F5)", update: "ترمیم / اپڈیٹ",
@@ -190,8 +178,10 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
     auto: "Auto", cost: "Cost Price", sale: "Sale Price", brand: "Brand",
     category: "Category", subCat: "Sub-Category", group: "Group", stock: "Current Stock",
     lowStock: "Low Stock Value", location: "Location / Rack", composite: "Is Composite",
-    picture: "Picture (Optional)", upload: "Upload", clear: "Clear",
     addVar: "Add Variations", suppliers: "Suppliers", setMain: "Set As Main",
+    pickSupplier: "Select supplier",
+    payFrom: "Bank / Wallet", pickAccount: "Select bank or wallet",
+    cashGrp: "Cash", bankGrp: "Bank", walletGrp: "Wallet",
     unit: "Unit",
     tax: "Tax", selectTax: "Select Tax", included: "Already included in the Sales Price",
     addTax: "Add to the Sales Price", save: "Save (F5)", update: "Edit/Update",
@@ -208,7 +198,40 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
     setForm(fromProduct(seed, purchases));
     setEditingId(seed?._id || null);
     setOrigStock(Number(seed?.stock) || 0);
+    const main = mainSupplierName(seed || {});
+    setSupplierName(main);
+    setAccountId("");
   }, [seed]);
+
+  useEffect(() => {
+    let live = true;
+    ledgerApi.list("supplier").then((r) => {
+      if (!live) return;
+      const fromLedger = (r.parties || []).filter((p) => p.name && !p.ghost);
+      const extra = [];
+      (purchases || []).forEach((p) => {
+        const n = (p.supplier || p.supplierName || "").trim();
+        if (n && n !== "—" && n.toLowerCase() !== "opening stock") extra.push(n);
+      });
+      const seen = new Set();
+      const list = [];
+      fromLedger.forEach((p) => {
+        const key = (p.name || "").trim().toLowerCase();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        list.push({ _id: p._id, name: p.name, phone: p.phone || "" });
+      });
+      extra.forEach((n) => {
+        const key = n.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        list.push({ _id: `name:${key}`, name: n, phone: "" });
+      });
+      list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+      setAllSuppliers(list);
+    }).catch(() => {});
+    return () => { live = false; };
+  }, [purchases]);
 
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
 
@@ -254,6 +277,7 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
     setEditingId(null);
     setOrigStock(0);
     setSupplierName("");
+    setAccountId("");
     setVariationName("");
     setShowVarInput(false);
   };
@@ -262,6 +286,8 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
     setForm(fromProduct(p, purchases));
     setEditingId(p._id);
     setOrigStock(Number(p.stock) || 0);
+    setSupplierName(mainSupplierName(p));
+    setAccountId("");
     setTab("create");
   };
 
@@ -304,7 +330,12 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
     const amount = Number(qty) || 0;
     if (!productId || amount <= 0) return { success: true };
     const rate = Number(payload.purchasePrice) || 0;
-    return api.addPurchase({
+    const total = +(rate * amount).toFixed(2);
+    const acc = (accounts || []).find((a) => accId(a) === accountId);
+    const accountName = acc ? accLabel(acc) : "";
+    const accType = acc?.type || acc?.accountType || "";
+    const paymentMethod = accType === "bank" || accType === "wallet" || accType === "cash" ? accType : (accountId ? "cash" : "cash");
+    const res = await api.addPurchase({
       supplier: supplier || "Opening Stock",
       date: todayStr(),
       product: productId,
@@ -312,11 +343,29 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
       category: payload.category || "Hardware",
       qty: amount,
       rate,
-      total: +(rate * amount).toFixed(2),
+      total,
       productPrice: rate,
       rows: [{ qty: amount, purchasePrice: rate, salePrice: Number(payload.price) || 0, unit: payload.unit || "piece" }],
       unit: payload.unit || "piece",
+      paymentMethod: accountId ? paymentMethod : "cash",
+      accountId: accountId || "",
+      accountName,
+      settlement: "full",
+      paidAmount: total,
+      remainingAmount: 0,
     });
+    if (res?.success && accountId) {
+      await recordTradeFinance({
+        kind: "purchase",
+        partyName: supplier,
+        invoice: res.purchase?.invoice || res.invoice || "",
+        date: todayStr(),
+        paid: total,
+        remaining: 0,
+        accountId,
+      });
+    }
+    return res;
   };
   const saveNew = async () => {
     if (!form.name.trim()) { alert(L.needName); return; }
@@ -410,7 +459,10 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
     background: th.bgCard, minHeight: isMobile ? "auto" : 168,
   };
   const cols = width >= 1100 ? "1fr 1fr 1fr" : width >= 720 ? "1fr 1fr" : "1fr";
-  const midCols = width >= 1100 ? "180px 1.2fr 1fr 1.1fr" : width >= 720 ? "1fr 1fr" : "1fr";
+  const stockOn = Number(form.stock) > 0;
+  const midCols = stockOn
+    ? (width >= 1100 ? "1fr 1.2fr 1fr 1.1fr" : width >= 720 ? "1fr 1fr" : "1fr")
+    : (width >= 1100 ? "1.2fr 1fr 1.1fr" : width >= 720 ? "1fr 1fr" : "1fr");
 
   const tabs = [
     { id: "create", label: L.create },
@@ -484,7 +536,11 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
                     onRemove={() => removeFromList(LS.brands, brands, setBrands, form.brand, () => set("brand", ""))} />
                 </Field>
                 <Field label={`${L.stock} / ${getUnitLabel(form.unit)}`} labelS={labelS}>
-                  <input type="text" inputMode="decimal" value={form.stock} onChange={e => set("stock", e.target.value.replace(/[^0-9.]/g, ""))} style={inp} placeholder="0" />
+                  <input type="text" inputMode="decimal" value={form.stock} onChange={e => {
+                    const v = e.target.value.replace(/[^0-9.]/g, "");
+                    set("stock", v);
+                    if (!(Number(v) > 0)) setAccountId("");
+                  }} style={inp} placeholder="0" />
                 </Field>
 
                 <Field label={L.barcode} labelS={labelS}>
@@ -537,29 +593,47 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: midCols, gap: 10 }}>
-                <div style={boxS}>
-                  <div style={{ fontSize: 11, fontWeight: 800, color: th.textMuted, marginBottom: 8 }}>{L.picture}</div>
-                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                    <div style={{
-                      width: 72, height: 72, borderRadius: 8, flexShrink: 0, overflow: "hidden",
-                      background: "rgba(124,110,247,0.12)", border: `1px dashed ${th.border}`,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                    }}>
-                      {form.photo
-                        ? <img src={form.photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                        : <span style={{ color: th.textDim, fontSize: 11 }}>IMG</span>}
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      <input ref={fileRef} type="file" accept="image/*" hidden onChange={async e => {
-                        const f = e.target.files?.[0];
-                        if (!f) return;
-                        try { set("photo", await resizeImage(f)); } catch { alert("Could not read image"); }
-                        e.target.value = "";
-                      }} />
-                      <button type="button" onClick={() => fileRef.current?.click()} style={{ ...miniBtn("#0f766e"), width: "auto", padding: "6px 10px", fontSize: 12 }}>{L.upload}</button>
-                      <button type="button" onClick={() => set("photo", "")} style={{ ...miniBtn("#64748b"), width: "auto", padding: "6px 10px", fontSize: 12 }}>{L.clear}</button>
-                    </div>
+                {stockOn && (
+                  <div style={boxS}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: th.textMuted, marginBottom: 8 }}>{L.payFrom}</div>
+                    {(accounts || []).length === 0 ? (
+                      <div style={{ padding: "10px 12px", borderRadius: 8, border: `1px dashed ${th.border}`, color: th.textMuted, fontSize: 12 }}>
+                        {isUrdu ? "پہلے بینک / والٹ بنائیں" : "Add a bank or wallet first"}
+                      </div>
+                    ) : (
+                      <select value={accountId} onChange={e => setAccountId(e.target.value)} style={inp}>
+                        <option value="">{L.pickAccount}</option>
+                        <AccountOptGroups accounts={accounts} th={th} isUrdu={isUrdu} />
+                      </select>
+                    )}
                   </div>
+                )}
+
+                <div style={boxS}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: th.textMuted, marginBottom: 8 }}>{L.suppliers}</div>
+                  <select
+                    value={supplierName}
+                    onChange={(e) => {
+                      const n = e.target.value;
+                      setSupplierName(n);
+                      const hit = allSuppliers.find((s) => s.name === n);
+                      setForm((p) => ({
+                        ...p,
+                        suppliers: n ? [{ name: n, id: hit?._id || `S1`, isMain: true }] : [],
+                      }));
+                    }}
+                    style={inp}
+                  >
+                    <option value="">{L.pickSupplier}</option>
+                    {supplierName && !allSuppliers.some((s) => s.name === supplierName) && (
+                      <option value={supplierName} style={{ background: th.bgModal }}>{supplierName}</option>
+                    )}
+                    {allSuppliers.map((s) => (
+                      <option key={s._id || s.name} value={s.name} style={{ background: th.bgModal }}>
+                        {s.name}{s.phone && s.phone !== "-" ? ` (${s.phone})` : ""}
+                      </option>
+                    ))}
+                  </select>
                   <button type="button" onClick={() => setShowVarInput(v => !v)}
                     style={{ marginTop: 8, width: "100%", padding: "8px 10px", border: "none", borderRadius: 8, cursor: "pointer", background: "#0d9488", color: "#fff", fontWeight: 800, fontSize: 12 }}>
                     {L.addVar}
@@ -586,41 +660,6 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
                       ))}
                     </div>
                   )}
-                </div>
-
-                <div style={boxS}>
-                  <div style={{ fontSize: 11, fontWeight: 800, color: th.textMuted, marginBottom: 8 }}>{L.suppliers}</div>
-                  <div style={{ maxHeight: 88, overflowY: "auto", border: `1px solid ${th.border}`, borderRadius: 6, marginBottom: 8 }}>
-                    {form.suppliers.length === 0 && <div style={{ padding: 10, color: th.textDim, fontSize: 12, textAlign: "center" }}>—</div>}
-                    {form.suppliers.map((s, i) => (
-                      <div key={i} onClick={() => setForm(p => ({ ...p, suppliers: p.suppliers.map((x, j) => ({ ...x, isMain: j === i })) }))}
-                        style={{
-                          display: "flex", justifyContent: "space-between", padding: "6px 8px", cursor: "pointer", fontSize: 12,
-                          background: s.isMain ? "rgba(37,99,235,0.1)" : "transparent", color: th.text, borderBottom: `1px solid ${th.border}`,
-                        }}>
-                        <span>{s.name}{s.isMain ? " ★" : ""}</span>
-                        <span style={{ color: th.textDim }}>{s.id}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
-                    <input value={supplierName} onChange={e => setSupplierName(e.target.value)} placeholder={isUrdu ? "سپلائر کا نام" : "Supplier name"} style={{ ...inp, flex: 1 }} />
-                    <button type="button" onClick={() => {
-                      const n = supplierName.trim();
-                      if (!n) return;
-                      setForm(p => ({
-                        ...p,
-                        suppliers: [...p.suppliers, { name: n, id: `S${p.suppliers.length + 1}`, isMain: p.suppliers.length === 0 }],
-                      }));
-                      setSupplierName("");
-                    }} style={miniBtn("#2563eb")}>+</button>
-                    <button type="button" onClick={() => setForm(p => ({ ...p, suppliers: p.suppliers.filter(s => !s.isMain) }))} style={miniBtn("#dc2626")}>−</button>
-                  </div>
-                  <button type="button" onClick={() => {
-                    if (!form.suppliers.length) return;
-                  }} style={{ width: "100%", padding: "7px", borderRadius: 7, border: "none", cursor: "pointer", background: "#1d4ed8", color: "#fff", fontWeight: 700, fontSize: 12 }}>
-                    {L.setMain}
-                  </button>
                 </div>
 
                 <div style={boxS}>

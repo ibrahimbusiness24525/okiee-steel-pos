@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { Icon, ICONS, useTypeaheadNav } from "./shared";
-import { ledgerApi } from "../utils/ledgerStore";
+import { ledgerApi, signedOpeningBalance } from "../utils/ledgerStore";
 import { ensureParty } from "../utils/tradeFinance";
 
 function uniqNames(lists) {
@@ -30,6 +30,8 @@ export default function PartyNamePicker({
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
+  const [newOpening, setNewOpening] = useState("");
+  const [newOpeningKind, setNewOpeningKind] = useState(type === "supplier" ? "dena" : "lana");
   const [createErr, setCreateErr] = useState("");
 
   useEffect(() => {
@@ -64,6 +66,8 @@ export default function PartyNamePicker({
     setOpen(false);
     setNewName("");
     setNewPhone("");
+    setNewOpening("");
+    setNewOpeningKind(type === "supplier" ? "dena" : "lana");
     setCreateErr("");
   };
 
@@ -88,6 +92,8 @@ export default function PartyNamePicker({
     setCreateErr("");
     setNewName(q);
     setNewPhone("");
+    setNewOpening("");
+    setNewOpeningKind(type === "supplier" ? "dena" : "lana");
     setShowCreate(true);
   };
 
@@ -109,7 +115,7 @@ export default function PartyNamePicker({
         type,
         name,
         phone: (newPhone || "").trim() || "-",
-        openingBalance: 0,
+        openingBalance: signedOpeningBalance(type, newOpening, newOpeningKind),
       });
       if (r?.success === false) {
         setCreateErr(r.message || (isUrdu ? "شامل نہیں ہو سکا" : "Could not add"));
@@ -273,6 +279,39 @@ export default function PartyNamePicker({
               style={smallInp}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveCreate(); } }}
             />
+          </div>
+          <div>
+            <label style={{ color: th.textMuted, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em", display: "block", marginBottom: 4 }}>
+              {isUrdu ? "اوپننگ بیلنس" : "Opening balance"}
+            </label>
+            <input
+              value={newOpening}
+              onChange={(e) => setNewOpening(e.target.value.replace(/[^0-9.]/g, ""))}
+              placeholder="0"
+              inputMode="decimal"
+              style={smallInp}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveCreate(); } }}
+            />
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              {[
+                { id: "lana", label: isUrdu ? "میں نے لینا ہے" : "Maine lana hain", color: "#16a34a" },
+                { id: "dena", label: isUrdu ? "میں نے دینا ہے" : "Maine dena hain", color: "#dc2626" },
+              ].map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setNewOpeningKind(opt.id)}
+                  style={{
+                    flex: 1, padding: "9px 8px", borderRadius: 10, cursor: "pointer", fontWeight: 800, fontSize: 12,
+                    border: newOpeningKind === opt.id ? "none" : `1px solid ${th.border}`,
+                    background: newOpeningKind === opt.id ? opt.color : th.bgCard,
+                    color: newOpeningKind === opt.id ? "#fff" : th.textMuted,
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
           {createErr && <div style={{ color: "#f87171", fontSize: 12, fontWeight: 600 }}>{createErr}</div>}
           <button

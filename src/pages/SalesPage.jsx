@@ -196,7 +196,7 @@ function SaleThermalInvoice({ invoiceData, onClose }) {
   );
 }
 
-function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleReturns=[], loadSaleReturns }) {
+function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleReturns=[], loadSaleReturns, purchases=[], purchaseReturns=[] }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
@@ -293,6 +293,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
       accountId:payload.accountId||"", accountName:payload.accountName||"", settlement:payload.settlement||"full",
       total:payload.total, grandTotal:payload.grandTotal,
       loaderFee:Number(payload.loaderFee)||0, bindingFee:Number(payload.bindingFee)||0,
+      discount:Number(payload.discount)||0, cashReceived:Number(payload.cashReceived)||0, changeDue:Number(payload.changeDue)||0,
       items:payload.items, rows:resolvedRows,
       saleItems,
       loaderName:payload.loaderName||"", product:productId,
@@ -350,6 +351,9 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
       loaderName:    s.loaderName    || "",
       loaderFee:     s.loaderFee     || 0,
       bindingFee:    s.bindingFee    || 0,
+      discount:      s.discount      || 0,
+      cashReceived:  s.cashReceived  || 0,
+      changeDue:     s.changeDue     || 0,
       isPartial:      s.isPartial      || false,
       paidAmount:     (s.isPartial || s.settlement === "credit") ? (Number(s.paidAmount)||0) : (Number(s.paidAmount)||grandTotal),
       remainingAmount:Number(s.remainingAmount)|| 0,
@@ -366,6 +370,9 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
       items, grandTotal: Number(s.grandTotal) || Number(s.total) || 0,
       total: Number(s.total) || 0, loaderFee: Number(s.loaderFee) || 0,
       bindingFee: Number(s.bindingFee) || 0,
+      discount: Number(s.discount) || 0,
+      cashReceived: Number(s.cashReceived) || 0,
+      changeDue: Number(s.changeDue) || 0,
       loader: s.loaderName ? { name: s.loaderName, fee: s.loaderFee || 0 } : null,
       isPartial:       s.isPartial       || false,
       paidAmount:      Number(s.paidAmount)      || Number(s.total) || 0,
@@ -477,6 +484,10 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
             prefill={editData ? buildEditPayload(editData) : null}
             loaders={loaders}
             extraNames={sales.map(s => s.customer)}
+            purchases={purchases}
+            sales={sales}
+            purchaseReturns={purchaseReturns}
+            saleReturns={saleReturns}
           />
         </Modal>
       )}

@@ -18,6 +18,44 @@ export function accLabel(a) {
   return name || "Cash";
 }
 
+export function isCashAccount(a) {
+  return String(a?.type || a?.accountType || "").toLowerCase() === "cash";
+}
+
+export function splitAccounts(accounts = []) {
+  const cash = [];
+  const bankWallet = [];
+  (accounts || []).forEach((a) => {
+    if (!accId(a)) return;
+    if (isCashAccount(a)) cash.push(a);
+    else bankWallet.push(a);
+  });
+  return { cash, bankWallet };
+}
+
+export function AccountOptGroups({ accounts, th, isUrdu }) {
+  const { cash, bankWallet } = splitAccounts(accounts);
+  const opt = (a) => (
+    <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>
+      {accLabel(a)} · {formatPKR(liveBalance(a))}
+    </option>
+  );
+  return (
+    <>
+      {cash.length > 0 && (
+        <optgroup label={isUrdu ? "نقد" : "Cash"}>
+          {cash.map(opt)}
+        </optgroup>
+      )}
+      {bankWallet.length > 0 && (
+        <optgroup label={isUrdu ? "بینک / والٹ" : "Bank / Wallet"}>
+          {bankWallet.map(opt)}
+        </optgroup>
+      )}
+    </>
+  );
+}
+
 export function derivePayment(total, form, accounts) {
   const t = Number(total) || 0;
   const settlement = form?.settlement || "full";
@@ -104,10 +142,6 @@ export default function PaymentTerms({
     width: "100%", boxSizing: "border-box",
   };
 
-  const cash = accounts.filter((a) => (a.type || a.accountType) === "cash");
-  const banks = accounts.filter((a) => (a.type || a.accountType) === "bank");
-  const wallets = accounts.filter((a) => (a.type || a.accountType) === "wallet");
-
   const modes = [
     { key: "full", label: isUrdu ? "مکمل ادائیگی" : "Full payment", hint: isUrdu ? "ساری رقم ابھی" : "Pay the full amount now", color: "#34d399" },
     { key: "credit", label: isUrdu ? "مکمل ادھار" : "Full credit", hint: isUrdu ? "سب بعد میں" : "Nothing now — all on ledger", color: "#f87171" },
@@ -175,33 +209,7 @@ export default function PaymentTerms({
               style={{ ...inpS, borderRadius: 12, padding: "11px 14px" }}
             >
               <option value="">{isUrdu ? "-- بینک / والٹ منتخب کریں --" : "-- Select bank or wallet --"}</option>
-              {cash.length > 0 && (
-                <optgroup label={isUrdu ? "نقد" : "Cash"}>
-                  {cash.map((a) => (
-                    <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>
-                      {accLabel(a)} · {formatPKR(liveBalance(a))}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {banks.length > 0 && (
-                <optgroup label={isUrdu ? "بینک" : "Bank"}>
-                  {banks.map((a) => (
-                    <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>
-                      {accLabel(a)} · {formatPKR(liveBalance(a))}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {wallets.length > 0 && (
-                <optgroup label={isUrdu ? "والٹ" : "Wallet"}>
-                  {wallets.map((a) => (
-                    <option key={accId(a)} value={accId(a)} style={{ background: th.bgModal }}>
-                      {accLabel(a)} · {formatPKR(liveBalance(a))}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
+              <AccountOptGroups accounts={accounts} th={th} isUrdu={isUrdu} />
             </select>
           )}
         </div>

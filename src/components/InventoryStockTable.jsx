@@ -1,10 +1,25 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { Table, Modal } from "./shared";
 import { formatPKR, formatWeightKgG, loadShopProfile, printThermalOrA4, todayStr } from "../utils/helpers";
 import { productDisplayName } from "../utils/constants";
-import { pidOf, saleProductLines } from "./StockReturns";
+import { pidOf } from "./StockReturns";
+
+const HW_ITEM_CATS = ["Nuts", "Bolts", "Screws", "Washers", "Hinges", "Locks", "Tools", "Fittings", "Valves", "Other"];
+const MAIN_CATS = ["Pipe", "Chader", "Net", "Hardware", "Custom"];
+const HW_CATS_LS = "steelpos_hw_categories";
+
+function loadHwCats() {
+  try {
+    const raw = localStorage.getItem(HW_CATS_LS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length) return parsed.map(String);
+    }
+  } catch { /* ignore */ }
+  return HW_ITEM_CATS;
+}
 
 const getUrduItemLabel = (cat) => {
   switch (cat) {
@@ -17,7 +32,7 @@ const getUrduItemLabel = (cat) => {
   }
 };
 
-export function inventoryStats(products = []) {
+export function inventoryStats(products = [], lotOpts) {
   const stockOf = (p) => Number(p.stock) || 0;
   const thresholdOf = (p) => {
     const n = Number(p.lowStockThreshold);
@@ -29,10 +44,11 @@ export function inventoryStats(products = []) {
     const s = stockOf(p);
     return s > 0 && s <= thresholdOf(p);
   });
-  const inventoryAmount = products.reduce((s, p) => {
-    const stock = Number(p.stock) || 0;
-    const cost = Number(p.purchasePrice) || Number(p.price) || 0;
-    return s + stock * cost;
+  const ctx = lotOpts ? (lotOpts.ctx || makeLotContext(lotOpts)) : null;
+  const inventoryAmount = inStock.reduce((s, p) => {
+    if (ctx) return s + (Number(lotsFromContext(p, ctx).costValue) || 0);
+    const { cost } = costAndSale(p);
+    return s + stockOf(p) * (Number(cost) || 0);
   }, 0);
   return { stockedCount: inStock.length, inventoryAmount, demandZero, demandLow, stockOf, thresholdOf };
 }
@@ -53,16 +69,6 @@ function costAndSale(product) {
     cost: Number(product.purchasePrice) || 0,
     sale: Number(product.price) || 0,
   };
-}
-
-function sameProduct(product, rec) {
-  if (!product || !rec) return false;
-  const id = pidOf(product._id || product.id);
-  const rid = pidOf(rec.product || rec.productId);
-  if (id && rid && id === rid) return true;
-  const n = String(product.name || "").trim().toLowerCase();
-  const rn = String(rec.productName || rec.name || "").trim().toLowerCase();
-  return !!n && n === rn;
 }
 
 function purchaseQty(p) {
@@ -129,55 +135,169 @@ function cashCreditShares(info) {
   return { cash: 0, credit: 1 };
 }
 
-function qtyFromReturns(returns, product) {
-  let q = 0;
-  (returns || []).forEach((r) => {
-    (r.items || []).forEach((it) => {
-      if (sameProduct(product, it) || sameProduct(product, { product: it.product, productName: it.productName })) {
-        q += Number(it.qty) || 0;
-      }
-    });
-  });
-  return q;
+function qtyFromMaps(byId, byName, product) {
+  const id = pidOf(product?._id || product?.id);
+  const name = String(product?.name || "").trim().toLowerCase();
+  if (id && byId[id]) return byId[id];
+  if (name && byName[name]) return byName[name];
+  return 0;
 }
 
-export function stockLotsForProduct(product, { purchases = [], sales = [], purchaseReturns = [], saleReturns = [], products = [] } = {}) {
-  const fallback = costAndSale(product).cost;
-  const stock = Number(product?.stock) || 0;
-  const lots = [];
+function addQtyMaps(returns, byId, byName) {
+  (returns || []).forEach((r) => {
+    (r.items || []).forEach((it) => {
+      const q = Number(it.qty) || 0;
+      if (q <= 0) return;
+      const id = pidOf(it.product || it.productId);
+      const name = String(it.productName || it.name || "").trim().toLowerCase();
+      if (id) byId[id] = (byId[id] || 0) + q;
+      if (name) byName[name] = (byName[name] || 0) + q;
+    });
+  });
+}
 
+function saleSoldLines(sale, nameToId) {
+  const lines = [];
+  const seen = new Set();
+  const resolveId = (raw, name) => {
+    const id = pidOf(raw);
+    if (id) return id;
+    const n = String(name || "").toLowerCase().trim();
+    return n ? (nameToId.get(n) || "") : "";
+  };
+  const qtyFromItem = (it) => {
+    if (Number(it?.qty) > 0) return Number(it.qty);
+    const row = it?.rows?.[0] || {};
+    if (Number(row.qty) > 0) return Number(row.qty);
+    if (Number(row.quantity) > 0) return Number(row.quantity);
+    if (Number(row.weight) > 0) return Number(row.weight);
+    if (Number(row.feet) > 0) return Number(row.feet);
+    const m = String(row.desc || "").match(/^(\d+\.?\d*)/);
+    return m ? parseFloat(m[1]) : 0;
+  };
+  const push = (productId, qty, extra = {}) => {
+    const id = resolveId(productId, extra.productName);
+    const q = Number(qty) || 0;
+    if (!id || q <= 0 || seen.has(id)) return;
+    seen.add(id);
+    lines.push({
+      productId: String(id),
+      productName: extra.productName || "",
+      qty: q,
+    });
+  };
+  if (Array.isArray(sale.saleItems)) {
+    sale.saleItems.forEach((si) => push(si.productId || si.product, si.qty, { productName: si.productName }));
+  }
+  if (Array.isArray(sale.items)) {
+    sale.items.forEach((it) => push(it.productId || it.product, qtyFromItem(it), { productName: it.productName }));
+  }
+  if (!lines.length && sale.product) {
+    push(sale.product, sale.qty, { productName: sale.productName || "" });
+  }
+  return lines;
+}
+
+export function makeLotContext({ purchases = [], sales = [], purchaseReturns = [], saleReturns = [], products = [] } = {}) {
+  const nameToId = new Map();
+  const idToName = new Map();
+  (products || []).forEach((p) => {
+    const id = pidOf(p?._id || p?.id);
+    const name = String(p?.name || "").trim().toLowerCase();
+    if (id && name) nameToId.set(name, id);
+    if (id && name) idToName.set(id, name);
+  });
+
+  const purchById = {};
+  const purchByName = {};
+  const pushLot = (map, key, lot) => {
+    if (!key) return;
+    if (!map[key]) map[key] = [];
+    map[key].push(lot);
+  };
   (purchases || []).forEach((p) => {
-    const entries = Array.isArray(p.entries) ? p.entries.filter((e) => sameProduct(product, e)) : [];
-    const add = (qty, unitCost, extra = {}) => {
+    const makeLot = (qty, unitCost) => {
       const bought = Number(qty) || 0;
-      if (bought <= 0) return;
-      lots.push({
-        date: p.date || extra.date || "—",
+      if (bought <= 0) return null;
+      return {
+        date: p.date || "—",
         invoice: p.invoice || p.invoiceNum || "—",
         supplier: p.supplier || p.supplierName || "—",
         bought,
         remaining: bought,
-        unitCost: Number(unitCost) || fallback,
+        unitCost: Number(unitCost) || 0,
         createdAt: p.createdAt || "",
-      });
+      };
     };
+    const entries = Array.isArray(p.entries) ? p.entries : [];
     if (entries.length) {
-      entries.forEach((e) => add(e.quantity || e.qty, e.productPrice || e.rate || e.purchasePrice));
-    } else if (sameProduct(product, p)) {
-      add(purchaseQty(p), purchaseUnitCost(p, product));
+      entries.forEach((e) => {
+        const lot = makeLot(e.quantity || e.qty, e.productPrice || e.rate || e.purchasePrice);
+        if (!lot) return;
+        const id = pidOf(e.product || e.productId);
+        const name = String(e.productName || e.name || "").trim().toLowerCase();
+        pushLot(purchById, id, lot);
+        pushLot(purchByName, name, lot);
+      });
+    } else {
+      const lot = makeLot(purchaseQty(p), purchaseUnitCost(p, null));
+      if (!lot) return;
+      const id = pidOf(p.product || p.productId);
+      const name = String(p.productName || p.name || "").trim().toLowerCase();
+      pushLot(purchById, id, lot);
+      pushLot(purchByName, name, lot);
     }
   });
 
-  lots.sort((a, b) => stampOf(a).localeCompare(stampOf(b)));
-
-  let sold = 0;
+  const soldById = {};
+  const soldByName = {};
   (sales || []).forEach((s) => {
-    saleProductLines(s, products.length ? products : [product]).forEach((ln) => {
-      if (sameProduct(product, { product: ln.productId, productName: ln.productName })) sold += Number(ln.qty) || 0;
+    saleSoldLines(s, nameToId).forEach((ln) => {
+      const q = Number(ln.qty) || 0;
+      if (q <= 0) return;
+      const id = String(ln.productId || "");
+      const name = String(ln.productName || "").trim().toLowerCase() || (id && idToName.get(id)) || "";
+      if (id) soldById[id] = (soldById[id] || 0) + q;
+      if (name) soldByName[name] = (soldByName[name] || 0) + q;
     });
   });
-  const saleRet = qtyFromReturns(saleReturns, product);
-  const purchRet = qtyFromReturns(purchaseReturns, product);
+
+  const saleRetById = {};
+  const saleRetByName = {};
+  const purchRetById = {};
+  const purchRetByName = {};
+  addQtyMaps(saleReturns, saleRetById, saleRetByName);
+  addQtyMaps(purchaseReturns, purchRetById, purchRetByName);
+
+  return {
+    purchById,
+    purchByName,
+    soldById,
+    soldByName,
+    saleRetById,
+    saleRetByName,
+    purchRetById,
+    purchRetByName,
+  };
+}
+
+function lotsFromContext(product, ctx) {
+  const fallback = costAndSale(product).cost;
+  const stock = Number(product?.stock) || 0;
+  const id = pidOf(product?._id || product?.id);
+  const name = String(product?.name || "").trim().toLowerCase();
+  const raw = (id && ctx.purchById[id]?.length) ? ctx.purchById[id] : (ctx.purchByName[name] || []);
+  const lots = raw.map((l) => ({
+    ...l,
+    remaining: l.bought,
+    unitCost: Number(l.unitCost) || fallback,
+  }));
+
+  lots.sort((a, b) => stampOf(a).localeCompare(stampOf(b)));
+
+  const sold = qtyFromMaps(ctx.soldById, ctx.soldByName, product);
+  const saleRet = qtyFromMaps(ctx.saleRetById, ctx.saleRetByName, product);
+  const purchRet = qtyFromMaps(ctx.purchRetById, ctx.purchRetByName, product);
   let consume = Math.max(0, sold - saleRet) + purchRet;
 
   for (const lot of lots) {
@@ -216,11 +336,16 @@ export function stockLotsForProduct(product, { purchases = [], sales = [], purch
   const avgCost = held > 0 ? costValue / held : fallback;
   const sale = costAndSale(product).sale;
   const profitPc = sale - avgCost;
+  const remainingNewest = remaining.slice().sort((a, b) => {
+    const stampA = `${a.date || ""}|${a.createdAt || ""}`;
+    const stampB = `${b.date || ""}|${b.createdAt || ""}`;
+    return stampB.localeCompare(stampA);
+  });
   return {
-    remaining,
+    remaining: remainingNewest,
     allLots: lots,
     stock: held,
-    avgCost,
+    avgCost: Math.round((Number(avgCost) || 0) * 100) / 100,
     costValue,
     sale,
     profitPc,
@@ -228,6 +353,11 @@ export function stockLotsForProduct(product, { purchases = [], sales = [], purch
     sold: Math.max(0, sold - saleRet),
     purchRet,
   };
+}
+
+export function stockLotsForProduct(product, opts = {}) {
+  const ctx = opts.ctx || makeLotContext(opts);
+  return lotsFromContext(product, ctx);
 }
 
 function InventoryPrintSheet({ rows, total, isUrdu, kind }) {
@@ -403,11 +533,22 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
   const isUrdu = lang === "ur";
   const isDemand = kind === "demand";
   const [invSearch, setInvSearch] = useState("");
+  const [invCat, setInvCat] = useState("");
   const [detail, setDetail] = useState(null);
 
-  const lotOpts = { purchases, sales, purchaseReturns, saleReturns, products };
-  const lotsOf = (p) => stockLotsForProduct(p, lotOpts);
-  const payMap = purchasePayMap(purchases);
+  const lotCtx = useMemo(
+    () => makeLotContext({ purchases, sales, purchaseReturns, saleReturns, products }),
+    [purchases, sales, purchaseReturns, saleReturns, products]
+  );
+  const lotsByKey = useMemo(() => {
+    const m = new Map();
+    (products || []).forEach((p) => {
+      m.set(String(p._id || p.id || p.name || ""), lotsFromContext(p, lotCtx));
+    });
+    return m;
+  }, [products, lotCtx]);
+  const lotsOf = (p) => lotsByKey.get(String(p._id || p.id || p.name || "")) || lotsFromContext(p, lotCtx);
+  const payMap = useMemo(() => purchasePayMap(purchases), [purchases]);
 
   const stockOf = (p) => Number(p.stock) || 0;
   const thresholdOf = (p) => {
@@ -423,19 +564,30 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
       || (p.brand || "").toLowerCase().includes(qInv)
       || (p.subType || "").toLowerCase().includes(qInv)
       || (p.lastInvoice || "").toLowerCase().includes(qInv)
+      || String(billOf(p)?.invoice || billOf(p)?.invoiceNum || "").toLowerCase().includes(qInv)
       || (p.lastSupplier || "").toLowerCase().includes(qInv)
-      || (Array.isArray(p.suppliers) ? p.suppliers.some((s) => (s?.name || "").toLowerCase().includes(qInv)) : false);
+      || (Array.isArray(p.suppliers) ? p.suppliers.some((s) => (s?.name || "").toLowerCase().includes(qInv)) : false)
+      || (p.hwCategory || "").toLowerCase().includes(qInv)
+      || (p.subCategory || "").toLowerCase().includes(qInv);
   };
-  const inventory = products
-    .filter((p) => {
-      const stock = stockOf(p);
-      const inGroup = isDemand ? stock <= 0 : stock > 0;
-      if (!inGroup || !matchesInvSearch(p)) return false;
-      return true;
-    })
-    .sort((a, b) => (isDemand ? stockOf(a) - stockOf(b) : 0));
-
-  const lowCount = products.filter((p) => { const s = stockOf(p); return s > 0 && s <= thresholdOf(p); }).length;
+  const itemCatOf = (p) => String(p.subType || p.hwCategory || p.subCategory || "").trim();
+  const matchesInvCat = (p) => {
+    if (!invCat) return true;
+    const want = invCat.toLowerCase();
+    if (MAIN_CATS.some((c) => c.toLowerCase() === want)) {
+      return String(p.category || "").toLowerCase() === want;
+    }
+    return itemCatOf(p).toLowerCase() === want;
+  };
+  const savedHwCats = loadHwCats();
+  const extraHwCats = [];
+  (products || []).forEach((p) => {
+    const sub = itemCatOf(p);
+    if (sub && !savedHwCats.some((c) => c.toLowerCase() === sub.toLowerCase()) && !MAIN_CATS.includes(sub)) {
+      extraHwCats.push(sub);
+    }
+  });
+  const hwCatOptions = [...savedHwCats, ...[...new Set(extraHwCats)].sort()];
 
   const latestPurchase = {};
   const latestByName = {};
@@ -453,27 +605,56 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
     takeLatest(latestByName, (p.productName || "").trim().toLowerCase(), p, stamp);
   });
   const billOf = (p) => latestPurchase[String(p._id)] || latestByName[(p.name || "").trim().toLowerCase()] || null;
+  const dateStampOf = (p) => {
+    const bill = billOf(p);
+    const d = bill?.date || p.lastPurchaseDate || "";
+    const c = bill?.createdAt || "";
+    return d || c ? `${d}|${c}` : "";
+  };
+  const inventory = products
+    .filter((p) => {
+      const stock = stockOf(p);
+      const inGroup = isDemand ? stock <= 0 : stock > 0;
+      if (!inGroup || !matchesInvSearch(p) || !matchesInvCat(p)) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      if (isDemand) return stockOf(a) - stockOf(b);
+      const sa = dateStampOf(a);
+      const sb = dateStampOf(b);
+      if (!sa && !sb) return (a.name || "").localeCompare(b.name || "");
+      if (!sa) return 1;
+      if (!sb) return -1;
+      return sb.localeCompare(sa);
+    });
+
+  const lowCount = inventory.filter((p) => { const s = stockOf(p); return s > 0 && s <= thresholdOf(p); }).length;
   const invoiceOf = (p, bill) => bill?.invoice || bill?.invoiceNum || p.lastInvoice || "—";
   const dateOf = (p, bill) => bill?.date || p.lastPurchaseDate || "—";
   const supplierOf = (p, bill) => {
     const mainSup = (Array.isArray(p.suppliers) ? (p.suppliers.find((s) => s?.isMain) || p.suppliers[0]) : null)?.name || "";
     return bill?.supplier || bill?.supplierName || p.lastSupplier || mainSup || "—";
   };
-  const catBadge = (cat) => (
-    <span style={{
-      fontSize: 12, padding: "3px 9px", borderRadius: 20, fontWeight: 600,
-      background: cat === "Pipe" ? "rgba(41,128,185,0.15)" : cat === "Chader" ? "rgba(26,188,156,0.15)" : cat === "Net" ? "rgba(244,114,182,0.15)" : cat === "Hardware" ? "rgba(251,191,36,0.15)" : "rgba(167,139,250,0.15)",
-      color: cat === "Pipe" ? "#60a5fa" : cat === "Chader" ? "#34d399" : cat === "Net" ? "#f472b6" : cat === "Hardware" ? "#fbbf24" : "#a78bfa",
-    }}>
-      {isUrdu ? (cat ? getUrduItemLabel(cat) : "—") : (cat || "—")}
-    </span>
-  );
+  const catBadge = (p) => {
+    const cat = p.category || "";
+    const sub = itemCatOf(p);
+    const label = sub || (isUrdu ? (cat ? getUrduItemLabel(cat) : "—") : (cat || "—"));
+    return (
+      <span style={{
+        fontSize: 12, padding: "3px 9px", borderRadius: 20, fontWeight: 600,
+        background: cat === "Pipe" ? "rgba(41,128,185,0.15)" : cat === "Chader" ? "rgba(26,188,156,0.15)" : cat === "Net" ? "rgba(244,114,182,0.15)" : cat === "Hardware" ? "rgba(251,191,36,0.15)" : "rgba(167,139,250,0.15)",
+        color: cat === "Pipe" ? "#60a5fa" : cat === "Chader" ? "#34d399" : cat === "Net" ? "#f472b6" : cat === "Hardware" ? "#fbbf24" : "#a78bfa",
+      }}>
+        {label}
+      </span>
+    );
+  };
 
   const printRows = inventory.map((p) => {
     const stock = Number(p.stock) || 0;
     const lots = lotsOf(p);
     const zero = stock <= 0;
-    const cat = isUrdu ? (p.category ? getUrduItemLabel(p.category) : "") : (p.category || "");
+    const cat = itemCatOf(p) || (isUrdu ? (p.category ? getUrduItemLabel(p.category) : "") : (p.category || ""));
     const status = isDemand ? (zero ? (isUrdu ? "زیرو" : "Zero") : (isUrdu ? "کم" : "Low")) : "";
     return {
       name: productDisplayName(p) || p.name || "—",
@@ -518,12 +699,31 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
   return (
     <div style={{ position: "relative" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-        <input
-          value={invSearch}
-          onChange={(e) => setInvSearch(e.target.value)}
-          placeholder={isUrdu ? "نام / بارکوڈ تلاش..." : "Search name / barcode..."}
-          style={{ flex: "1 1 220px", minWidth: 180, padding: "9px 12px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.input || th.bgCard, color: th.text, fontSize: 13, outline: "none" }}
-        />
+        <div style={{ flex: "1 1 240px", minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            value={invSearch}
+            onChange={(e) => setInvSearch(e.target.value)}
+            placeholder={isUrdu ? "نام / انوائس نمبر" : "Name / invoice number"}
+            style={{ flex: "7 1 0", width: 0, minWidth: 0, padding: "7px 10px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.input || th.bgCard, color: th.text, fontSize: 13, outline: "none" }}
+          />
+          <select
+            value={invCat}
+            onChange={(e) => setInvCat(e.target.value)}
+            style={{ flex: "3 1 0", width: 0, minWidth: 0, padding: "7px 10px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.input || th.bgCard, color: th.text, fontSize: 13, outline: "none" }}
+          >
+            <option value="">{isUrdu ? "تمام کیٹگری" : "All categories"}</option>
+            <optgroup label={isUrdu ? "ہارڈ ویئر کیٹگری" : "Hardware category"}>
+              {hwCatOptions.map((c) => (
+                <option key={c} value={c} style={{ background: th.bgModal }}>{c}</option>
+              ))}
+            </optgroup>
+            <optgroup label={isUrdu ? "قسم" : "Type"}>
+              {MAIN_CATS.map((c) => (
+                <option key={c} value={c} style={{ background: th.bgModal }}>{isUrdu ? getUrduItemLabel(c) : c}</option>
+              ))}
+            </optgroup>
+          </select>
+        </div>
         <button type="button" disabled={!inventory.length} onClick={() => printThermalOrA4("thermal")} style={printBtn("linear-gradient(135deg,#1abc9c,#2980b9)")}>
           🖨️ {isUrdu ? "تھرمل" : "Thermal"}
         </button>
@@ -555,7 +755,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
             <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{dateOf(p, bill)}</span>,
             <span style={{ whiteSpace: "nowrap" }}>{supplierOf(p, bill)}</span>,
             <div style={{ fontWeight: 700, color: th.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 260 }} title={title}>{name}</div>,
-            catBadge(p.category),
+            catBadge(p),
           ];
           if (isDemand) cells.push(statusBadge(zero));
           cells.push(

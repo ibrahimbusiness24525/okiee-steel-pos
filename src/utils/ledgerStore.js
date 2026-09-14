@@ -3,6 +3,20 @@ import { sortLedgerEntries } from "./helpers";
 
 const KEY = "steelpos_ledger_v1";
 
+/** Customer +: lana, -: dena. Supplier +: dena, -: lana. */
+export function signedOpeningBalance(type, amount, kind) {
+  const n = Math.abs(Number(amount) || 0);
+  if (!n) return 0;
+  if (type === "supplier") return kind === "dena" ? n : -n;
+  return kind === "lana" ? n : -n;
+}
+
+export function openingKindOf(type, stored) {
+  const n = Number(stored) || 0;
+  if (type === "supplier") return n < 0 ? "lana" : "dena";
+  return n < 0 ? "dena" : "lana";
+}
+
 export function partyTotals(type, opening, entries) {
   let take = 0;
   let give = 0;

@@ -77,18 +77,34 @@ export async function recordTradeFinance({
 }
 
 export function invoicePayInfo(recOrRows) {
-  const head = Array.isArray(recOrRows) ? (recOrRows[0] || {}) : (recOrRows || {});
-  const remaining = Number(head.remainingAmount) || 0;
+  const rows = Array.isArray(recOrRows) ? recOrRows : [recOrRows || {}];
+  const head = rows[0] || {};
+  const remaining = Math.round((Number(head.remainingAmount) || 0) * 100) / 100;
   const settlement = String(head.settlement || "").toLowerCase();
   const method = String(head.paymentMethod || "").toLowerCase();
+  let total = Number(head.grandTotal) || Number(head.total) || 0;
+  if (rows.length > 1) {
+    const grands = rows.map((r) => Number(r.grandTotal) || 0);
+    const allSame = grands.every((n) => n === grands[0]) && grands[0] > 0;
+    total = allSame
+      ? grands[0]
+      : rows.reduce((s, r) => s + (Number(r.total) || Number(r.grandTotal) || 0), 0);
+  }
+  total = Math.round((Number(total) || 0) * 100) / 100;
+  let paid = Number(head.paidAmount);
+  if (!Number.isFinite(paid) || paid < 0 || (paid <= 0 && remaining > 0.5 && total > remaining)) {
+    paid = Math.max(0, total - remaining);
+  }
+  paid = Math.round(paid * 100) / 100;
   const isCredit = settlement === "credit" || method === "credit" || remaining > 0.5;
+  const isPartial = remaining > 0.5 && paid > 0.5;
   return {
     isCredit,
     remaining,
+    paid,
+    total,
     accountId: head.accountId || "",
-    settlement: isCredit
-      ? (settlement === "partial" || (remaining > 0 && settlement !== "credit") ? "partial" : "credit")
-      : "paid",
+    settlement: !isCredit ? "paid" : (isPartial || settlement === "partial" ? "partial" : "credit"),
   };
 }
 
@@ -111,11 +127,13 @@ export async function applyReturnFinance({
   const inv = (invoice || "").trim();
   const when = date || todayStr();
   const credit = isCredit || rem > 0.5;
-  const doLedger = reverseLedger === true || (reverseLedger !== false && credit);
+  const doLedger = reverseLedger === true && credit && rem > 0.5;
+  const leftover = reverseLedger === true
+    ? (rem > 0.5 ? Math.max(0, Math.round((ret - Math.min(ret, rem)) * 100) / 100) : ret)
+    : 0;
 
-  let leftover = ret;
   if (doLedger && (partyName || "").trim()) {
-    const cut = rem > 0.5 ? Math.min(ret, rem) : ret;
+    const cut = Math.min(ret, rem);
     try {
       const party = await ensureParty(type, partyName);
       if (party && partyId(party)) {
@@ -132,7 +150,6 @@ export async function applyReturnFinance({
     } catch (e) {
       console.error("return ledger failed", e);
     }
-    leftover = Math.round((ret - cut) * 100) / 100;
   }
 
   if (leftover > 0.5 && accountId) {

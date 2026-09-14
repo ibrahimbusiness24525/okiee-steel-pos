@@ -29,7 +29,7 @@ export function parseYmd(str) {
   return isNaN(dt) ? "" : ymd(dt);
 }
 
-/** today | yesterday | week (7d) | month (30d) | custom | all */
+/** today | yesterday | week (7d) | month (this calendar month) | custom | all */
 export function inDateFilter(dateStr, filter, customFrom = "", customTo = "", createdAt) {
   const d = parseYmd(dateStr) || parseYmd(createdAt);
   if (!d) return filter === "all";
@@ -37,7 +37,10 @@ export function inDateFilter(dateStr, filter, customFrom = "", customTo = "", cr
   if (filter === "today") return d === today;
   if (filter === "yesterday") return d === addDaysYmd(-1);
   if (filter === "week") return d >= addDaysYmd(-6) && d <= today;
-  if (filter === "month") return d >= addDaysYmd(-29) && d <= today;
+  if (filter === "month") {
+    const monthStart = `${today.slice(0, 8)}01`;
+    return d >= monthStart && d <= today;
+  }
   if (filter === "custom") {
     const from = customFrom || "0000-01-01";
     const to = customTo || "9999-12-31";

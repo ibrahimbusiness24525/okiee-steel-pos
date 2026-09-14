@@ -1,4 +1,5 @@
 import { loadShopProfile, parseYmd, sortLedgerEntries, todayStr } from "../utils/helpers";
+import { openingKindOf } from "../utils/ledgerStore";
 
 function money(n) {
   return (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-US", {
@@ -35,8 +36,8 @@ function entrySides(partyType, e) {
 function sourceOf(e, partyType, isUrdu) {
   const inv = String(e.invoice || "").trim();
   if (inv) return partyType === "customer" ? `AR Inv - ${inv}` : `AP Inv - ${inv}`;
-  if (e.kind === "take") return isUrdu ? "کریڈٹ لیں" : "Take Credit";
-  if (e.kind === "give") return isUrdu ? "کریڈٹ دیں" : "Give Credit";
+  if (e.kind === "take") return isUrdu ? "میں نے لیے" : "Maine Liye";
+  if (e.kind === "give") return isUrdu ? "میں نے دیے" : "Maine Diye";
   if (e.kind === "credit") return partyType === "customer" ? (isUrdu ? "فروخت" : "Sale") : (isUrdu ? "خریداری" : "Purchase");
   return e.kind || "—";
 }
@@ -45,14 +46,14 @@ function descOf(e, partyType, isUrdu) {
   if (e.note) return e.note;
   if (e.accountName) return e.accountName;
   if (e.kind === "credit") return partyType === "customer" ? (isUrdu ? "فروخت" : "Sale") : (isUrdu ? "خریداری" : "Purchase");
-  if (e.kind === "take") return isUrdu ? "کریڈٹ لیں" : "Take Credit";
-  if (e.kind === "give") return isUrdu ? "کریڈٹ دیں" : "Give Credit";
+  if (e.kind === "take") return isUrdu ? "میں نے لیے" : "Maine Liye";
+  if (e.kind === "give") return isUrdu ? "میں نے دیے" : "Maine Diye";
   return "—";
 }
 
 export function buildPartyLedger({ party, entries = [], from = "", to = "", isUrdu }) {
   const type = party?.type === "supplier" ? "supplier" : "customer";
-  const opening = Math.round((Number(party?.openingBalance) || 0) * 100) / 100;
+  const opening = Math.round((Number(party?.openingBalance ?? party?.opening) || 0) * 100) / 100;
   const chrono = sortLedgerEntries(entries).slice().reverse().filter((e) => {
     const d = parseYmd(e.date) || parseYmd(e.createdAt);
     if (from && d && d < from) return false;
@@ -60,8 +61,31 @@ export function buildPartyLedger({ party, entries = [], from = "", to = "", isUr
     return true;
   });
 
-  let running = opening;
+  let running = 0;
   const rows = [];
+  const absOpen = Math.abs(opening);
+  if (absOpen > 0.0001) {
+    const kind = openingKindOf(type, opening);
+    let debit = 0;
+    let credit = 0;
+    if (type === "customer") {
+      if (opening > 0) debit = absOpen;
+      else credit = absOpen;
+    } else if (opening > 0) credit = absOpen;
+    else debit = absOpen;
+    if (type === "customer") running += debit - credit;
+    else running += credit - debit;
+    rows.push({
+      date: parseYmd(party?.createdAt) || parseYmd(party?.date) || todayStr(),
+      source: isUrdu ? "اوپننگ بیلنس" : "Opening Balance",
+      description: kind === "lana"
+        ? (isUrdu ? "میں نے لینا ہے" : "Maine lana hain")
+        : (isUrdu ? "میں نے دینا ہے" : "Maine dena hain"),
+      debit,
+      credit,
+      balance: running,
+    });
+  }
   chrono.forEach((e) => {
     const { debit, credit } = entrySides(type, e);
     if (type === "customer") running += debit - credit;
@@ -96,21 +120,21 @@ export default function PartyLedgerSheet({ party, entries = [], from = "", to = 
   const data = buildPartyLedger({ party, entries, from, to, isUrdu });
   const phones = (shop.owners || []).map((o) => o.phone).filter(Boolean).join(" / ");
   const asOn = dmy(todayStr());
-  const fs = compact ? 10 : 13;
-  const nameFs = compact ? 14 : 22;
-  const th = { textAlign: "left", fontWeight: 800, fontSize: compact ? 9 : 12, borderBottom: "1px solid #000", borderTop: "1px solid #000", padding: compact ? "3px 2px" : "5px 6px" };
-  const td = { fontSize: compact ? 9 : 12, padding: compact ? "3px 2px" : "5px 6px", borderBottom: "1px solid #333", verticalAlign: "top" };
+  const fs = compact ? 11 : 13;
+  const nameFs = compact ? 16 : 22;
+  const th = { textAlign: "left", fontWeight: 800, fontSize: compact ? 10 : 12, borderBottom: "1px solid #000", borderTop: "1px solid #000", padding: compact ? "3px 2px" : "5px 6px" };
+  const td = { fontSize: compact ? 10 : 12, padding: compact ? "3px 2px" : "5px 6px", borderBottom: "1px solid #333", verticalAlign: "top" };
   const num = { ...td, textAlign: "right", whiteSpace: "nowrap" };
 
   return (
     <div
       id="thermal-invoice"
       style={{
-        width: compact ? "65mm" : "190mm",
-        maxWidth: compact ? "65mm" : "190mm",
+        width: compact ? "3in" : "190mm",
+        maxWidth: compact ? "3in" : "190mm",
         color: "#000",
         background: "#fff",
-        fontFamily: "Georgia, 'Times New Roman', Times, serif",
+        fontFamily: "Arial, Helvetica, sans-serif",
         padding: compact ? 4 : 8,
         boxSizing: "border-box",
       }}
@@ -146,8 +170,8 @@ export default function PartyLedgerSheet({ party, entries = [], from = "", to = 
             <th style={th}>{isUrdu ? "تاریخ" : "Date"}</th>
             <th style={th}>{isUrdu ? "حوالہ" : "Source"}</th>
             <th style={th}>{isUrdu ? "تفصیل" : "Description"}</th>
-            <th style={{ ...th, textAlign: "right" }}>{isUrdu ? "ڈیبٹ" : "Debit"}</th>
-            <th style={{ ...th, textAlign: "right" }}>{isUrdu ? "کریڈٹ" : "Credit"}</th>
+            <th style={{ ...th, textAlign: "right" }}>{isUrdu ? "میں نے دیے" : "Maine Diye"}</th>
+            <th style={{ ...th, textAlign: "right" }}>{isUrdu ? "میں نے لیے" : "Maine Liye"}</th>
             <th style={{ ...th, textAlign: "right" }}>{isUrdu ? "بیلنس" : "Balance"}</th>
           </tr>
         </thead>

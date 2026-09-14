@@ -80,6 +80,39 @@ function findProduct(products, id, name) {
   );
 }
 
+/** Same profit math on dashboard KPI and analytics. */
+function calcInvoiceProfit(sale) {
+  const billTotal = Number(sale?.grandTotal) || Number(sale?.total) || 0;
+  const passThroughFees = (Number(sale?.loaderFee) || 0) + (Number(sale?.bindingFee) || 0);
+  let costAmt = 0;
+  let costedSaleAmt = 0;
+  let hasCost = false;
+  if (sale?.items && sale.items.length > 0) {
+    sale.items.forEach((item) => {
+      if (item.costTotal !== undefined && item.costTotal !== null && Number(item.costTotal) > 0) {
+        const sub = Number(item.subtotal) || 0;
+        let itemCost = Number(item.costTotal) || 0;
+        if (item.category === "Pipe") {
+          const absProfit = Math.abs(sub - itemCost);
+          itemCost = sub - absProfit;
+        }
+        costAmt += itemCost;
+        costedSaleAmt += sub;
+        hasCost = true;
+      }
+    });
+  }
+  const saleAmt = hasCost ? costedSaleAmt : (billTotal - passThroughFees);
+  return { saleAmt, costAmt, profit: saleAmt - costAmt, hasCost };
+}
+
+function periodProfit(sales) {
+  return (sales || []).reduce((sum, s) => {
+    const r = calcInvoiceProfit(s);
+    return r.hasCost ? sum + r.profit : sum;
+  }, 0);
+}
+
 function resolveCategory(rec, prod) {
   const type = String(rec?.category || prod?.category || "").trim();
   const hw = rec?.hwCategory || prod?.hwCategory || rec?.subType || prod?.subType
@@ -124,17 +157,32 @@ function flattenSales(list, products) {
         }
         let costAmt = Number(it.costTotal) || 0;
         if (costAmt <= 0) {
-          costAmt = (Number(prod?.purchasePrice) || 0) * (qty || 1);
+          costAmt = 0;
         }
-        lines.push({ date, invoice, customer, name, category, qty, saleAmt, costAmt, profit: saleAmt - costAmt });
+        let profit = saleAmt - costAmt;
+        if (costAmt > 0 && /^pipe$/i.test(category)) {
+          profit = Math.abs(saleAmt - costAmt);
+          costAmt = saleAmt - profit;
+        }
+        if (costAmt > 0) {
+          lines.push({ date, invoice, customer, name, category, qty, saleAmt, costAmt, profit });
+        }
       });
     } else {
       const name = s.productName || (typeof s.product === "object" ? s.product?.name : "") || "—";
       const saleAmt = Number(s.total) || Number(s.grandTotal) || 0;
       const qty = Number(s.qty) || 0;
       const prod = findProduct(products, s.product, name);
-      const costAmt = Number(s.costTotal) || (Number(s.purchasePrice) || Number(prod?.purchasePrice) || 0) * (qty || 1);
-      lines.push({ date, invoice, customer, name, category: resolveCategory(s, prod), qty, saleAmt, costAmt, profit: saleAmt - costAmt });
+      const costAmt = Number(s.costTotal) || 0;
+      if (costAmt > 0) {
+        let profit = saleAmt - costAmt;
+        let cost = costAmt;
+        if (/^pipe$/i.test(s.category || prod?.category || "")) {
+          profit = Math.abs(saleAmt - costAmt);
+          cost = saleAmt - profit;
+        }
+        lines.push({ date, invoice, customer, name, category: resolveCategory(s, prod), qty, saleAmt, costAmt: cost, profit });
+      }
     }
   });
   return lines;
@@ -535,25 +583,8 @@ function DailyAnalyticsModal({
   const modalTotalSales = modalFilteredSales.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
   const modalTotalPurchases = modalFilteredPurchases.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
   
-  // Recalculate profit for filtered period
-  const calcProfit = () => {
-    let totalSaleAmt = 0;
-    let totalCostAmt = 0;
-    modalFilteredSales.forEach(sale => {
-      if (sale.items && sale.items.length > 0) {
-        sale.items.forEach(item => {
-          if (item.costTotal !== undefined && item.costTotal !== null && Number(item.costTotal) > 0) {
-            totalSaleAmt += Number(item.subtotal) || 0;
-            totalCostAmt += Number(item.costTotal) || 0;
-          }
-        });
-      }
-    });
-    return totalSaleAmt - totalCostAmt;
-  };
-  const modalProfit = calcProfit();
-  const modalHasCost = modalFilteredSales.some(s => s.items?.some(i => i.costTotal > 0))
-    || flattenSales(modalFilteredSales, products).some((l) => l.costAmt > 0);
+  const modalProfit = periodProfit(modalFilteredSales);
+  const modalHasCost = modalFilteredSales.some((s) => calcInvoiceProfit(s).hasCost);
 
   const purLines = flattenPurchases(modalFilteredPurchases, products);
   const saleLines = flattenSales(modalFilteredSales, products);
@@ -571,8 +602,8 @@ function DailyAnalyticsModal({
     title: "📊 روزانہ تجزیہ",
     sales: "آج کی فروخت",
     purchases: "آج کی خریداری",
-    payable: "کل ادائیگی (سپلائر)",
-    receivable: "کل وصولی (گاہک)",
+    payable: "میں دوں گا",
+    receivable: "میں لوں گا",
     expenses: "کل اخراجات",
     profit: "کل منافع",
     netProfit: "خالص رقم",
@@ -584,8 +615,8 @@ function DailyAnalyticsModal({
     title: "📊 Daily Analytics",
     sales: "Total Sales",
     purchases: "Total Purchases",
-    payable: "Total Payable (to suppliers)",
-    receivable: "Total Receivable (from customers)",
+    payable: "I will give",
+    receivable: "I will get",
     expenses: "Total Expenses",
     profit: "Total Profit",
     netProfit: "Net Profit",
@@ -828,6 +859,13 @@ function DailyAnalyticsModal({
             )}
             <MetricCard label={L.expenses} amount={totalExpenses} count={modalFilteredExpenses.length} color="#ef4444" />
           </div>
+          {modalHasCost && (
+            <p style={{ color: th.textMuted, fontSize: 12, margin: "8px 0 0", lineHeight: 1.45 }}>
+              {isUrdu
+                ? "یہ منافع ڈیش بورڈ والے منافع جیسا ہے: صرف ان آئٹمز پر جن کی لاگت ریکارڈ ہے (فروخت − لاگت)۔ پائپ پر فرق ہمیشہ مثبت گنا جاتا ہے۔ جن آئٹمز کی لاگت نہیں، وہ اس رقم میں شامل نہیں۔"
+                : "This is the same as dashboard Profit: sale minus recorded cost, only on items that have a cost. Pipe margin is always counted as positive. Items with no cost are left out — that is why sales total can be higher than the amount used for profit."}
+            </p>
+          )}
         </div>
 
         {/* Ledger Section */}
@@ -1047,7 +1085,10 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   const [purchaseModal, setPurchaseModal] = useState(null);
   const [saleModal,     setSaleModal]     = useState(null);
   const [dashDetail,    setDashDetail]    = useState(null);
-  const invStats = inventoryStats(products);
+  const invStats = useMemo(
+    () => inventoryStats(products, { purchases, sales, purchaseReturns, saleReturns, products }),
+    [products, purchases, sales, purchaseReturns, saleReturns]
+  );
 
   const today = new Date();
   const toDateStr = (d) => {
@@ -1056,96 +1097,32 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
     const day = String(d.getDate()).padStart(2, "0");
     return `${y}-${m}-${day}`;
   };
-  const todayStr2 = toDateStr(today);
-  const yesterdayStr = (() => { const d = new Date(today); d.setDate(d.getDate() - 1); return toDateStr(d); })();
-  const weekStart = (() => { const d = new Date(today); d.setDate(d.getDate() - 6); return toDateStr(d); })();
-  const monthStart = (() => { const d = new Date(today); d.setDate(1); return toDateStr(d); })();
 
-  const parseDate = (str) => {
-    if (!str) return null;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
-    const parts = str.split(/[-\/]/);
-    if (parts.length === 3) { if (parts[0].length === 4) return str; return `${parts[2]}-${parts[1].padStart(2,"0")}-${parts[0].padStart(2,"0")}`; }
-    return str;
-  };
+  const inRange = (rec) => inDateFilter(rec?.date, filter, customFrom, customTo, rec?.createdAt);
 
-  const inRange = (dateStr) => {
-    const d = parseDate(dateStr); if (!d) return false;
-    if (filter === "today")  return d === todayStr2;
-    if (filter === "yesterday") return d === yesterdayStr;
-    if (filter === "week")   return d >= weekStart && d <= todayStr2;
-    if (filter === "month")  return d >= monthStart && d <= todayStr2;
-    if (filter === "custom") { const from = customFrom || "0000-01-01"; const to = customTo || "9999-12-31"; return d >= from && d <= to; }
-    return true;
-  };
-
-  const filteredSales     = sales.filter((s) => inRange(s.date));
-  const filteredPurchases = purchases.filter((p) => inRange(p.date));
+  const filteredSales     = sales.filter((s) => inRange(s));
+  const filteredPurchases = purchases.filter((p) => inRange(p));
   const saleGroups        = groupByInvoice(filteredSales);
   const purchaseGroups    = groupByInvoice(filteredPurchases);
-  const filteredSaleReturns = (saleReturns || []).filter((r) => inRange(r.date));
-  const filteredPurchaseReturns = (purchaseReturns || []).filter((r) => inRange(r.date));
-  const filteredExpenses = (expenses || []).filter((e) => inRange(e.date));
+  const filteredSaleReturns = (saleReturns || []).filter((r) => inRange(r));
+  const filteredPurchaseReturns = (purchaseReturns || []).filter((r) => inRange(r));
+  const filteredExpenses = (expenses || []).filter((e) => inRange(e));
 
   const totalSalesCount    = filteredSales.length;
-  const totalSalesAmount   = filteredSales.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0)
-    - filteredSaleReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
+  const totalSalesAmount   = filteredSales.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
   const totalPurchaseCount = filteredPurchases.length;
-  const totalPurchaseAmt   = filteredPurchases.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0)
-    - filteredPurchaseReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
+  const totalPurchaseAmt   = filteredPurchases.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
+  const saleReturnAmt = filteredSaleReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
+  const purchaseReturnAmt = filteredPurchaseReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
+  const returnStamp = (r) => String(r?.createdAt || r?.date || "");
+  const recentSaleReturns = filteredSaleReturns.slice().sort((a, b) => returnStamp(b).localeCompare(returnStamp(a)));
+  const recentPurchaseReturns = filteredPurchaseReturns.slice().sort((a, b) => returnStamp(b).localeCompare(returnStamp(a)));
+  const returnNames = (r) => (r.items || []).map((it) => it.productName || it.name).filter(Boolean);
+  const returnTotalOf = (r) => Number(r.total) || (r.items || []).reduce((s, it) => s + (Number(it.amount) || ((Number(it.qty) || 0) * (Number(it.rate) || 0))), 0);
 
   // ─── PROFIT / LOSS — per invoice, real margin ────────────────────────────────
-  const calcInvoiceProfit = (sale, productsList) => {
-    // sale.grandTotal / sale.total is the full bill charged to the customer, which now
-    // includes the loader's fee. The loader fee is just passed through to the loader —
-    // it is NOT shop revenue, so it must be excluded before computing profit.
-    const billTotal    = Number(sale.grandTotal) || Number(sale.total) || 0;
-    const loaderFeeAmt = Number(sale.loaderFee) || 0;
-    // Binding mazdori (Chader binding labour charge) is also just passed through
-    // to the customer's bill, not shop revenue — exclude it same as loaderFee.
-    const bindingFeeAmt = Number(sale.bindingFee) || 0;
-    const passThroughFees = loaderFeeAmt + bindingFeeAmt;
-
-    let costAmt      = 0;
-    let costedSaleAmt = 0; // sale value of ONLY the items that have real cost data
-    let hasCost       = false;
-    if (sale.items && sale.items.length > 0) {
-      sale.items.forEach(item => {
-        if (item.costTotal !== undefined && item.costTotal !== null && Number(item.costTotal) > 0) {
-          let itemCost;
-          const sub = Number(item.subtotal) || 0;
-          if (item.category === "Pipe") {
-            // For Pipe: profit is always the absolute difference (never a loss).
-            // e.g. bought at 5, sold at 3 -> still counted as +2 profit, not 0 and not -2.
-            const cost = Number(item.costTotal) || 0;
-            const absProfit = Math.abs(sub - cost);
-            itemCost = sub - absProfit; // so itemSaleAmt - itemCost === absProfit for this item
-          } else {
-            itemCost = Number(item.costTotal);
-          }
-          costAmt       += itemCost;
-          costedSaleAmt += sub;
-          hasCost = true;
-        }
-      });
-    }
-
-    // saleAmt used for profit must only reflect items that actually have cost
-    // data — mixing in the full invoice total (including items with no
-    // recorded purchase price) made profit look bigger than it really is,
-    // since those items would add 100% to "profit" with 0 cost. Items with
-    // no cost data are simply left out of the profit math entirely, on
-    // both sides, so profit stays exact instead of inflated.
-    // (When every item has cost data, costedSaleAmt already equals the full
-    // product total, so this is equivalent to the old billTotal-based logic
-    // for the common case — it only differs when some items are missing cost.)
-    const saleAmt = hasCost ? costedSaleAmt : (billTotal - passThroughFees);
-    return { saleAmt, costAmt, profit: saleAmt - costAmt, hasCost };
-  };
-
-  // Per-invoice profit rows (for detail modal)
-  const invoiceProfitRows = filteredSales.map(s => {
-    const { saleAmt, costAmt, profit, hasCost } = calcInvoiceProfit(s, products);
+  const invoiceProfitRows = filteredSales.map((s) => {
+    const { saleAmt, costAmt, profit, hasCost } = calcInvoiceProfit(s);
     return {
       invoice:  s.invoice || s.invoiceNum || "—",
       customer: s.customer || "—",
@@ -1158,18 +1135,11 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
     };
   });
 
-  // Only invoices that actually have cost data recorded (hasCost) can be
-  // counted toward profit — an invoice with no cost data mixed into the sum
-  // was previously adding its FULL sale amount to totalSaleForProfit while
-  // contributing 0 to totalCostForProfit, which silently inflated the
-  // headline Net Profit figure any time even one product/invoice was
-  // missing a purchase price. Excluding those keeps profit exact and
-  // consistent with the breakdown lists below (which already do this).
-  const costedRows          = invoiceProfitRows.filter(r => r.hasCost);
+  const costedRows          = invoiceProfitRows.filter((r) => r.hasCost);
   const totalSaleForProfit  = costedRows.reduce((a, r) => a + r.saleAmt, 0);
   const totalCostForProfit  = costedRows.reduce((a, r) => a + r.costAmt, 0);
-  const overallProfit       = totalSaleForProfit - totalCostForProfit;
-  const hasAnyCostData      = invoiceProfitRows.some(r => r.hasCost);
+  const overallProfit       = periodProfit(filteredSales);
+  const hasAnyCostData      = invoiceProfitRows.some((r) => r.hasCost);
 
   // ─── Supplier grouping ────────────────────────────────────────────────────────
   const supplierMap = {};
@@ -1929,6 +1899,68 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
       </div>
 
       <div style={{ display:"grid", gridTemplateColumns:isMobile?"1fr":"1fr 1fr", gap:12 }}>
+        <div style={{ ...cardStyle, borderTop: "2px solid #ef4444" }}>
+          <div style={headStyle}>
+            <h3 style={{ color:th.text, fontWeight:700, fontSize:14, margin:0 }}>{isUrdu ? "فروخت واپسی" : "Sale Returns"}</h3>
+            <span style={{ color:"#ef4444", fontSize:12, fontWeight:700 }}>{recentSaleReturns.length} · {formatPKR(saleReturnAmt)}</span>
+          </div>
+          {recentSaleReturns.length === 0
+            ? <p style={{ textAlign:"center", padding:"28px 16px", color:th.textDim, fontSize:13, margin:0 }}>{isUrdu ? "کوئی واپسی نہیں" : "No sale returns"}</p>
+            : recentSaleReturns.slice(0, 5).map((r, i) => {
+              const names = returnNames(r);
+              const label = names.length > 1 ? `${names[0]} +${names.length - 1}` : (names[0] || "—");
+              const inv = r.invoice || r.invoiceNum || r.returnInvoice || "—";
+              return (
+                <div key={r._id || i} style={rowStyle}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:"flex", alignItems:"baseline", gap:8, minWidth:0 }}>
+                      <span style={{ fontFamily:"ui-monospace,monospace", color:"#ef4444", fontSize:12, fontWeight:600, flexShrink:0 }}>{inv}</span>
+                      <span style={{ color:th.text, fontSize:13, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.customer || "—"}</span>
+                    </div>
+                    <p style={{ color:th.textDim, fontSize:12, margin:"3px 0 0", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}</p>
+                    <div style={{ marginTop: 3 }}>
+                      <DateTimeLine date={r.date} createdAt={r.createdAt} locale={isUrdu ? "ur-PK" : "en-PK"} th={th} dateColor="#ef4444" />
+                    </div>
+                  </div>
+                  <span style={{ color:"#ef4444", fontWeight:700, fontSize:13, whiteSpace:"nowrap", flexShrink:0 }}>{formatPKR(returnTotalOf(r))}</span>
+                </div>
+              );
+            })
+          }
+        </div>
+
+        <div style={{ ...cardStyle, borderTop: "2px solid #f97316" }}>
+          <div style={headStyle}>
+            <h3 style={{ color:th.text, fontWeight:700, fontSize:14, margin:0 }}>{isUrdu ? "خریداری واپسی" : "Purchase Returns"}</h3>
+            <span style={{ color:"#f97316", fontSize:12, fontWeight:700 }}>{recentPurchaseReturns.length} · {formatPKR(purchaseReturnAmt)}</span>
+          </div>
+          {recentPurchaseReturns.length === 0
+            ? <p style={{ textAlign:"center", padding:"28px 16px", color:th.textDim, fontSize:13, margin:0 }}>{isUrdu ? "کوئی واپسی نہیں" : "No purchase returns"}</p>
+            : recentPurchaseReturns.slice(0, 5).map((r, i) => {
+              const names = returnNames(r);
+              const label = names.length > 1 ? `${names[0]} +${names.length - 1}` : (names[0] || "—");
+              const inv = r.invoice || r.invoiceNum || r.returnInvoice || "—";
+              return (
+                <div key={r._id || i} style={rowStyle}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:"flex", alignItems:"baseline", gap:8, minWidth:0 }}>
+                      <span style={{ fontFamily:"ui-monospace,monospace", color:"#f97316", fontSize:12, fontWeight:600, flexShrink:0 }}>{inv}</span>
+                      <span style={{ color:th.text, fontSize:13, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.supplier || r.supplierName || "—"}</span>
+                    </div>
+                    <p style={{ color:th.textDim, fontSize:12, margin:"3px 0 0", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}</p>
+                    <div style={{ marginTop: 3 }}>
+                      <DateTimeLine date={r.date} createdAt={r.createdAt} locale={isUrdu ? "ur-PK" : "en-PK"} th={th} dateColor="#f97316" />
+                    </div>
+                  </div>
+                  <span style={{ color:"#f97316", fontWeight:700, fontSize:13, whiteSpace:"nowrap", flexShrink:0 }}>{formatPKR(returnTotalOf(r))}</span>
+                </div>
+              );
+            })
+          }
+        </div>
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:isMobile?"1fr":"1fr 1fr", gap:12 }}>
         <div style={cardStyle}>
           <div style={headStyle}>
             <h3 style={{ color:th.text, fontWeight:700, fontSize:14, margin:0 }}>{t.supplierWisePurchases||"Suppliers"}</h3>
@@ -1998,37 +2030,8 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
 // admins can see both pass-through fees at a glance from the Dashboard.
 // ═══════════════════════════════════════════════════════════════════════════
 function BindingFeeDashboardReport({ sales, isUrdu, th, filter, customFrom, customTo, filterLabel }) {
-  const today = new Date();
-  const toDateStr = (d) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  };
-  const todayStr2 = toDateStr(today);
-  const yesterdayStr = (() => { const d = new Date(today); d.setDate(d.getDate() - 1); return toDateStr(d); })();
-  const weekStart = (() => { const d = new Date(today); d.setDate(d.getDate() - 6); return toDateStr(d); })();
-  const monthStart = (() => { const d = new Date(today); d.setDate(1); return toDateStr(d); })();
-
-  const parseDate = (str) => {
-    if (!str) return null;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
-    const parts = str.split(/[-\/]/);
-    if (parts.length === 3) { if (parts[0].length === 4) return str; return `${parts[2]}-${parts[1].padStart(2,"0")}-${parts[0].padStart(2,"0")}`; }
-    return str;
-  };
-
-  const inRange = (dateStr) => {
-    const d = parseDate(dateStr); if (!d) return false;
-    if (filter === "today")  return d === todayStr2;
-    if (filter === "yesterday") return d === yesterdayStr;
-    if (filter === "week")   return d >= weekStart && d <= todayStr2;
-    if (filter === "month")  return d >= monthStart && d <= todayStr2;
-    if (filter === "custom") { const from = customFrom || "0000-01-01"; const to = customTo || "9999-12-31"; return d >= from && d <= to; }
-    return true;
-  };
-
-  const salesWithBinding = sales.filter(s => Number(s.bindingFee) > 0 && inRange(s.date));
+  const inRange = (rec) => inDateFilter(rec?.date, filter, customFrom, customTo, rec?.createdAt);
+  const salesWithBinding = sales.filter(s => Number(s.bindingFee) > 0 && inRange(s));
   if (salesWithBinding.length === 0) return null;
 
   const grandTotalFee = salesWithBinding.reduce((s,x) => s + (Number(x.bindingFee)||0), 0);
@@ -2091,37 +2094,8 @@ function BindingFeeDashboardReport({ sales, isUrdu, th, filter, customFrom, cust
 // ═══════════════════════════════════════════════════════════════════════════
 function LoaderDashboardReport({ sales, loaders, isUrdu, th, filter, customFrom, customTo, filterLabel }) {
   const { isMobile } = useResponsive();
-  const today = new Date();
-  const toDateStr = (d) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  };
-  const todayStr2 = toDateStr(today);
-  const yesterdayStr = (() => { const d = new Date(today); d.setDate(d.getDate() - 1); return toDateStr(d); })();
-  const weekStart = (() => { const d = new Date(today); d.setDate(d.getDate() - 6); return toDateStr(d); })();
-  const monthStart = (() => { const d = new Date(today); d.setDate(1); return toDateStr(d); })();
-
-  const parseDate = (str) => {
-    if (!str) return null;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
-    const parts = str.split(/[-\/]/);
-    if (parts.length === 3) { if (parts[0].length === 4) return str; return `${parts[2]}-${parts[1].padStart(2,"0")}-${parts[0].padStart(2,"0")}`; }
-    return str;
-  };
-
-  const inRange = (dateStr) => {
-    const d = parseDate(dateStr); if (!d) return false;
-    if (filter === "today")  return d === todayStr2;
-    if (filter === "yesterday") return d === yesterdayStr;
-    if (filter === "week")   return d >= weekStart && d <= todayStr2;
-    if (filter === "month")  return d >= monthStart && d <= todayStr2;
-    if (filter === "custom") { const from = customFrom || "0000-01-01"; const to = customTo || "9999-12-31"; return d >= from && d <= to; }
-    return true;
-  };
-
-  const salesWithLoader = sales.filter(s => s.loaderName && inRange(s.date));
+  const inRange = (rec) => inDateFilter(rec?.date, filter, customFrom, customTo, rec?.createdAt);
+  const salesWithLoader = sales.filter(s => s.loaderName && inRange(s));
   if (salesWithLoader.length === 0 && loaders.length === 0) return null;
 
   const loaderMap = {};
