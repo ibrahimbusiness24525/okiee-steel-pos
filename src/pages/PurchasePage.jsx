@@ -1,4 +1,4 @@
-import { useState, useRef, useLayoutEffect } from "react";
+import { useState, useRef, useLayoutEffect, useMemo } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table, WeightKgGInput, useTypeaheadNav, DateFilterBar } from "../components/shared";
@@ -1229,7 +1229,10 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
     : Math.round(qty || 0)
   );
 
-  const { stockedCount, inventoryAmount, demandZero, demandLow } = inventoryStats(products);
+  const { stockedCount, inventoryAmount, demandZero, demandLow } = useMemo(
+    () => inventoryStats(products, { purchases, sales, purchaseReturns, saleReturns, products }),
+    [products, purchases, sales, purchaseReturns, saleReturns]
+  );
   const demandCount = (demandZero?.length || 0) + (demandLow?.length || 0);
 
   const saleOf = (p) => {
