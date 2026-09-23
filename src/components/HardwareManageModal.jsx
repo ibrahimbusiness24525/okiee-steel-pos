@@ -123,7 +123,7 @@ function fromProduct(p, purchases = []) {
   };
 }
 
-export default function HardwareManageModal({ products, purchases = [], loadProducts, loadPurchases, seed, onClose }) {
+export default function HardwareManageModal({ products, purchases = [], loadProducts, loadPurchases, seed, onClose, overlayZ = 80 }) {
   const th = useTheme();
   const { lang } = useLang();
   const { isMobile, width } = useResponsive();
@@ -474,7 +474,7 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
   ];
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 80, display: "flex", flexDirection: "column", background: "rgba(15,23,42,0.55)" }}>
+    <div style={{ position: "fixed", inset: 0, zIndex: overlayZ, display: "flex", flexDirection: "column", background: "rgba(15,23,42,0.55)" }}>
       <div
         ref={panelRef}
         onKeyDownCapture={(e) => {

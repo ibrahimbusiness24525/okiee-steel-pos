@@ -7,8 +7,8 @@ import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, printThermalOrA4
 import { convertQuantity, convertPrice, getUnitLabel, canConvert, unitOptions, productUnitOf } from "../utils/unitConversion";
 import { OkiieeBrandFooter, parseSaleInvoiceRow } from "../components/InvoiceComponents";
 import { productDisplayName } from "../utils/constants";
-import PaymentTerms, { useAccounts, derivePayment, isPayValid } from "../components/PaymentTerms";
-import { recordTradeFinance } from "../utils/tradeFinance";
+import PaymentTerms, { useAccounts, derivePayment, isPayValid, calcDiscount, DiscountCashFields } from "../components/PaymentTerms";
+import { recordTradeFinance, reverseTradeFinance } from "../utils/tradeFinance";
 import PartyNamePicker from "../components/PartyNamePicker";
 import { stockLotsForProduct, makeLotContext } from "../components/InventoryStockTable";
 
@@ -111,10 +111,10 @@ const getBillingBlockSubtotal = (block, products) => {
   return (block.hwRows||[]).reduce((s,r) => s + hwBillCalc(r.salePrice ?? pp, r.qty).total, 0);
 };
 
-const getBillingBlockStockError = (block, products, isUrdu) => {
+const getBillingBlockStockError = (block, products, isUrdu, extraStock = 0) => {
   const prod = products.find(p => (p._id || p.id) === block.productId);
   if (!prod) return null;
-  const stock = Number(prod.stock) || 0;
+  const stock = (Number(prod.stock) || 0) + (Number(extraStock) || 0);
   const cat   = prod.category || "";
   let entered = 0;
   if (cat === "Pipe")   entered = (block.pipeRows||[]).reduce((s,r) => s + (Number(r.qty)||0), 0);
@@ -1211,7 +1211,7 @@ function HwBillingRows({ rows, onChange, purchasePrice, avgCost = 0, purchaseUni
 }
 
 // ─── BILLING PRODUCT BLOCK ────────────────────────────────────────────────────
-function BillingProductBlock({ index, products, block, onChange, onRemove, canRemove, isUrdu, lotOpts = {} }) {
+function BillingProductBlock({ index, products, block, onChange, onRemove, canRemove, isUrdu, lotOpts = {}, extraStock = 0 }) {
   const th = useTheme();
   const wrapRef = useRef(null);
   const keepInViewRef = useRef(false);
@@ -1229,7 +1229,7 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
   const catBgs     = { Pipe:"rgba(96,165,250,0.1)", Chader:"rgba(26,188,156,0.1)", Net:"rgba(244,114,182,0.1)", Hardware:"rgba(251,191,36,0.1)", Custom:"rgba(167,139,250,0.1)" };
   const filtered   = products.filter(p => productDisplayName(p).toLowerCase().includes(search.toLowerCase()) || (p.category||"").toLowerCase().includes(search.toLowerCase()));
   const blockTotal = getBillingBlockSubtotal(block, products);
-  const stockError = getBillingBlockStockError(block, products, isUrdu);
+  const stockError = getBillingBlockStockError(block, products, isUrdu, extraStock);
   const inpS = { background:th.input, border:`1px solid ${th.inputBorder}`, color:th.text, borderRadius:10, padding:"9px 11px", fontSize:14, outline:"none", width:"100%", boxSizing:"border-box" };
 
   const makeDefaultRow = (cat, pp, product) => {
@@ -1607,6 +1607,59 @@ function TodayBindingFeeSummary({ sales, isUrdu }) {
 }
 
 // ─── NEW SALE MODAL ───────────────────────────────────────────────────────────
+function emptySaleBlock() {
+  return {
+    _id: Date.now() + Math.random(), productId: "",
+    pipeRows:   [{ _id: Date.now() + Math.random(), length: "", qty: "", percentage: "" }],
+    chaderRows: [{ _id: Date.now() + Math.random(), weight: "", salePrice: "" }],
+    netRows:    [{ _id: Date.now() + Math.random(), feet: "", width: "", salePrice: "" }],
+    hwRows:     [{ _id: Date.now() + Math.random(), unit: "piece", qty: "", salePrice: "" }],
+  };
+}
+
+function blockFromSaleItem(item, products) {
+  const b = emptySaleBlock();
+  const prod = products.find((p) => String(p._id || p.id) === String(item.productId || item.product || ""))
+    || products.find((p) => p.name === item.productName);
+  b.productId = item.productId || item.product || prod?._id || prod?.id || "";
+  if (item.form) {
+    if (item.form.pipeRows) b.pipeRows = item.form.pipeRows;
+    if (item.form.chaderRows) b.chaderRows = item.form.chaderRows;
+    if (item.form.netRows) b.netRows = item.form.netRows;
+    if (item.form.hwRows) b.hwRows = item.form.hwRows;
+    return b;
+  }
+  const cat = item.category || prod?.category || "";
+  const desc = item.rows?.[0]?.desc || "";
+  const amount = Number(item.rows?.[0]?.amount) || Number(item.subtotal) || 0;
+  const rowQty = Number(item.qty) || 0;
+  const qM = desc.match(/^(\d+\.?\d*)/);
+  const pM = desc.match(/Rs\s*(\d+\.?\d*)/i);
+  if (cat === "Pipe") {
+    b.pipeRows = [{ _id: Date.now() + Math.random(), length: String(prod?.length || ""), qty: qM ? qM[1] : String(rowQty || ""), percentage: "" }];
+  } else if (cat === "Chader") {
+    const weight = qM ? qM[1] : String(rowQty || "");
+    const salePrice = pM ? pM[1] : (Number(weight) > 0 && amount ? String(Math.round((amount / Number(weight)) * 100) / 100) : "");
+    b.chaderRows = [{ _id: Date.now() + Math.random(), weight, salePrice }];
+  } else if (cat === "Net") {
+    const wM = desc.match(/ft×([^×]+)×/);
+    b.netRows = [{
+      _id: Date.now() + Math.random(),
+      feet: qM ? qM[1] : String(rowQty || ""),
+      width: wM ? String(wM[1]).trim() : String(prod?.width || ""),
+      salePrice: pM ? pM[1] : "",
+    }];
+  } else {
+    b.hwRows = [{
+      _id: Date.now() + Math.random(),
+      unit: item.rows?.[0]?.unit || productUnitOf(prod),
+      qty: qM ? qM[1] : String(rowQty || ""),
+      salePrice: pM ? pM[1] : "",
+    }];
+  }
+  return b;
+}
+
 function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loaders=[], extraNames=[], purchases=[], sales=[], purchaseReturns=[], saleReturns=[] }) {
   const th = useTheme();
   const accounts = useAccounts();
@@ -1624,9 +1677,23 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
       paidAmount: s === "partial" ? String(prefill?.paidAmount || "") : "",
     };
   });
-  const [loaderForm, setLoaderForm] = useState({ selectedId:"", customName:"", fee:"" });
-  const [bindingFee, setBindingFee] = useState("");
-  const [discount, setDiscount] = useState(() => prefill?.discount != null && prefill.discount !== "" ? String(prefill.discount) : "");
+  const [loaderForm, setLoaderForm] = useState(() => {
+    const fee = prefill?.loaderFee != null && prefill.loaderFee !== "" ? String(prefill.loaderFee) : "";
+    const name = prefill?.loaderName || prefill?.loader?.name || "";
+    if (!name && !fee) return { selectedId: "", customName: "", fee: "" };
+    const match = (loaders || []).find((l) => (l.name || "") === name);
+    return {
+      selectedId: match ? (match._id || match.id) : (name ? "custom" : ""),
+      customName: match ? "" : name,
+      fee,
+    };
+  });
+  const [bindingFee, setBindingFee] = useState(() => prefill?.bindingFee != null && prefill.bindingFee !== "" ? String(prefill.bindingFee) : "");
+  const [discountMode, setDiscountMode] = useState(prefill?.discountType === "pct" ? "pct" : "pkr");
+  const [discount, setDiscount] = useState(() => {
+    if (prefill?.discountType === "pct") return String(prefill.discountPct ?? "");
+    return prefill?.discount != null && prefill.discount !== "" ? String(prefill.discount) : "";
+  });
   const [cashReceived, setCashReceived] = useState(() => prefill?.cashReceived != null && prefill.cashReceived !== "" ? String(prefill.cashReceived) : "");
   const lotOpts = useMemo(() => {
     const o = { purchases, sales, purchaseReturns, saleReturns, products };
@@ -1634,14 +1701,12 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
     return o;
   }, [purchases, sales, purchaseReturns, saleReturns, products]);
 
-  const newBlock = () => ({
-    _id: Date.now()+Math.random(), productId:"",
-    pipeRows:   [{ _id:Date.now()+Math.random(), length:"", qty:"", percentage:"" }],
-    chaderRows: [{ _id:Date.now()+Math.random(), weight:"", salePrice:"" }],
-    netRows:    [{ _id:Date.now()+Math.random(), feet:"", width:"", salePrice:"" }],
-    hwRows:     [{ _id:Date.now()+Math.random(), unit:"piece", qty:"", salePrice:"" }],
+  const newBlock = () => emptySaleBlock();
+  const [blocks, setBlocks] = useState(() => {
+    const items = prefill?.items || [];
+    if (prefill?.isEdit && items.length) return items.map((it) => blockFromSaleItem(it, products));
+    return [emptySaleBlock()];
   });
-  const [blocks, setBlocks] = useState([newBlock()]);
 
   // productsTotal = sum of item sale prices only (this is what profit is based on).
   // loaderFeeAmt is added on top so the customer's bill covers the loader's charge,
@@ -1652,15 +1717,25 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
   // Chader item, same pass-through-charge treatment as loaderFee.
   const hasChaderItem = blocks.some(b => products.find(p => (p._id||p.id) === b.productId)?.category === "Chader");
   const bindingFeeAmt = hasChaderItem ? (Number(bindingFee) || 0) : 0;
-  const discountAmt = Math.max(0, Number(discount) || 0);
   const billBeforeDiscount = productsTotal + loaderFeeAmt + bindingFeeAmt;
+  const discountAmt = calcDiscount(billBeforeDiscount, discount, discountMode);
   const grandTotal = Math.max(0, Math.round((billBeforeDiscount - discountAmt) * 100) / 100);
   const finalTotal = grandTotal;
   const pay = derivePayment(finalTotal, payForm, accounts);
   const paid       = pay.paidAmount;
   const remaining  = pay.remainingAmount;
   const paidError  = pay.paidError;
-  const anyStockError = blocks.some(b => getBillingBlockStockError(b, products, isUrdu) !== null);
+  const extraStockOf = (productId) => {
+    if (!prefill?.isEdit) return 0;
+    const id = String(productId || "");
+    if (!id) return 0;
+    const fromSI = (prefill.saleItems || []).filter((si) => String(si.productId || si.product || "") === id)
+      .reduce((s, si) => s + (Number(si.qty) || 0), 0);
+    if (fromSI) return fromSI;
+    return (prefill.items || []).filter((it) => String(it.productId || it.product || "") === id)
+      .reduce((s, it) => s + (Number(it.qty) || 0), 0);
+  };
+  const anyStockError = blocks.some(b => getBillingBlockStockError(b, products, isUrdu, extraStockOf(b.productId)) !== null);
   const tendered = Number(cashReceived) || 0;
   const amountNow = pay.settlement === "full" ? grandTotal : (Number(paid) || 0);
   const changeDue = tendered > 0 ? Math.max(0, Math.round((tendered - amountNow) * 100) / 100) : 0;
@@ -1735,13 +1810,19 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
         itemQty = canConvert(saleUnit, pUnit)
           ? convertQuantity(Number(r.qty) || 0, saleUnit, pUnit)
           : (Number(r.qty) || 0);
-        const stockQty = Number(prod?.stock) || 0;
+        const stockQty = (Number(prod?.stock) || 0) + extraStockOf(block.productId);
         if (itemQty > stockQty && itemQty <= stockQty + 0.1) itemQty = stockQty;
       }
       return {
         productName: productDisplayName(prod), category: cat, rows, subtotal, costPrice: costRate, costTotal,
         productId: block.productId || (prod?._id || prod?.id || ""),
         qty: itemQty,
+        form: {
+          pipeRows: block.pipeRows,
+          chaderRows: block.chaderRows,
+          netRows: block.netRows,
+          hwRows: block.hwRows,
+        },
       };
     });
 
@@ -1755,6 +1836,8 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
       items, grandTotal,
       total: grandTotal,
       discount: discountAmt,
+      discountType: discountMode,
+      discountPct: discountMode === "pct" ? (Number(discount) || 0) : 0,
       cashReceived: tendered,
       changeDue,
       isPartial:       pay.isPartial,
@@ -1768,17 +1851,24 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
     const res = await onSave(payload);
     setSaving(false);
     if (res && res.success) {
-      if (!prefill?.isEdit) {
-        await recordTradeFinance({
+      if (prefill?.isEdit) {
+        await reverseTradeFinance({
           kind: "sale",
-          partyName: customer,
-          invoice: invoiceNum,
-          date,
-          paid: pay.paidAmount,
-          remaining: pay.remainingAmount,
-          accountId: pay.accountId,
+          partyName: prefill.customer,
+          invoice: prefill.invoice,
+          paid: prefill.paidAmount,
+          accountId: prefill.accountId,
         });
       }
+      await recordTradeFinance({
+        kind: "sale",
+        partyName: customer,
+        invoice: invoiceNum,
+        date,
+        paid: pay.paidAmount,
+        remaining: pay.remainingAmount,
+        accountId: pay.accountId,
+      });
       setInvoiceData(payload);
     }
     else { alert(res?.message || "Error saving"); }
@@ -1819,6 +1909,7 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
           onRemove={()=>setBlocks(bs=>bs.filter((_,i)=>i!==idx))}
           canRemove={blocks.length>1}
           isUrdu={isUrdu}
+          extraStock={extraStockOf(block.productId)}
           lotOpts={lotOpts}/>
       ))}
 
@@ -1873,30 +1964,17 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
               <span style={{color:"#fbbf24",fontWeight:700,fontSize:16}}>{formatPKR(bindingFeeAmt)}</span>
             </div>
           )}
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:4}}>
-            <div>
-              <label style={{color:th.textMuted,fontSize:11,fontWeight:700,display:"block",marginBottom:4}}>{isUrdu?"رعایت (Rs)":"Discount (Rs)"}</label>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={discount}
-                onChange={(e)=>setDiscount(e.target.value.replace(/[^0-9.]/g,""))}
-                placeholder="0"
-                style={inpS}
-              />
-            </div>
-            <div>
-              <label style={{color:th.textMuted,fontSize:11,fontWeight:700,display:"block",marginBottom:4}}>{isUrdu?"گاہک نے دیے (Rs)":"Cash received (Rs)"}</label>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={cashReceived}
-                onChange={(e)=>setCashReceived(e.target.value.replace(/[^0-9.]/g,""))}
-                placeholder="0"
-                style={inpS}
-              />
-            </div>
-          </div>
+          <DiscountCashFields
+            discount={discount}
+            setDiscount={setDiscount}
+            discountMode={discountMode}
+            setDiscountMode={setDiscountMode}
+            cashValue={cashReceived}
+            setCashValue={setCashReceived}
+            discountAmt={discountAmt}
+            isUrdu={isUrdu}
+            inpS={inpS}
+          />
           {discountAmt > 0 && (
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <span style={{color:th.textMuted,fontSize:13}}>{isUrdu?"رعایت:":"Discount:"}</span>
@@ -1971,12 +2049,20 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
 
   const [showSaleModal, setShowSaleModal] = useState(false);
   const [reprintData,   setReprintData]   = useState(null);
+  const [editData,      setEditData]      = useState(null);
 
-  const mySales = sales.filter(s =>
-    s.staffEmail === currentUser.email ||
-    s.staff?.email === currentUser.email ||
-    s.staff === currentUser.id
-  );
+  const mySales = sales.filter(s => {
+    const email = currentUser?.email || "";
+    const uid = String(currentUser?._id || currentUser?.id || "");
+    const created = s.createdBy;
+    const createdId = created && typeof created === "object" ? String(created._id || created.id || "") : String(created || "");
+    const createdEmail = created && typeof created === "object" ? (created.email || "") : "";
+    return s.staffEmail === email
+      || s.staff?.email === email
+      || String(s.staff || "") === uid
+      || createdEmail === email
+      || createdId === uid;
+  });
   const saleRecency = (s) => {
     const t = Date.parse(s?.createdAt || s?.updatedAt || "");
     if (Number.isFinite(t)) return t;
@@ -2040,7 +2126,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       qty: Number(item.qty) || 0,
     })).filter(si => si.productId && si.qty > 0);
 
-    const res = await api.addSale({
+    const saleData = {
       invoice:payload.invoice, date:payload.date, customer:payload.customer,
       paymentMethod:payload.paymentMethod, bankName:payload.bankName,
       accountId:payload.accountId||"", accountName:payload.accountName||"", settlement:payload.settlement||"full",
@@ -2049,6 +2135,8 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       loaderFee:  payload.loaderFee  || 0,
       bindingFee: payload.bindingFee || 0,
       discount: payload.discount || 0,
+      discountType: payload.discountType || "pkr",
+      discountPct: payload.discountPct || 0,
       cashReceived: payload.cashReceived || 0,
       changeDue: payload.changeDue || 0,
       items:payload.items, rows:resolvedRows,
@@ -2060,9 +2148,55 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       isPartial:payload.isPartial||false,
       paidAmount:payload.paidAmount||payload.total,
       remainingAmount:payload.remainingAmount||0,
-    });
+    };
+    const res = editData
+      ? await api.updateSale(editData._id, saleData)
+      : await api.addSale(saleData);
     if (res.success) { await loadSales(); await loadProducts(); }
     return res;
+  };
+
+  const openEdit = (s) => { setEditData(s); setShowSaleModal(true); };
+  const openAdd = () => { setEditData(null); setShowSaleModal(true); };
+  const closeModal = () => { setShowSaleModal(false); setEditData(null); };
+
+  const buildItemsFromSale = (s) => {
+    if (s.items && s.items.length > 0) return s.items;
+    const cat   = s.category || "";
+    const qty   = Number(s.qty)   || 0;
+    const rate  = Number(s.rate)  || 0;
+    const total = Number(s.total) || 0;
+    const name  = s.productName || safeProductName(s.product) || "Item";
+    let desc = "";
+    if (cat === "Pipe")        desc = `${qty}pc × Rs${rate}/pc`;
+    else if (cat === "Chader") desc = `${qty}kg × Rs${rate}/kg`;
+    else if (cat === "Net")    desc = `${qty}ft × Rs${rate}/ft`;
+    else                       desc = `${qty}pc × Rs${rate}/pc`;
+    return [{ productName: name, category: cat, rows: [{ desc, amount: total }], subtotal: total, productId: s.product, qty }];
+  };
+
+  const buildEditPayload = (s) => {
+    const items = buildItemsFromSale(s);
+    return {
+      invoice: s.invoice, date: s.date, customer: s.customer,
+      paymentMethod: s.paymentMethod || "cash", bankName: s.bankName || "",
+      accountId: s.accountId || "", accountName: s.accountName || "",
+      settlement: s.settlement || (s.isPartial ? ((Number(s.paidAmount)||0)===0 ? "credit" : "partial") : "full"),
+      items, grandTotal: Number(s.grandTotal) || Number(s.total) || 0,
+      total: Number(s.total) || 0, loaderFee: Number(s.loaderFee) || 0,
+      bindingFee: Number(s.bindingFee) || 0,
+      discount: Number(s.discount) || 0,
+      discountType: s.discountType || "pkr",
+      discountPct: Number(s.discountPct) || 0,
+      cashReceived: Number(s.cashReceived) || 0,
+      changeDue: Number(s.changeDue) || 0,
+      saleItems: s.saleItems || [],
+      loader: s.loaderName ? { name: s.loaderName, fee: s.loaderFee || 0 } : null,
+      isPartial: s.isPartial || false,
+      paidAmount: Number(s.paidAmount) || Number(s.total) || 0,
+      remainingAmount: Number(s.remainingAmount) || 0,
+      isEdit: true,
+    };
   };
 
   const handleReprint = (s) => {
@@ -2090,7 +2224,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       {/* Header row */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
         <h3 style={{ color:th.text, fontWeight:700, margin:0, fontSize:17 }}>{t.billingCounter}</h3>
-        <button onClick={()=>setShowSaleModal(true)}
+        <button onClick={openAdd}
           style={{ display:"flex", alignItems:"center", gap:6, padding:isMobile?"10px 14px":"12px 20px", borderRadius:12, border:"none", cursor:"pointer", background:"linear-gradient(135deg,#1abc9c,#2980b9)", color:"white", fontWeight:700, fontSize:14 }}>
           <Icon path={ICONS.plus} size={16}/>{t.newSaleInvoice}
         </button>
@@ -2125,12 +2259,17 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
               onMouseLeave={e=>e.currentTarget.style.background="rgba(96,165,250,0.12)"}>🖨️</button>,
           ]
         }))}
+        onEdit={openEdit}
       />
 
-      {/* New sale modal */}
+      {/* New / Edit sale modal */}
       {showSaleModal && (
-        <Modal title={isUrdu?"نئی Sale — Invoice بنائیں":"New Sale — Create Invoice"} onClose={()=>setShowSaleModal(false)} wide>
-          <BillingNewSaleModal products={products} onSave={handleSave} onClose={()=>setShowSaleModal(false)} isUrdu={isUrdu} loaders={loaders} extraNames={sales.map(s=>s.customer)} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns}/>
+        <Modal
+          title={editData ? (isUrdu?"Sale ترمیم کریں":"Edit Sale") : (isUrdu?"نئی Sale — Invoice بنائیں":"New Sale — Create Invoice")}
+          onClose={closeModal}
+          wide
+        >
+          <BillingNewSaleModal products={products} onSave={handleSave} onClose={closeModal} isUrdu={isUrdu} loaders={loaders} extraNames={sales.map(s=>s.customer)} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} prefill={editData ? buildEditPayload(editData) : null}/>
         </Modal>
       )}
 

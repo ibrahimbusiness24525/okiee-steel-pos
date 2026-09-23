@@ -361,19 +361,11 @@ export async function invoicePdfDoc(filename) {
       const imgData = canvas.toDataURL("image/jpeg", 0.92);
       const imgH = (canvas.height * imgW) / canvas.width;
       if (i > 0) pdf.addPage();
-      if (imgH <= usableH + 1) {
+      if (imgH <= usableH + 2) {
         pdf.addImage(imgData, "JPEG", margin, margin, imgW, imgH);
       } else {
-        let heightLeft = imgH;
-        let position = margin;
-        pdf.addImage(imgData, "JPEG", margin, position, imgW, imgH);
-        heightLeft -= usableH;
-        while (heightLeft > 2) {
-          position = margin - (imgH - heightLeft);
-          pdf.addPage();
-          pdf.addImage(imgData, "JPEG", margin, position, imgW, imgH);
-          heightLeft -= usableH;
-        }
+        const scale = usableH / imgH;
+        pdf.addImage(imgData, "JPEG", margin, margin, imgW * scale, usableH);
       }
     }
     return { pdf, file, blob: pdf.output("blob") };

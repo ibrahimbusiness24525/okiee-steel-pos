@@ -9,10 +9,11 @@ import { convertQuantity, convertPrice, getUnitLabel, canConvert, unitOptions, p
 import { safeProductName, productDisplayName } from "../utils/constants";
 import { PurchaseReturnModal, ReturnsTable } from "../components/StockReturns";
 import InventoryStockTable, { inventoryStats } from "../components/InventoryStockTable";
-import PaymentTerms, { useAccounts, derivePayment, isPayValid } from "../components/PaymentTerms";
+import PaymentTerms, { useAccounts, derivePayment, isPayValid, calcDiscount, DiscountCashFields } from "../components/PaymentTerms";
 import { recordTradeFinance, reverseTradeFinance } from "../utils/tradeFinance";
 import PartyNamePicker from "../components/PartyNamePicker";
-import { OkiieeBrandFooter } from "../components/InvoiceComponents";
+import HardwareManageModal from "../components/HardwareManageModal";
+import { ProductQuickAddModal } from "./ProductsPage";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PURCHASE PAGE — Invoice matches Billing style exactly
@@ -740,7 +741,7 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
 }
 
 // ─── Purchase Form Modal ──────────────────────────────────────────────────────
-function PurchaseFormModal({ products, onSave, onClose, extraNames=[] }) {
+function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchases, onSave, onClose, extraNames=[] }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const isUrdu = lang === "ur";
@@ -753,6 +754,12 @@ function PurchaseFormModal({ products, onSave, onClose, extraNames=[] }) {
   const [showInvoice, setShowInvoice] = useState(false);
   const [invoiceData, setInvoiceData] = useState(null);
   const [payForm,     setPayForm]     = useState({ settlement: "full", accountId: "", paidAmount: "" });
+  const [discountMode, setDiscountMode] = useState("pkr");
+  const [discount, setDiscount] = useState("");
+  const [cashPaid, setCashPaid] = useState("");
+  const [quickPick, setQuickPick] = useState(false);
+  const [quickProduct, setQuickProduct] = useState(false);
+  const [quickHardware, setQuickHardware] = useState(false);
 
   const newBlock = () => ({ _id: Date.now() + Math.random(), productId: "", rows: [] });
   const [blocks, setBlocks] = useState([newBlock()]);
@@ -761,14 +768,17 @@ function PurchaseFormModal({ products, onSave, onClose, extraNames=[] }) {
   const removeBlock = (idx) => setBlocks(bs => bs.filter((_, i) => i !== idx));
   const updateBlock = (idx, val) => setBlocks(bs => bs.map((b, i) => i === idx ? val : b));
 
-  const grandTotal = blocks.reduce((sum, block) => {
+  const itemsTotal = blocks.reduce((sum, block) => {
     const prod     = products.find(p => p._id === block.productId);
     const category = prod?.category || "";
     const pp       = prod?.price || 0;
     return sum + block.rows.reduce((s, r) => s + calcRowAmt(r, category, pp), 0);
   }, 0);
-
+  const discountAmt = calcDiscount(itemsTotal, discount, discountMode);
+  const grandTotal = Math.max(0, Math.round((itemsTotal - discountAmt) * 100) / 100);
   const pay = derivePayment(grandTotal, payForm, accounts);
+  const tendered = Number(cashPaid) || 0;
+  const changeDue = tendered > 0 ? Math.max(0, Math.round((tendered - (pay.settlement === "full" ? grandTotal : (Number(pay.paidAmount) || 0))) * 100) / 100) : 0;
   const canSave = supplier && blocks.every(b => b.productId && b.rows.length > 0) && isPayValid(grandTotal, payForm, accounts);
 
   const handleSave = async () => {
@@ -818,6 +828,11 @@ function PurchaseFormModal({ products, onSave, onClose, extraNames=[] }) {
         paymentMethod: pay.paymentMethod, bankName: pay.bankName, accountId: pay.accountId, accountName: pay.accountName,
         settlement: pay.settlement, isPartial: pay.isPartial, paidAmount: pay.paidAmount, remainingAmount: pay.remainingAmount,
         unit: purchaseUnit,
+        discount: discountAmt,
+        discountType: discountMode,
+        discountPct: discountMode === "pct" ? (Number(discount) || 0) : 0,
+        cashReceived: tendered,
+        changeDue,
       });
       if (!res || !res.success) { allOk = false; break; }
       invoiceProducts.push({ productName: product?.name || "", category, rows: block.rows, total, qty, productPrice: purchasePricePerUnit });
@@ -838,6 +853,7 @@ function PurchaseFormModal({ products, onSave, onClose, extraNames=[] }) {
         invoice: invoiceNum, date, supplier, products: invoiceProducts,
         paymentMethod: pay.paymentMethod, bankName: pay.bankName, accountName: pay.accountName,
         isPartial: pay.isPartial, paidAmount: pay.paidAmount, remainingAmount: pay.remainingAmount,
+        discount: discountAmt, cashReceived: tendered, changeDue,
       });
       setShowInvoice(true);
     }
@@ -877,6 +893,14 @@ function PurchaseFormModal({ products, onSave, onClose, extraNames=[] }) {
         </div>
       </div>
 
+      <button
+        type="button"
+        onClick={() => setQuickPick(true)}
+        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "10px 12px", borderRadius: 10, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#0f766e,#14b8a6)", color: "#fff", fontWeight: 800, fontSize: 13 }}
+      >
+        + {isUrdu ? "نیا پروڈکٹ فوری شامل کریں" : "Add new product instantly"}
+      </button>
+
       {blocks.map((block, idx) => (
         <ProductBlock
           key={block._id}
@@ -913,12 +937,46 @@ function PurchaseFormModal({ products, onSave, onClose, extraNames=[] }) {
           />
         )}
 
-        {grandTotal > 0 && (
+        {itemsTotal > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "9px 14px", borderRadius: 10, background: "rgba(26,188,156,0.08)", border: "1px solid rgba(26,188,156,0.25)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ color: th.textMuted, fontSize: 13 }}>{isUrdu ? "آئٹمز کل:" : "Items total:"}</span>
+              <span style={{ color: "#34d399", fontWeight: 700, fontSize: 16 }}>{formatPKR(itemsTotal)}</span>
+            </div>
+            <DiscountCashFields
+              discount={discount}
+              setDiscount={setDiscount}
+              discountMode={discountMode}
+              setDiscountMode={setDiscountMode}
+              cashValue={cashPaid}
+              setCashValue={setCashPaid}
+              discountAmt={discountAmt}
+              isUrdu={isUrdu}
+              cashLabel={isUrdu ? "نقد ادا (Rs)" : "Cash paid (Rs)"}
+              inpS={inpS}
+            />
+            {discountAmt > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                <span style={{ color: th.textMuted }}>{isUrdu ? "رعایت:" : "Discount:"}</span>
+                <span style={{ color: "#f87171", fontWeight: 800 }}>- {formatPKR(discountAmt)}</span>
+              </div>
+            )}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
               <span style={{ color: th.textMuted, fontSize: 13, fontWeight: 600 }}>{isUrdu ? "کل رقم:" : "Grand Total:"}</span>
               <span style={{ color: "#34d399", fontWeight: 900, fontSize: 17 }}>{formatPKR(grandTotal)}</span>
             </div>
+            {tendered > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                <span style={{ color: th.textMuted }}>{isUrdu ? "نقد ادا:" : "Cash paid:"}</span>
+                <span style={{ color: "#60a5fa", fontWeight: 800 }}>{formatPKR(tendered)}</span>
+              </div>
+            )}
+            {changeDue > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                <span style={{ color: "#fbbf24", fontWeight: 800 }}>{isUrdu ? "واپسی:" : "Change:"}</span>
+                <span style={{ color: "#fbbf24", fontWeight: 900 }}>{formatPKR(changeDue)}</span>
+              </div>
+            )}
             {pay.settlement !== "full" && (
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
                 <span style={{ color: th.textMuted }}>{isUrdu ? "ابھی ادا:" : "Paying now:"}</span>
@@ -936,6 +994,43 @@ function PurchaseFormModal({ products, onSave, onClose, extraNames=[] }) {
 
         <SaveBtn label={saving ? "..." : t.savePurchase} onClick={handleSave} loading={saving} disabled={!canSave} />
       </div>
+      {quickPick && (
+        <Modal title={isUrdu ? "نیا آئٹم" : "Add new item"} onClose={() => setQuickPick(false)} layer={220}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <p style={{ color: th.textMuted, fontSize: 13, margin: 0 }}>
+              {isUrdu ? "پروڈکٹ بنائیں یا ہارڈ ویئر آئٹم بنائیں — خریداری پر رہتے ہوئے" : "Create a product or a hardware item without leaving this purchase."}
+            </p>
+            <button type="button" onClick={() => { setQuickPick(false); setQuickProduct(true); }}
+              style={{ padding: "14px 16px", borderRadius: 12, border: `1px solid ${th.border}`, background: th.bgCard, color: th.text, fontWeight: 800, fontSize: 14, cursor: "pointer", textAlign: "left" }}>
+              🔩 {isUrdu ? "پروڈکٹ شامل کریں" : "Add Product"}
+              <div style={{ fontWeight: 500, fontSize: 12, color: th.textMuted, marginTop: 4 }}>{isUrdu ? "پائپ / چادر / جالی / کسٹم" : "Pipe / Chader / Net / Custom"}</div>
+            </button>
+            <button type="button" onClick={() => { setQuickPick(false); setQuickHardware(true); }}
+              style={{ padding: "14px 16px", borderRadius: 12, border: `1px solid ${th.border}`, background: th.bgCard, color: th.text, fontWeight: 800, fontSize: 14, cursor: "pointer", textAlign: "left" }}>
+              🔧 {isUrdu ? "ہارڈ ویئر پروڈکٹ شامل کریں" : "Add Hardware Product"}
+              <div style={{ fontWeight: 500, fontSize: 12, color: th.textMuted, marginTop: 4 }}>{isUrdu ? "نٹ، بولٹ، ٹولز وغیرہ" : "Nuts, bolts, tools, etc."}</div>
+            </button>
+          </div>
+        </Modal>
+      )}
+      {quickProduct && (
+        <ProductQuickAddModal
+          loadProducts={loadProducts}
+          loadPurchases={loadPurchases}
+          onClose={() => setQuickProduct(false)}
+        />
+      )}
+      {quickHardware && (
+        <HardwareManageModal
+          products={products}
+          purchases={purchases}
+          loadProducts={loadProducts}
+          loadPurchases={loadPurchases}
+          seed={null}
+          onClose={() => setQuickHardware(false)}
+          overlayZ={260}
+        />
+      )}
     </div>
   );
 }
@@ -959,12 +1054,13 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
   const [customFrom,       setCustomFrom]       = useState("");
   const [customTo,         setCustomTo]         = useState("");
   const [viewGroup,        setViewGroup]        = useState(null);
+  const [purchaseSearch,   setPurchaseSearch]   = useState("");
 
   const handleSave = async (payload) => {
     const { supplier, invoice, date, productId, rows, total, qty, rate, category, productPrice } = payload;
     const matchedProd   = products.find(p => p._id === productId);
     const resolvedPrice = Number(productPrice) || Number(matchedProd?.price) || 0;
-    const data = {
+      const data = {
       supplier, invoice, date, product: productId, rows, total, qty, rate, category,
       productName: matchedProd?.name || "", productPrice: resolvedPrice,
       paymentMethod: payload.paymentMethod || "cash",
@@ -975,6 +1071,11 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
       isPartial: payload.isPartial || false,
       paidAmount: payload.paidAmount || 0,
       remainingAmount: payload.remainingAmount || 0,
+      discount: Number(payload.discount) || 0,
+      discountType: payload.discountType || "pkr",
+      discountPct: Number(payload.discountPct) || 0,
+      cashReceived: Number(payload.cashReceived) || 0,
+      changeDue: Number(payload.changeDue) || 0,
       unit: payload.unit || rows?.[0]?.unit || matchedProd?.unit || "",
     };
     const res = await api.addPurchase(data);
@@ -1017,6 +1118,14 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
 
   const filteredPurchases = [...purchases]
     .filter((p) => inDateFilter(p.date, dateFilter, customFrom, customTo, p.createdAt))
+    .filter((p) => {
+      const q = purchaseSearch.trim().toLowerCase();
+      if (!q) return true;
+      return [
+        p.invoice, p.invoiceNum, p.supplier, p.supplierName, p.productName,
+        safeProductName(p.product),
+      ].filter(Boolean).join(" ").toLowerCase().includes(q);
+    })
     .sort((a, b) => String(b.createdAt || b.date || "").localeCompare(String(a.createdAt || a.date || "")));
   const purchaseGroups = (() => {
     const map = new Map();
@@ -1120,7 +1229,8 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
     : Math.round(qty || 0)
   );
 
-  const { stockedCount, inventoryAmount, demandZero } = inventoryStats(products);
+  const { stockedCount, inventoryAmount, demandZero, demandLow } = inventoryStats(products);
+  const demandCount = (demandZero?.length || 0) + (demandLow?.length || 0);
 
   const saleOf = (p) => {
     const r = (p.rows || [])[0] || {};
@@ -1145,6 +1255,9 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
           setCustomFrom={setCustomFrom}
           customTo={customTo}
           setCustomTo={setCustomTo}
+          search={purchaseSearch}
+          setSearch={setPurchaseSearch}
+          searchPlaceholder={isUrdu ? "انوائس / سپلائر / آئٹم" : "Invoice / supplier / item"}
         />
         <button
           onClick={printFiltered}
@@ -1181,10 +1294,10 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
         />
         <StatCard
           label={isUrdu ? "ڈیمانڈ" : "Demand"}
-          value={demandZero.length}
+          value={demandCount}
           icon={ICONS.warning}
           color="#ea580c"
-          sub={isUrdu ? "اسٹاک ختم" : "Out of stock"}
+          sub={isUrdu ? "زیرو + کم اسٹاک" : "Out of stock + low"}
           onClick={() => setShowDemandPopup(true)}
         />
         <StatCard
@@ -1331,7 +1444,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
       )}
 
       {showDemandPopup && (
-        <Modal title={isUrdu ? `ڈیمانڈ · ${demandZero.length}` : `Demand · ${demandZero.length}`} onClose={() => setShowDemandPopup(false)} xl>
+        <Modal title={isUrdu ? `ڈیمانڈ · ${demandCount}` : `Demand · ${demandCount}`} onClose={() => setShowDemandPopup(false)} xl>
           <InventoryStockTable products={products} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} onReturn={openInvReturn} kind="demand" />
         </Modal>
       )}
@@ -1361,6 +1474,9 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
         <Modal title={t.addPurchase} onClose={() => setShowModal(false)} wide>
           <PurchaseFormModal
             products={products}
+            purchases={purchases}
+            loadProducts={loadProducts}
+            loadPurchases={loadPurchases}
             extraNames={[
               ...purchases.map((p) => p.supplier || p.supplierName),
               ...products.flatMap((p) => (Array.isArray(p.suppliers) ? p.suppliers.map((s) => s?.name) : [])),

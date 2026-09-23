@@ -426,7 +426,7 @@ export function StatCard({ label, value, icon, color, sub, onClick }) {
   );
 }
 
-export function DateFilterBar({ filter, setFilter, customFrom, setCustomFrom, customTo, setCustomTo, extra }) {
+export function DateFilterBar({ filter, setFilter, customFrom, setCustomFrom, customTo, setCustomTo, extra, search, setSearch, searchPlaceholder }) {
   const th = useTheme();
   const { lang } = useLang();
   const isUrdu = lang === "ur";
@@ -444,7 +444,7 @@ export function DateFilterBar({ filter, setFilter, customFrom, setCustomFrom, cu
     color: active ? "#fff" : th.textMuted,
   });
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", width: "100%" }}>
       {["today", "yesterday", "week", "month", "custom"].map((f) => (
         <button key={f} type="button" style={btn(filter === f)} onClick={() => setFilter(f)}>{labels[f]}</button>
       ))}
@@ -456,6 +456,14 @@ export function DateFilterBar({ filter, setFilter, customFrom, setCustomFrom, cu
           <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)}
             style={{ padding: "7px 10px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.text, fontSize: 13, outline: "none" }} />
         </>
+      )}
+      {typeof setSearch === "function" && (
+        <input
+          value={search || ""}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={searchPlaceholder || (isUrdu ? "تلاش..." : "Search...")}
+          style={{ flex: "1 1 180px", minWidth: 140, padding: "7px 10px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.input || th.bgCard, color: th.text, fontSize: 13, outline: "none" }}
+        />
       )}
       {extra}
     </div>

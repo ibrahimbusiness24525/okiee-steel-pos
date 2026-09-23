@@ -409,7 +409,7 @@ function InventoryPrintSheet({ rows, total, isUrdu, kind }) {
         {isUrdu ? "تاریخ" : "Date"}: {todayStr()} · {rows.length} {isUrdu ? "آئٹمز" : "items"}
       </div>
       <div style={dash} />
-      <table style={tbl}>
+      <table className="inv-items" style={tbl}>
         <thead>
           <tr>
             <th style={{ ...thS("center"), width: "10%" }}>{isUrdu ? "#" : "#"}</th>
@@ -614,7 +614,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
   const inventory = products
     .filter((p) => {
       const stock = stockOf(p);
-      const inGroup = isDemand ? stock <= 0 : stock > 0;
+      const inGroup = isDemand ? stock <= thresholdOf(p) : stock > 0;
       if (!inGroup || !matchesInvSearch(p) || !matchesInvCat(p)) return false;
       return true;
     })
@@ -816,7 +816,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
       {!inventory.length && (
         <p style={{ color: th.textMuted, fontSize: 13, margin: "8px 0 0" }}>
           {isDemand
-            ? (isUrdu ? "ڈیمانڈ آئٹمز یہاں آئیں گی" : "Demand items will show here")
+            ? (isUrdu ? "زیرو اور کم اسٹاک آئٹمز یہاں آئیں گی" : "Zero and low-stock items will show here")
             : (isUrdu ? "اسٹاک والی آئٹمز یہاں آئیں گی" : "In-stock items will show here")}
         </p>
       )}

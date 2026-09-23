@@ -283,3 +283,72 @@ export default function PaymentTerms({
     </div>
   );
 }
+
+export function calcDiscount(base, value, mode) {
+  const b = Math.max(0, Number(base) || 0);
+  const v = Math.max(0, Number(value) || 0);
+  if (b <= 0 || v <= 0) return 0;
+  const amt = mode === "pct" ? b * (v / 100) : v;
+  return Math.round(Math.min(b, amt) * 100) / 100;
+}
+
+export function DiscountCashFields({
+  discount,
+  setDiscount,
+  discountMode,
+  setDiscountMode,
+  cashValue,
+  setCashValue,
+  discountAmt = 0,
+  isUrdu,
+  cashLabel,
+  inpS,
+}) {
+  const th = useTheme();
+  const pill = (active) => ({
+    padding: "6px 10px",
+    border: "none",
+    cursor: "pointer",
+    fontWeight: 800,
+    fontSize: 12,
+    background: active ? "linear-gradient(135deg,#1abc9c,#2980b9)" : "transparent",
+    color: active ? "#fff" : th.textMuted,
+  });
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 4 }}>
+      <div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 4 }}>
+          <label style={{ color: th.textMuted, fontSize: 11, fontWeight: 700 }}>{isUrdu ? "رعایت" : "Discount"}</label>
+          <div style={{ display: "inline-flex", borderRadius: 8, overflow: "hidden", border: `1px solid ${th.border}` }}>
+            <button type="button" style={pill(discountMode === "pkr")} onClick={() => setDiscountMode("pkr")}>PKR</button>
+            <button type="button" style={pill(discountMode === "pct")} onClick={() => setDiscountMode("pct")}>%</button>
+          </div>
+        </div>
+        <input
+          type="text"
+          inputMode="decimal"
+          value={discount}
+          onChange={(e) => setDiscount(e.target.value.replace(/[^0-9.]/g, ""))}
+          placeholder="0"
+          style={inpS}
+        />
+        {discountMode === "pct" && discountAmt > 0 && (
+          <div style={{ color: "#f87171", fontSize: 11, fontWeight: 700, marginTop: 4 }}>- {formatPKR(discountAmt)}</div>
+        )}
+      </div>
+      <div>
+        <label style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, display: "block", marginBottom: 4 }}>
+          {cashLabel || (isUrdu ? "نقد وصول (Rs)" : "Cash received (Rs)")}
+        </label>
+        <input
+          type="text"
+          inputMode="decimal"
+          value={cashValue}
+          onChange={(e) => setCashValue(e.target.value.replace(/[^0-9.]/g, ""))}
+          placeholder="0"
+          style={inpS}
+        />
+      </div>
+    </div>
+  );
+}

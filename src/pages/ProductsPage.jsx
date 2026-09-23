@@ -527,7 +527,7 @@ function CustomForm({ form, setForm }) {
   );
 }
 
-function CategorySelector({ value, onChange }) {
+function CategorySelector({ value, onChange, hideHardware }) {
   const th=useTheme(); const {t,lang}=useLang(); const isUrdu=lang==="ur";
   const cats=[
     {key:"Pipe",    label:t.pipe,     labelUr:"🔩 پائپ"},
@@ -535,7 +535,7 @@ function CategorySelector({ value, onChange }) {
     {key:"Net",     label:t.net,      labelUr:"🕸️ جالی"},
     {key:"Hardware",label:t.hardware, labelUr:"🔧 ہارڈ ویئر"},
     {key:"Custom",  label:t.custom,   labelUr:"✨ کسٹم"},
-  ];
+  ].filter((c) => !hideHardware || c.key !== "Hardware");
   const s={background:th.input,border:`1px solid ${th.inputBorder}`,color:th.text,borderRadius:12,padding:"11px 14px",fontSize:15,outline:"none",width:"100%",boxSizing:"border-box"};
   return (
     <div>
@@ -551,6 +551,70 @@ function CategorySelector({ value, onChange }) {
         ))}
       </select>
     </div>
+  );
+}
+
+export function ProductQuickAddModal({ loadProducts, loadPurchases, onClose, onSaved }) {
+  const th = useTheme();
+  const { t, lang } = useLang();
+  const isUrdu = lang === "ur";
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [saving, setSaving] = useState(false);
+  const canSave = () => {
+    if (!form.category) return false;
+    if (form.category === "Pipe") return !!(form.pipeType && form.pipeInch && form.pipeInch !== "__custom__" && form.gauge && form.price);
+    if (form.category === "Chader") return form.subType === "Custom" ? !!(form.name && form.name.trim()) : !!(form.subType);
+    if (form.category === "Net") { if (!form.subType) return false; if (form.subType === "Chorus") return !!(form.gauge); return !!form.name; }
+    if (form.category === "Custom") return !!form.name;
+    return false;
+  };
+  const save = async () => {
+    if (!canSave()) return;
+    const resolvedName = form.category === "Net" && form.subType === "Chorus"
+      ? (form.name && form.name.trim() ? form.name.trim() : `Chorus ${form.gauge}`.trim())
+      : (form.name || form.subType || form.category);
+    setSaving(true);
+    let payload = { name: resolvedName, category: form.category, stock: Number(form.stock) || 0, unit: form.unit || "piece" };
+    if (form.category === "Pipe") payload = { ...payload, price: parseFloat(form.price) || 0, pipeType: form.pipeType, pipeSubType: form.pipeSubType, pipeInch: form.pipeInch, gauge: form.gauge, length: form.length, weight: Number(form.weight) || 0, basePrice: Number(form.basePrice) || 0, percentage: Number(form.percentage) || 0, size: form.pipeInch };
+    else if (form.category === "Chader") payload = { ...payload, subType: form.subType, purchasePrice: parseFloat(form.purchasePrice) || 0 };
+    else if (form.category === "Net") payload = { ...payload, subType: form.subType, gauge: form.gauge || "", width: form.width || "", purchasePrice: parseFloat(form.purchasePrice) || 0 };
+    else if (form.category === "Custom") payload = { ...payload, purchasePrice: parseFloat(form.purchasePrice) || 0 };
+    const qty = Number(payload.stock) || 0;
+    const res = await api.addProduct({ ...payload, stock: 0 });
+    if (!res.success) { alert(res.message); setSaving(false); return; }
+    const productId = res.product?._id || res.product?.id;
+    if (qty > 0 && productId) {
+      const rate = Number(payload.purchasePrice) || Number(payload.price) || 0;
+      await api.addPurchase({
+        supplier: "Opening Stock",
+        date: todayStr(),
+        product: productId,
+        productName: payload.name,
+        category: payload.category || "",
+        qty,
+        rate,
+        total: +(rate * qty).toFixed(2),
+        productPrice: rate,
+        rows: [{ qty, purchasePrice: rate, salePrice: Number(payload.price) || 0 }],
+      });
+    }
+    await loadProducts?.();
+    if (loadPurchases) await loadPurchases();
+    setSaving(false);
+    onSaved?.(res.product);
+    onClose?.();
+  };
+  return (
+    <Modal title={isUrdu ? "نیا پروڈکٹ" : "Add Product"} onClose={onClose} layer={230}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+        <CategorySelector hideHardware value={form.category} onChange={(v) => setForm({ ...EMPTY_FORM, category: v, unit: "piece" })} />
+        {form.category === "Pipe" && <PipeForm form={form} setForm={setForm} />}
+        {form.category === "Chader" && <ChaderForm form={form} setForm={setForm} />}
+        {form.category === "Net" && <NetForm form={form} setForm={setForm} />}
+        {form.category === "Custom" && <CustomForm form={form} setForm={setForm} />}
+        {form.category && <SaveBtn onClick={save} loading={saving} label={saving ? t.saving : t.saveProduct} />}
+      </div>
+    </Modal>
   );
 }
 

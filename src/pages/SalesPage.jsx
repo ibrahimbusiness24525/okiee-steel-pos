@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS, Modal, StatCard, Table } from "../components/shared";
+import { useResponsive, Icon, ICONS, Modal, StatCard, Table, DateFilterBar } from "../components/shared";
 import { api } from "../utils/api";
 import { saveSaleReturn, removeSaleReturn, netSaleAmount, saleReturnedAmount } from "../utils/returnsStore";
-import { formatPKR, todayStr, loadShopProfile, pxToPageHeightMM } from "../utils/helpers";
+import { formatPKR, todayStr, loadShopProfile, pxToPageHeightMM, inDateFilter } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
 import { BillingNewSaleModal, BillingSaleInvoice, getPaymentBadgeStyle } from "./BillingPage";
 import { SaleReturnModal, ReturnsTable } from "../components/StockReturns";
@@ -207,6 +207,10 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
   const [showReturnsPopup, setShowReturnsPopup] = useState(false);
   const [reprintData,   setReprintData]   = useState(null);
   const [editData,      setEditData]      = useState(null);
+  const [dateFilter,    setDateFilter]    = useState("today");
+  const [customFrom,    setCustomFrom]    = useState("");
+  const [customTo,      setCustomTo]      = useState("");
+  const [saleSearch,    setSaleSearch]    = useState("");
 
   const today2       = todayStr();
   const todaySales   = sales.filter(s => s.date === today2);
@@ -220,7 +224,19 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
     const d = Date.parse(s?.date || "");
     return Number.isFinite(d) ? d : 0;
   };
-  const recentSales = [...sales].sort((a, b) => saleRecency(b) - saleRecency(a));
+  const recentSales = [...sales]
+    .filter((s) => inDateFilter(s.date, dateFilter, customFrom, customTo, s.createdAt))
+    .filter((s) => {
+      const q = saleSearch.trim().toLowerCase();
+      if (!q) return true;
+      const names = [
+        s.invoice, s.invoiceNum, s.customer, s.productName,
+        safeProductName(s.product),
+        ...(s.items || []).map((it) => it.productName),
+      ].filter(Boolean).join(" ").toLowerCase();
+      return names.includes(q);
+    })
+    .sort((a, b) => saleRecency(b) - saleRecency(a));
 
   const buildItemsFromSale = (s) => {
     if (s.items && s.items.length > 0) return s.items;
@@ -294,6 +310,8 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
       total:payload.total, grandTotal:payload.grandTotal,
       loaderFee:Number(payload.loaderFee)||0, bindingFee:Number(payload.bindingFee)||0,
       discount:Number(payload.discount)||0, cashReceived:Number(payload.cashReceived)||0, changeDue:Number(payload.changeDue)||0,
+      discountType: payload.discountType || "pkr",
+      discountPct: Number(payload.discountPct) || 0,
       items:payload.items, rows:resolvedRows,
       saleItems,
       loaderName:payload.loaderName||"", product:productId,
@@ -371,8 +389,11 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
       total: Number(s.total) || 0, loaderFee: Number(s.loaderFee) || 0,
       bindingFee: Number(s.bindingFee) || 0,
       discount: Number(s.discount) || 0,
+      discountType: s.discountType || "pkr",
+      discountPct: Number(s.discountPct) || 0,
       cashReceived: Number(s.cashReceived) || 0,
       changeDue: Number(s.changeDue) || 0,
+      saleItems: s.saleItems || [],
       loader: s.loaderName ? { name: s.loaderName, fee: s.loaderFee || 0 } : null,
       isPartial:       s.isPartial       || false,
       paidAmount:      Number(s.paidAmount)      || Number(s.total) || 0,
@@ -412,6 +433,20 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
             <Icon path={ICONS.plus} size={16}/>{isUrdu?"نئی فروخت / انوائس":t.newSaleInvoice||"New Sale / Invoice"}
           </button>
         </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", padding: "12px 14px", borderRadius: 14, border: `1px solid ${th.border}`, background: th.bgCard }}>
+        <DateFilterBar
+          filter={dateFilter}
+          setFilter={setDateFilter}
+          customFrom={customFrom}
+          setCustomFrom={setCustomFrom}
+          customTo={customTo}
+          setCustomTo={setCustomTo}
+          search={saleSearch}
+          setSearch={setSaleSearch}
+          searchPlaceholder={isUrdu ? "انوائس / گاہک / آئٹم" : "Invoice / customer / item"}
+        />
       </div>
 
       {/* Sales table — wrapped for horizontal scroll to prevent page stretch */}
