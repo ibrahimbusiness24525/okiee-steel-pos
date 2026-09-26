@@ -114,6 +114,82 @@ export function netSaleAmount(sale, returns) {
   return Math.max(0, +(gross - saleReturnedAmount(sale, returns)).toFixed(2));
 }
 
+/** Per-item remaining qty/amount after sale returns, for invoices and profit. */
+export function netSaleItems(sale, returns) {
+  const leftover = [];
+  returnsForSale(sale, returns).forEach((r) => {
+    (r.items || []).forEach((it) => {
+      leftover.push({
+        name: String(it.productName || it.name || "").trim().toLowerCase(),
+        qty: Number(it.qty) || 0,
+        amount: Number(it.amount) || Number(it.subtotal) || ((Number(it.qty) || 0) * (Number(it.rate) || 0)),
+      });
+    });
+  });
+  const take = (name, qty, amount) => {
+    const key = String(name || "").trim().toLowerCase();
+    let takeQty = 0;
+    let takeAmt = 0;
+    leftover.forEach((r) => {
+      if (r.name !== key) return;
+      const q = Math.min(qty - takeQty, r.qty);
+      const a = Math.min(amount - takeAmt, r.amount);
+      takeQty += q;
+      takeAmt += a;
+      r.qty -= q;
+      r.amount -= a;
+    });
+    return { takeQty, takeAmt };
+  };
+  if (Array.isArray(sale?.items) && sale.items.length) {
+    return sale.items.map((item) => {
+      const sub = Number(item.subtotal) || (item.rows || []).reduce((a, r) => a + (Number(r.amount) || 0), 0) || 0;
+      let qty = Number(item.qty) || 0;
+      if (!qty && item.rows?.[0]?.desc) {
+        const m = String(item.rows[0].desc).match(/^(\d+\.?\d*)/);
+        if (m) qty = parseFloat(m[1]) || 0;
+      }
+      const { takeQty, takeAmt } = take(item.productName, qty, sub);
+      const remainAmt = Math.max(0, +(sub - takeAmt).toFixed(2));
+      const remainQty = Math.max(0, qty - takeQty);
+      const keep = sub > 0 ? remainAmt / sub : (takeAmt > 0 ? 0 : 1);
+      const rows = (item.rows || []).map((row) => ({
+        ...row,
+        amount: +(Number(row.amount || 0) * keep).toFixed(2),
+      }));
+      return {
+        ...item,
+        rows,
+        qty: remainQty,
+        subtotal: remainAmt,
+        costTotal: +(Number(item.costTotal || 0) * keep).toFixed(2),
+        origSubtotal: sub,
+        returnAmt: takeAmt,
+        returned: takeAmt > 0.009 || takeQty > 0.009,
+        fullyReturned: remainAmt <= 0.009,
+      };
+    });
+  }
+  const name = sale?.productName || (typeof sale?.product === "object" ? sale.product?.name : "") || "—";
+  const sub = Number(sale?.total) || Number(sale?.grandTotal) || 0;
+  const qty = Number(sale?.qty) || 0;
+  const { takeQty, takeAmt } = take(name, qty, sub);
+  const remainAmt = Math.max(0, +(sub - takeAmt).toFixed(2));
+  const keep = sub > 0 ? remainAmt / sub : 1;
+  return [{
+    productName: name,
+    category: sale?.category || "",
+    qty: Math.max(0, qty - takeQty),
+    subtotal: remainAmt,
+    costTotal: +(Number(sale?.costTotal || 0) * keep).toFixed(2),
+    origSubtotal: sub,
+    returnAmt: takeAmt,
+    returned: takeAmt > 0.009,
+    fullyReturned: remainAmt <= 0.009,
+    rows: [{ desc: `${Math.max(0, qty - takeQty)} × Rs${qty > 0 ? ((remainAmt / Math.max(qty, 1))).toFixed(0) : 0}`, amount: remainAmt }],
+  }];
+}
+
 function isUnitEnumError(r) {
   const m = String(r?.message || "").toLowerCase();
   return m.includes("unit") && (m.includes("enum") || m.includes("not a valid"));

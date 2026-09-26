@@ -14,6 +14,7 @@ import { recordTradeFinance, reverseTradeFinance } from "../utils/tradeFinance";
 import PartyNamePicker from "../components/PartyNamePicker";
 import HardwareManageModal from "../components/HardwareManageModal";
 import { ProductQuickAddModal } from "./ProductsPage";
+import { OkiieeBrandFooter } from "../components/InvoiceComponents";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PURCHASE PAGE — Invoice matches Billing style exactly
@@ -88,7 +89,8 @@ const thermalPrintStyles = `
 // ─── Purchase Thermal Invoice — BillingSaleInvoice style ──────────────────────
 function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
   const th = useTheme();
-  const { invoice, date, supplier, products, createdAt, paymentMethod, bankName, accountName, isPartial, paidAmount, remainingAmount } = invoiceData;
+  const data = invoiceData || {};
+  const { invoice, date, supplier, products, createdAt, paymentMethod, bankName, accountName, isPartial, paidAmount, remainingAmount } = data;
   const sp         = loadShopProfile();
   const ownerLines = (sp.owners || []).filter(o => o.name || o.nameUr);
 
@@ -171,6 +173,7 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
 
   // ── Parse each product's rows → flat numbered lineItems ──
   const parseRow = (row, cat, productName, pp) => {
+    if (!row) return { item: productName || "—", qty: "1", price: 0, amount: 0 };
     // Already-saved rows (have desc + amount)
     if (row.desc !== undefined && row.amount !== undefined) {
       const desc   = row.desc || "";
@@ -287,10 +290,11 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
                 <tr>
                   <td style={tdS("left")}>{L.billNoLbl}: {invoice}</td>
                   <td style={tdS("right")}>
-                    {L.dateLbl}: {new Date(date).toLocaleDateString(
-                      isUrdu ? "ur-PK" : "en-PK",
-                      { day: "2-digit", month: "short", year: "numeric" }
-                    )}
+                    {L.dateLbl}: {(() => {
+                      const d = date ? new Date(date) : new Date();
+                      if (Number.isNaN(d.getTime())) return date || todayStr();
+                      return d.toLocaleDateString(isUrdu ? "ur-PK" : "en-PK", { day: "2-digit", month: "short", year: "numeric" });
+                    })()}
                   </td>
                 </tr>
               </tbody>
@@ -795,6 +799,7 @@ function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchas
     let allOk = true;
     const invoiceProducts = [];
 
+    try {
     for (const block of blocks) {
       const product  = products.find(p => p._id === block.productId);
       const category = product?.category || "";
@@ -844,6 +849,11 @@ function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchas
       });
       if (!res || !res.success) { allOk = false; break; }
       invoiceProducts.push({ productName: product?.name || "", category, rows: block.rows, total, qty, productPrice: purchasePricePerUnit });
+    }
+    } catch (e) {
+      console.error(e);
+      allOk = false;
+      alert(e?.message || (isUrdu ? "خریداری محفوظ نہیں ہوئی" : "Could not save purchase"));
     }
 
     setSaving(false);
@@ -1389,7 +1399,6 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
             };
           })}
           onRowClick={(g) => setViewGroup(g)}
-          onDelete={delGroup}
         />
       </div>
 
@@ -1466,7 +1475,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
 
       {showReturnsPopup && (
         <Modal title={isUrdu ? "خریداری واپسی کے ریکارڈ" : t.returnRecords} onClose={() => setShowReturnsPopup(false)} wide>
-          <ReturnsTable returns={filteredReturns} kind="purchase" onDelete={delReturn} />
+          <ReturnsTable returns={filteredReturns} kind="purchase" />
         </Modal>
       )}
 

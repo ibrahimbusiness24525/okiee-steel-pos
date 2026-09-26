@@ -3,6 +3,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, StatCard, Table, WeightKgGInput, useTypeaheadNav } from "../components/shared";
 import { api } from "../utils/api";
+import { netSaleAmount, saleReturnedAmount, netSaleItems } from "../utils/returnsStore";
 import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, printThermalOrA4 } from "../utils/helpers";
 import { convertQuantity, convertPrice, getUnitLabel, canConvert, unitOptions, productUnitOf } from "../utils/unitConversion";
 import { OkiieeBrandFooter, parseSaleInvoiceRow } from "../components/InvoiceComponents";
@@ -2040,6 +2041,62 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
   );
 }
 
+function SaleRecordDetail({ sale, saleReturns = [], isUrdu }) {
+  const th = useTheme();
+  if (!sale) return null;
+  const items = netSaleItems(sale, saleReturns);
+  const net = netSaleAmount(sale, saleReturns);
+  const retAmt = saleReturnedAmount(sale, saleReturns);
+  const gross = Number(sale.grandTotal) || Number(sale.total) || 0;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "10px 12px", borderRadius: 12, border: `1px solid ${th.border}`, background: th.bgCard }}>
+        <div>
+          <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>{isUrdu ? "انوائس" : "Invoice"}</div>
+          <div style={{ fontFamily: "monospace", color: "#059669", fontWeight: 800 }}>{sale.invoice || sale.invoiceNum || "—"}</div>
+        </div>
+        <div>
+          <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>{isUrdu ? "گاہک" : "Customer"}</div>
+          <div style={{ color: th.text, fontWeight: 800 }}>{sale.customer || "—"}</div>
+        </div>
+        <div>
+          <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>{isUrdu ? "تاریخ" : "Date"}</div>
+          <div style={{ color: th.text, fontWeight: 700 }}>{sale.date || "—"}</div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>{isUrdu ? "کل" : "Net"}</div>
+          <div style={{ color: "#059669", fontWeight: 900 }}>{formatPKR(net)}</div>
+        </div>
+      </div>
+      {retAmt > 0.009 && (
+        <div style={{ padding: "8px 12px", borderRadius: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: "#ef4444", fontWeight: 800, fontSize: 13 }}>
+          {isUrdu ? "واپسی" : "Return"} · {formatPKR(retAmt)}
+          {gross > 0 ? <span style={{ color: th.textMuted, fontWeight: 600 }}> · {isUrdu ? "اصل بل" : "original"} {formatPKR(gross)}</span> : null}
+        </div>
+      )}
+      <Table
+        compact
+        cols={[isUrdu ? "آئٹم" : "Item", isUrdu ? "رقم" : "Amount", ""]}
+        rows={items.map((it) => ({
+          data: it,
+          cells: [
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ fontWeight: 700, color: th.text }}>{it.productName || "—"}</span>
+              {it.returned && (
+                <span style={{ fontSize: 10, padding: "1px 7px", borderRadius: 20, background: "rgba(239,68,68,0.16)", color: "#ef4444", fontWeight: 800 }}>
+                  {isUrdu ? "واپسی" : "RETURN"}
+                </span>
+              )}
+            </div>,
+            <span style={{ fontWeight: 800, color: it.fullyReturned ? "#f87171" : "#059669" }}>{formatPKR(it.subtotal)}</span>,
+            it.returnAmt > 0 ? <span style={{ fontSize: 11, color: "#f87171" }}>-{formatPKR(it.returnAmt)}</span> : "—",
+          ],
+        }))}
+      />
+    </div>
+  );
+}
+
 // ─── MAIN BILLING PAGE ────────────────────────────────────────────────────────
 function BillingPage({ sales, products, loadSales, loadProducts, currentUser, loaders=[], purchases=[], purchaseReturns=[], saleReturns=[] }) {
   const th = useTheme();
@@ -2050,6 +2107,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
   const [showSaleModal, setShowSaleModal] = useState(false);
   const [reprintData,   setReprintData]   = useState(null);
   const [editData,      setEditData]      = useState(null);
+  const [viewSale,      setViewSale]      = useState(null);
 
   const shopSales = sales || [];
   const saleRecency = (s) => {
@@ -2063,7 +2121,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
   const recentSales = [...shopSales].sort((a, b) => saleRecency(b) - saleRecency(a));
   const today2       = todayStr();
   const todaySales   = shopSales.filter(s => s.date === today2);
-  const todayRevenue = todaySales.reduce((s,x) => s + (Number(x.grandTotal) || Number(x.total) || 0), 0);
+  const todayRevenue = todaySales.reduce((s,x) => s + netSaleAmount(x, saleReturns), 0);
 
   const handleSave = async (payload) => {
     const firstProductName = payload.items[0]?.productName;
@@ -2189,14 +2247,18 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
   };
 
   const handleReprint = (s) => {
+    const items = netSaleItems(s, saleReturns).filter((it) => !it.fullyReturned && (Number(it.subtotal) || 0) > 0.009);
+    const grandTotal = items.length
+      ? items.reduce((sum, i) => sum + (Number(i.subtotal) || 0), 0)
+      : Number(s.grandTotal) || Number(s.total) || 0;
     setReprintData({
       invoice:s.invoice, date:s.date, customer:s.customer,
-      items: s.items || [{ productName:s.productName||safeProductName(s.product), category:"", rows:[{ desc:`1pc × Rs${s.total}/pc`, amount:s.total }], subtotal:s.total }],
-      grandTotal:s.grandTotal||s.total, paymentMethod:s.paymentMethod||"cash", bankName:s.accountName||s.bankName||"",
+      items: items.length ? items : (s.items || [{ productName:s.productName||safeProductName(s.product), category:"", rows:[{ desc:`1pc × Rs${s.total}/pc`, amount:s.total }], subtotal:s.total }]),
+      grandTotal, paymentMethod:s.paymentMethod||"cash", bankName:s.accountName||s.bankName||"",
       loaderName:s.loaderName||"", loaderFee:s.loaderFee||0, bindingFee:s.bindingFee||0,
       discount:s.discount||0, cashReceived:s.cashReceived||0, changeDue:s.changeDue||0,
       isPartial:s.isPartial||false,
-      paidAmount: (s.isPartial || s.settlement === "credit") ? (Number(s.paidAmount)||0) : (Number(s.paidAmount)||s.total),
+      paidAmount: (s.isPartial || s.settlement === "credit") ? (Number(s.paidAmount)||0) : (Number(s.paidAmount)||grandTotal),
       remainingAmount:s.remainingAmount||0,
     });
   };
@@ -2228,27 +2290,39 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       {/* Sales table */}
       <Table
         cols={[t.invoiceNum, t.date, t.customer, t.products, t.totalLabel, "💳", "💰", "🖨️"]}
-        rows={recentSales.map(s=>({
+        rows={recentSales.map(s=>{
+          const net = netSaleAmount(s, saleReturns);
+          const retAmt = saleReturnedAmount(s, saleReturns);
+          return {
           data:s,
           cells:[
             <span style={{fontFamily:"monospace",color:"#34d399",fontSize:13}}>{s.invoice}</span>,
             s.date,
             s.customer,
             s.productName || safeProductName(s.product) || s.items?.[0]?.productName || "—",
-            <span style={{fontWeight:700,color:th.text}}>{formatPKR(s.total)}</span>,
+            <div>
+              <span style={{fontWeight:700,color:"#34d399"}}>{formatPKR(net)}</span>
+              {retAmt>0 && (
+                <div style={{marginTop:4,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                  <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"rgba(239,68,68,0.16)",color:"#ef4444",fontWeight:800}}>{isUrdu ? "واپسی" : "RETURN"}</span>
+                  <span style={{fontSize:11,color:"#f87171",fontWeight:700}}>{formatPKR(retAmt)}</span>
+                </div>
+              )}
+            </div>,
             <span style={{ fontSize:12, padding:"2px 8px", borderRadius:20, fontWeight:600, ...getPaymentBadgeStyle(s.paymentMethod) }}>
               {s.paymentMethod==="credit"?(isUrdu?"ادھار":"Credit"):s.paymentMethod==="bank"?`🏦 ${s.accountName||s.bankName||"Bank"}`:s.paymentMethod==="jazzcash"?"🎵 JazzCash":s.paymentMethod==="easypaisa"?"📱 Easypaisa":s.paymentMethod==="wallet"?`📱 ${s.accountName||s.bankName||"Wallet"}`:(s.accountName?`💵 ${s.accountName}`:"💵 Cash")}
             </span>,
             s.isPartial
               ? <span style={{fontSize:11,padding:"2px 7px",borderRadius:20,background:"rgba(248,113,113,0.15)",color:"#f87171",fontWeight:700}}>⏳ {formatPKR(s.remainingAmount||0)} {isUrdu?"باقی":"due"}</span>
               : <span style={{fontSize:11,padding:"2px 7px",borderRadius:20,background:"rgba(52,211,153,0.12)",color:"#34d399",fontWeight:600}}>✅ {isUrdu?"مکمل":"Paid"}</span>,
-            <button onClick={()=>handleReprint(s)}
+            <button onClick={(e)=>{ e.stopPropagation(); handleReprint(s); }}
               style={{background:"rgba(96,165,250,0.12)",border:"none",borderRadius:6,color:"#60a5fa",cursor:"pointer",padding:"4px 10px",fontSize:13}}
               onMouseEnter={e=>e.currentTarget.style.background="rgba(96,165,250,0.25)"}
               onMouseLeave={e=>e.currentTarget.style.background="rgba(96,165,250,0.12)"}>🖨️</button>,
           ]
-        }))}
+        };})}
         onEdit={openEdit}
+        onRowClick={(s) => setViewSale(s)}
       />
 
       {/* New / Edit sale modal */}
@@ -2262,6 +2336,12 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
         </Modal>
       )}
 
+      {viewSale && (
+        <Modal title={isUrdu ? "فروخت تفصیل" : "Sale details"} onClose={() => setViewSale(null)}>
+          <SaleRecordDetail sale={viewSale} saleReturns={saleReturns} isUrdu={isUrdu} />
+        </Modal>
+      )}
+
       {/* Reprint modal */}
       {reprintData && (
         <Modal title={isUrdu?"🖨️ رسید":"🖨️ Invoice"} onClose={()=>setReprintData(null)}>
@@ -2272,5 +2352,5 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
   );
 }
 
-export { BillingNewSaleModal, BillingSaleInvoice, getPaymentBadgeStyle, TodayLoadersSummary, TodayBindingFeeSummary };
+export { BillingNewSaleModal, BillingSaleInvoice, getPaymentBadgeStyle, TodayLoadersSummary, TodayBindingFeeSummary, SaleRecordDetail };
 export default BillingPage;

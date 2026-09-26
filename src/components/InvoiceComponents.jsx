@@ -551,7 +551,9 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
   const lineItems = [];
   (items || []).forEach(item => {
     (item.rows || []).forEach(row => {
-      lineItems.push(parseRow(row, item.category, item.productName));
+      const line = parseRow(row, item.category, item.productName);
+      if ((Number(line.amount) || 0) <= 0.009) return;
+      lineItems.push(line);
     });
   });
 

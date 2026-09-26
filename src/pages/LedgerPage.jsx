@@ -154,10 +154,20 @@ function LedgerPage({ purchases = [], sales = [] }) {
     return list;
   }, [parties, purchases, sales]);
 
-  const totals = useMemo(() => ({
-    payable: directory.reduce((s, p) => s + (Number(p.payable) || Math.max(0, -(Number(p.balance) || 0))), 0),
-    receivable: directory.reduce((s, p) => s + (Number(p.receivable) || Math.max(0, Number(p.balance) || 0)), 0),
-  }), [directory]);
+  const totals = useMemo(() => {
+    const list = directory.filter((p) => {
+      const net = Number(p.balance) || 0;
+      if (filter === "payable" && !(net < -0.5)) return false;
+      if (filter === "receivable" && !(net > 0.5)) return false;
+      if (filter === "supplier" && p.type !== "supplier") return false;
+      if (filter === "customer" && p.type !== "customer") return false;
+      return true;
+    });
+    return {
+      payable: list.reduce((s, p) => s + (Number(p.payable) || Math.max(0, -(Number(p.balance) || 0))), 0),
+      receivable: list.reduce((s, p) => s + (Number(p.receivable) || Math.max(0, Number(p.balance) || 0)), 0),
+    };
+  }, [directory, filter]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();

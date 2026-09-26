@@ -6,7 +6,7 @@ import { useResponsive, Icon, ICONS, Modal, Table } from "../components/shared";
 import { formatPKR, formatDateTime, printThermalOrA4, downloadInvoicePdf, sharePdfOnWhatsApp, loadShopProfile, inDateFilter } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
 import InventoryStockTable, { inventoryStats } from "../components/InventoryStockTable";
-import { netSaleAmount, saleReturnedAmount } from "../utils/returnsStore";
+import { netSaleAmount, saleReturnedAmount, netSaleItems } from "../utils/returnsStore";
 
 function groupByInvoice(list) {
   const map = new Map();
@@ -81,38 +81,30 @@ function findProduct(products, id, name) {
   );
 }
 
-/** Same profit math on dashboard KPI and analytics. Sale returns shrink sale + cost. */
+/** Same profit math on dashboard KPI and analytics. Sale returns shrink sale + cost per item. */
 function calcInvoiceProfit(sale, saleReturns) {
+  const items = netSaleItems(sale, saleReturns);
   const billTotal = Number(sale?.grandTotal) || Number(sale?.total) || 0;
   const passThroughFees = (Number(sale?.loaderFee) || 0) + (Number(sale?.bindingFee) || 0);
   let costAmt = 0;
   let costedSaleAmt = 0;
   let hasCost = false;
-  if (sale?.items && sale.items.length > 0) {
-    sale.items.forEach((item) => {
-      if (item.costTotal !== undefined && item.costTotal !== null && Number(item.costTotal) > 0) {
-        const sub = Number(item.subtotal) || 0;
-        let itemCost = Number(item.costTotal) || 0;
-        if (item.category === "Pipe") {
-          const absProfit = Math.abs(sub - itemCost);
-          itemCost = sub - absProfit;
-        }
-        costAmt += itemCost;
-        costedSaleAmt += sub;
-        hasCost = true;
+  items.forEach((item) => {
+    if (item.fullyReturned) return;
+    if (item.costTotal !== undefined && item.costTotal !== null && Number(item.costTotal) > 0) {
+      const sub = Number(item.subtotal) || 0;
+      let itemCost = Number(item.costTotal) || 0;
+      if (item.category === "Pipe") {
+        const absProfit = Math.abs(sub - itemCost);
+        itemCost = sub - absProfit;
       }
-    });
-  }
-  const saleAmt = hasCost ? costedSaleAmt : (billTotal - passThroughFees);
-  const ret = saleReturnedAmount(sale, saleReturns);
-  const gross = billTotal > 0 ? billTotal : saleAmt;
-  const keep = gross > 0 ? Math.max(0, (gross - ret) / gross) : 1;
-  return {
-    saleAmt: saleAmt * keep,
-    costAmt: costAmt * keep,
-    profit: (saleAmt - costAmt) * keep,
-    hasCost,
-  };
+      costAmt += itemCost;
+      costedSaleAmt += sub;
+      hasCost = true;
+    }
+  });
+  const saleAmt = hasCost ? costedSaleAmt : Math.max(0, (billTotal - passThroughFees) - saleReturnedAmount(sale, saleReturns));
+  return { saleAmt, costAmt, profit: saleAmt - costAmt, hasCost, items };
 }
 
 function periodProfit(sales, saleReturns) {
@@ -1176,7 +1168,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
 
   // ─── PROFIT / LOSS — per invoice, real margin ────────────────────────────────
   const invoiceProfitRows = filteredSales.map((s) => {
-    const { saleAmt, costAmt, profit, hasCost } = calcInvoiceProfit(s, saleReturns);
+    const { saleAmt, costAmt, profit, hasCost, items } = calcInvoiceProfit(s, saleReturns);
     return {
       invoice:  s.invoice || s.invoiceNum || "—",
       customer: s.customer || "—",
@@ -1185,7 +1177,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
       costAmt,
       profit,
       hasCost,
-      items:    s.items || [],
+      items: items || [],
     };
   });
 
@@ -1331,42 +1323,26 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   const salesToInvoiceData = (salesList, invoiceTitle, customerName) => {
     const itemMap = {};
     salesList.forEach((s) => {
-      if (s.items && s.items.length > 0) {
-        s.items.forEach((item, idx) => {
-          const key = `${item.productName||""}__${item.category||""}__${idx}`;
-          if (!itemMap[key]) {
-            itemMap[key] = {
-              productName: item.productName || "—",
-              category:    item.category || "",
-              rows:        item.rows || [],
-              subtotal:    item.subtotal || item.rows?.reduce((a,r)=>a+(Number(r.amount)||0),0) || 0,
-            };
-          } else {
-            itemMap[key].rows    = [...itemMap[key].rows, ...(item.rows||[])];
-            itemMap[key].subtotal += item.subtotal || 0;
-          }
-        });
-        return;
-      }
-      const key = `${s.productName||safeProductName(s.product)}__${s.category||""}`;
-      const rows = s.rows && s.rows.length > 0
-        ? s.rows.map(r => ({
-            desc:   r.desc || `${r.qty||r.weight||r.feet||0} × Rs${r.salePrice||r.salePricePerFeet||r.salePricePerKg||0}`,
-            amount: r.amount || (r.qty||r.weight||r.feet||0) * (r.salePrice||r.salePricePerFeet||0),
-          }))
-        : buildSaleFallbackRows(s);
-      const rowTotal = rows.reduce((a,r) => a+(Number(r.amount)||0), 0);
-      if (!itemMap[key]) {
-        itemMap[key] = {
-          productName: s.productName || safeProductName(s.product),
-          category:    s.category || "",
-          rows,
-          subtotal: rowTotal,
-        };
-      } else {
-        itemMap[key].rows    = [...itemMap[key].rows, ...rows];
-        itemMap[key].subtotal += rowTotal;
-      }
+      netSaleItems(s, saleReturns).forEach((item, idx) => {
+        if (item.fullyReturned) return;
+        const sub = Number(item.subtotal) || 0;
+        if (sub <= 0.009) return;
+        const key = `${item.productName || ""}__${item.category || ""}__${idx}`;
+        const rows = (item.rows && item.rows.length)
+          ? item.rows
+          : [{ desc: `${item.qty || 1}pc`, amount: sub }];
+        if (!itemMap[key]) {
+          itemMap[key] = {
+            productName: item.productName || "—",
+            category: item.category || "",
+            rows,
+            subtotal: sub,
+          };
+        } else {
+          itemMap[key].rows = [...itemMap[key].rows, ...rows];
+          itemMap[key].subtotal += sub;
+        }
+      });
     });
     const items      = Object.values(itemMap);
     const grandTotal = items.reduce((a,i) => a+i.subtotal, 0);
@@ -1535,25 +1511,30 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
           <div style={{ paddingBottom:8, paddingRight:14 }}>
             {row.items.length > 0 ? row.items.map((item, j) => {
               const isPipe = item.category === "Pipe";
-              // Pipe: har waqt profit (Math.abs) — loss kabhi nahi
-              // Others: real +/-
+              const sub = Number(item.subtotal) || 0;
+              const cost = Number(item.costTotal) || 0;
               const itemProfit = isPipe
-                ? (item.costTotal > 0 ? Math.abs(item.subtotal - item.costTotal) : null)
-                : (item.costTotal > 0 ? (item.subtotal - item.costTotal) : null);
+                ? (cost > 0 ? Math.abs(sub - cost) : null)
+                : (cost > 0 ? (sub - cost) : null);
               return (
-                <div key={j} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12, marginBottom:3, gap:8 }}>
-                  <span style={{ color:th.text, fontWeight:600, flex:1 }}>{item.productName || "—"}</span>
-                  <span style={{ color:th.textDim, fontSize:11 }}>
-                    {isUrdu ? "فروخت:" : "Sale:"} <span style={{ color:"#60a5fa", fontWeight:600 }}>{formatPKR(item.subtotal)}</span>
+                <div key={j} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12, marginBottom:3, gap:8, opacity: item.fullyReturned ? 0.72 : 1 }}>
+                  <span style={{ color:th.text, fontWeight:600, flex:1, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+                    {item.productName || "—"}
+                    {item.returned && (
+                      <span style={{ fontSize:10, padding:"1px 7px", borderRadius:20, background:"rgba(239,68,68,0.16)", color:"#ef4444", fontWeight:800, letterSpacing:"0.04em" }}>
+                        {isUrdu ? "واپسی" : "RETURN"}
+                      </span>
+                    )}
                   </span>
-                  {/* Cost: hide for Pipe */}
-                  {!isPipe && item.costTotal > 0 && (
+                  <span style={{ color:th.textDim, fontSize:11 }}>
+                    {isUrdu ? "فروخت:" : "Sale:"} <span style={{ color:"#60a5fa", fontWeight:600 }}>{formatPKR(sub)}</span>
+                  </span>
+                  {!isPipe && cost > 0 && (
                     <span style={{ color:th.textDim, fontSize:11 }}>
-                      {isUrdu ? "لاگت:" : "Cost:"} <span style={{ color:"#f87171", fontWeight:600 }}>{formatPKR(item.costTotal)}</span>
+                      {isUrdu ? "لاگت:" : "Cost:"} <span style={{ color:"#f87171", fontWeight:600 }}>{formatPKR(cost)}</span>
                     </span>
                   )}
-                  {/* Profit: Pipe always green +, others show real +/- */}
-                  {itemProfit !== null && (
+                  {itemProfit !== null && !item.fullyReturned && (
                     <span style={{ fontWeight:700, fontSize:12, color: isPipe ? "#10b981" : (itemProfit < 0 ? "#ef4444" : "#10b981"), minWidth:70, textAlign:"right" }}>
                       {isPipe ? "+" + formatPKR(itemProfit) : (itemProfit >= 0 ? "+" : "") + formatPKR(itemProfit)}
                     </span>

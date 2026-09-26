@@ -3,10 +3,10 @@ import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, StatCard, Table, DateFilterBar } from "../components/shared";
 import { api } from "../utils/api";
-import { saveSaleReturn, removeSaleReturn, netSaleAmount, saleReturnedAmount } from "../utils/returnsStore";
+import { saveSaleReturn, removeSaleReturn, netSaleAmount, saleReturnedAmount, netSaleItems } from "../utils/returnsStore";
 import { formatPKR, todayStr, loadShopProfile, pxToPageHeightMM, inDateFilter } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
-import { BillingNewSaleModal, BillingSaleInvoice, getPaymentBadgeStyle } from "./BillingPage";
+import { BillingNewSaleModal, BillingSaleInvoice, getPaymentBadgeStyle, SaleRecordDetail } from "./BillingPage";
 import { SaleReturnModal, ReturnsTable } from "../components/StockReturns";
 import { reverseTradeFinance } from "../utils/tradeFinance";
 
@@ -207,6 +207,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
   const [showReturnsPopup, setShowReturnsPopup] = useState(false);
   const [reprintData,   setReprintData]   = useState(null);
   const [editData,      setEditData]      = useState(null);
+  const [viewSale,      setViewSale]      = useState(null);
   const [dateFilter,    setDateFilter]    = useState("today");
   const [customFrom,    setCustomFrom]    = useState("");
   const [customTo,      setCustomTo]      = useState("");
@@ -362,11 +363,12 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
   };
 
   const handleReprint = (s) => {
-    const items      = buildItemsFromSale(s);
-    const grandTotal = Number(s.grandTotal) || Number(s.total) || items.reduce((sum,i)=>sum+(i.subtotal||0),0);
+    const items      = netSaleItems(s, saleReturns).filter((it) => !it.fullyReturned && (Number(it.subtotal) || 0) > 0.009);
+    const fallback   = items.length ? items : buildItemsFromSale(s);
+    const grandTotal = items.length ? items.reduce((sum,i)=>sum+(Number(i.subtotal)||0),0) : (Number(s.grandTotal) || Number(s.total) || 0);
     setReprintData({
       invoice: s.invoice, date: s.date, customer: s.customer,
-      items, grandTotal,
+      items: fallback, grandTotal,
       paymentMethod: s.paymentMethod || "cash",
       bankName:      s.accountName || s.bankName || "",
       loaderName:    s.loaderName    || "",
@@ -470,7 +472,17 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
               </span>,
               <div>
                 <span style={{fontWeight:700,color:"#34d399"}}>{formatPKR(net)}</span>
-                {retAmt>0 && <div style={{fontSize:11,color:"#f87171",fontWeight:700}}>-{formatPKR(retAmt)}</div>}
+                {retAmt>0 && (
+                  <div style={{marginTop:4,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                    <span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"rgba(239,68,68,0.16)",color:"#ef4444",fontWeight:800,letterSpacing:"0.03em"}}>
+                      {isUrdu ? "واپسی" : "RETURN"}
+                    </span>
+                    <span style={{fontSize:11,color:"#f87171",fontWeight:700}}>{formatPKR(retAmt)}</span>
+                    {net <= 0.009 && (
+                      <span style={{fontSize:10,color:th.textMuted,fontWeight:600}}>{isUrdu ? "مکمل واپس" : "fully returned"}</span>
+                    )}
+                  </div>
+                )}
               </div>,
               <span style={{ fontSize:12, padding:"2px 8px", borderRadius:20, fontWeight:600, whiteSpace:"nowrap", ...getPaymentBadgeStyle(s.paymentMethod) }}>
                 {s.paymentMethod==="credit"?(isUrdu?"ادھار":"Credit"):s.paymentMethod==="bank"?`🏦 ${s.accountName||s.bankName||"Bank"}`:s.paymentMethod==="jazzcash"?"🎵 JazzCash":s.paymentMethod==="easypaisa"?"📱 Easypaisa":s.paymentMethod==="wallet"?`📱 ${s.accountName||s.bankName||"Wallet"}`:(s.accountName?`💵 ${s.accountName}`:"💵 Cash")}
@@ -495,7 +507,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
                   </div>
                 );
               })(),
-              <button onClick={()=>handleReprint(s)}
+              <button onClick={(e)=>{ e.stopPropagation(); handleReprint(s); }}
                 style={{background:"rgba(96,165,250,0.12)",border:"none",borderRadius:6,color:"#60a5fa",cursor:"pointer",padding:"4px 10px",fontSize:13}}
                 onMouseEnter={e=>e.currentTarget.style.background="rgba(96,165,250,0.25)"}
                 onMouseLeave={e=>e.currentTarget.style.background="rgba(96,165,250,0.12)"}>🖨️</button>,
@@ -503,7 +515,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
           };
           })}
           onEdit={openEdit}
-          onDelete={del}
+          onRowClick={(s) => setViewSale(s)}
         />
       </div>
 
@@ -546,7 +558,13 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
 
       {showReturnsPopup && (
         <Modal title={isUrdu ? "فروخت واپسی کے ریکارڈ" : t.returnRecords} onClose={() => setShowReturnsPopup(false)} wide>
-          <ReturnsTable returns={saleReturns} kind="sale" onDelete={delReturn} />
+          <ReturnsTable returns={saleReturns} kind="sale" />
+        </Modal>
+      )}
+
+      {viewSale && (
+        <Modal title={isUrdu ? "فروخت تفصیل" : "Sale details"} onClose={() => setViewSale(null)}>
+          <SaleRecordDetail sale={viewSale} saleReturns={saleReturns} isUrdu={isUrdu} />
         </Modal>
       )}
 
