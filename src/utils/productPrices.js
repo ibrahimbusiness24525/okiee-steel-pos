@@ -21,11 +21,10 @@ export function hardwareSaleFromPurchases(product, purchases = []) {
   return 0;
 }
 
-/** Hardware: `price` is sale, `purchasePrice` is cost. Recover sale if a purchase overwrote it. */
+/** Hardware: `price` is sale, `purchasePrice` is cost. Recover sale only if missing. */
 export function hardwareSalePrice(product, purchases = []) {
-  const cost = Number(product?.purchasePrice) || 0;
   const listed = Number(product?.price) || 0;
-  if (listed > 0 && listed !== cost) return listed;
+  if (listed > 0) return listed;
   const fromBill = hardwareSaleFromPurchases(product, purchases);
   if (fromBill > 0) return fromBill;
   return listed;

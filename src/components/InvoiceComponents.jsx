@@ -225,7 +225,7 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
   const supplier = supplierRaw || customer || "";
   const products = productsRaw || items || [];
   const sp         = loadShopProfile();
-  const ownerLines = sp.owners.filter(o => o.name || o.nameUr);
+  const ownerLines = (sp.owners || []).filter(o => o.name || o.nameUr);
 
   const L = isUrdu ? {
     shopName:     sp.shopNameUr || sp.shopName,
@@ -483,7 +483,7 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
   } = invoiceData;
 
   const sp         = loadShopProfile();
-  const ownerLines = sp.owners.filter(o => o.name || o.nameUr);
+  const ownerLines = (sp.owners || []).filter(o => o.name || o.nameUr);
   const paid       = Number(paidAmount) || 0;
   const remaining  = Number(remainingAmount) || 0;
   const discountAmt = Number(discount) || 0;

@@ -172,8 +172,11 @@ function measureSheetHeight(sheet, widthPx) {
  */
 export function paginateInvoiceClone(root, maxPagePx) {
   if (!root || !maxPagePx) return;
+  if (root.querySelector(".print-sheet")) return;
   const itemsTable = findItemsTable(root);
   if (!itemsTable) return;
+  const dataTables = [...root.querySelectorAll("table")].filter((t) => t.tHead && t.tBodies?.[0]?.rows?.length);
+  if (dataTables.length > 1 && !itemsTable.classList?.contains("inv-items")) return;
 
   const headerNodes = siblingBlock(root, itemsTable, false);
   const footerNodes = siblingBlock(root, itemsTable, true);
@@ -510,7 +513,14 @@ export const defaultShopProfile = () => ({
   owners: [{ name: "", nameUr: "", phone: "" }],
 });
 export const loadShopProfile = () => {
-  try { const s = localStorage.getItem(SHOP_PROFILE_KEY); return s ? JSON.parse(s) : defaultShopProfile(); }
-  catch { return defaultShopProfile(); }
+  try {
+    const s = localStorage.getItem(SHOP_PROFILE_KEY);
+    const parsed = s ? JSON.parse(s) : null;
+    const base = defaultShopProfile();
+    if (!parsed || typeof parsed !== "object") return base;
+    return { ...base, ...parsed, owners: Array.isArray(parsed.owners) ? parsed.owners : base.owners };
+  } catch {
+    return defaultShopProfile();
+  }
 };
 export const saveShopProfile = (p) => localStorage.setItem(SHOP_PROFILE_KEY, JSON.stringify(p));

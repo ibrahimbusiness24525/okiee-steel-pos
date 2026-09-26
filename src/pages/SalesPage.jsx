@@ -94,7 +94,7 @@ function SaleThermalInvoice({ invoiceData, onClose }) {
 
   const { invoice, date, customer, productName, category, qty, rate, total } = invoiceData;
   const sp = loadShopProfile();
-  const ownerLines = sp.owners.filter(o => o.name || o.nameUr);
+  const ownerLines = (sp.owners || []).filter(o => o.name || o.nameUr);
 
   const s = {
     page:    { width:"3in", maxWidth:"3in", fontFamily:"'Courier New',Courier,monospace", fontSize:"12px", color:"#000", fontWeight:"900", background:"#fff", padding:"1mm", boxSizing:"border-box", overflow:"hidden", margin:"0 auto" },
@@ -212,10 +212,6 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
   const [customTo,      setCustomTo]      = useState("");
   const [saleSearch,    setSaleSearch]    = useState("");
 
-  const today2       = todayStr();
-  const todaySales   = sales.filter(s => s.date === today2);
-  const todayRevenue = todaySales.reduce((s, x) => s + netSaleAmount(x, saleReturns), 0);
-
   const saleRecency = (s) => {
     const t = Date.parse(s?.createdAt || s?.updatedAt || "");
     if (Number.isFinite(t)) return t;
@@ -224,7 +220,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
     const d = Date.parse(s?.date || "");
     return Number.isFinite(d) ? d : 0;
   };
-  const recentSales = [...sales]
+  const recentSales = [...(sales || [])]
     .filter((s) => inDateFilter(s.date, dateFilter, customFrom, customTo, s.createdAt))
     .filter((s) => {
       const q = saleSearch.trim().toLowerCase();
@@ -237,6 +233,13 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
       return names.includes(q);
     })
     .sort((a, b) => saleRecency(b) - saleRecency(a));
+  const periodRevenue = recentSales.reduce((s, x) => s + netSaleAmount(x, saleReturns), 0);
+  const periodBinding = recentSales.reduce((s, p) => s + (Number(p.bindingFee) || 0), 0);
+  const filterRevenueLabel = dateFilter === "today" ? (isUrdu ? "آج کی آمدنی" : (t.todayRevenue || "Today Revenue"))
+    : dateFilter === "yesterday" ? (isUrdu ? "کل کی آمدنی" : "Yesterday Revenue")
+    : dateFilter === "week" ? (isUrdu ? "ہفتہ کی آمدنی" : "Week Revenue")
+    : dateFilter === "month" ? (isUrdu ? "مہینہ کی آمدنی" : "Month Revenue")
+    : (isUrdu ? "آمدنی" : "Revenue");
 
   const buildItemsFromSale = (s) => {
     if (s.items && s.items.length > 0) return s.items;
@@ -407,9 +410,9 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
 
       {/* Stat cards */}
       <div style={{ display:"grid", gridTemplateColumns:isMobile?"1fr 1fr":"repeat(auto-fit,minmax(180px,1fr))", gap:12 }}>
-        <StatCard label={isUrdu?"آج کی آمدنی":t.todayRevenue||"Today Revenue"} value={formatPKR(todayRevenue)} icon={ICONS.trend_up} color="#1abc9c" sub={`${todaySales.length} ${isUrdu?"آج کی فروخت":"today's sales"}`}/>
+        <StatCard label={filterRevenueLabel} value={formatPKR(periodRevenue)} icon={ICONS.trend_up} color="#1abc9c" sub={`${recentSales.length} ${isUrdu?"فروخت":"sales"}`}/>
         <StatCard label={isUrdu?"دستیاب اشیاء":t.productsInStock||"In Stock"} value={products.filter(p=>p.stock>0).length} icon={ICONS.box} color="#9b59b6"/>
-        <StatCard label={isUrdu?"بائنڈنگ مزدوری":"Binding Fee"} value={formatPKR(sales.reduce((s,p)=>s+(Number(p.bindingFee)||0),0))} icon={ICONS.invoice} color="#fbbf24" sub={`${sales.filter(p=>Number(p.bindingFee)>0).length} ${isUrdu?"invoices":"invoices"}`}/>
+        <StatCard label={isUrdu?"بائنڈنگ مزدوری":"Binding Fee"} value={formatPKR(periodBinding)} icon={ICONS.invoice} color="#fbbf24" sub={`${recentSales.filter(p=>Number(p.bindingFee)>0).length} ${isUrdu?"invoices":"invoices"}`}/>
         <StatCard
           label={isUrdu ? "واپسی" : "Returns"}
           value={(saleReturns || []).length}

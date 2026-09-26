@@ -310,7 +310,7 @@ function BillingSaleInvoice({ invoiceData, onClose, isUrdu }) {
   } = invoiceData;
 
   const sp         = loadShopProfile();
-  const ownerLines = sp.owners.filter(o => o.name || o.nameUr);
+  const ownerLines = (sp.owners || []).filter(o => o.name || o.nameUr);
   const paid       = Number(paidAmount)      || 0;
   const remaining  = Number(remainingAmount) || 0;
   const discountAmt = Number(discount) || 0;
@@ -2051,18 +2051,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
   const [reprintData,   setReprintData]   = useState(null);
   const [editData,      setEditData]      = useState(null);
 
-  const mySales = sales.filter(s => {
-    const email = currentUser?.email || "";
-    const uid = String(currentUser?._id || currentUser?.id || "");
-    const created = s.createdBy;
-    const createdId = created && typeof created === "object" ? String(created._id || created.id || "") : String(created || "");
-    const createdEmail = created && typeof created === "object" ? (created.email || "") : "";
-    return s.staffEmail === email
-      || s.staff?.email === email
-      || String(s.staff || "") === uid
-      || createdEmail === email
-      || createdId === uid;
-  });
+  const shopSales = sales || [];
   const saleRecency = (s) => {
     const t = Date.parse(s?.createdAt || s?.updatedAt || "");
     if (Number.isFinite(t)) return t;
@@ -2071,10 +2060,10 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
     const d = Date.parse(s?.date || "");
     return Number.isFinite(d) ? d : 0;
   };
-  const recentSales = [...mySales].sort((a, b) => saleRecency(b) - saleRecency(a));
+  const recentSales = [...shopSales].sort((a, b) => saleRecency(b) - saleRecency(a));
   const today2       = todayStr();
-  const todaySales   = mySales.filter(s => s.date === today2);
-  const todayRevenue = todaySales.reduce((s,x) => s + (x.total||0), 0);
+  const todaySales   = shopSales.filter(s => s.date === today2);
+  const todayRevenue = todaySales.reduce((s,x) => s + (Number(x.grandTotal) || Number(x.total) || 0), 0);
 
   const handleSave = async (payload) => {
     const firstProductName = payload.items[0]?.productName;
@@ -2231,10 +2220,10 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       </div>
 
       {/* Today loaders summary */}
-      <TodayLoadersSummary sales={mySales} isUrdu={isUrdu}/>
+      <TodayLoadersSummary sales={shopSales} isUrdu={isUrdu}/>
 
       {/* Today Chader binding mazdori summary */}
-      <TodayBindingFeeSummary sales={mySales} isUrdu={isUrdu}/>
+      <TodayBindingFeeSummary sales={shopSales} isUrdu={isUrdu}/>
 
       {/* Sales table */}
       <Table

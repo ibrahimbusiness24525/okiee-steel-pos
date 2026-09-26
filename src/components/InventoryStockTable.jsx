@@ -103,17 +103,26 @@ function purchasePayMap(purchases = []) {
     const key = invoiceKey(p) || String(p._id || p.id || "");
     if (!key) return;
     if (!map[key]) {
-      map[key] = { total: 0, remaining: 0, paid: 0, method: "", settlement: "" };
+      map[key] = { total: 0, remaining: 0, paid: 0, method: "", settlement: "", remainList: [], paidList: [] };
     }
     map[key].total += Number(p.total) || Number(p.grandTotal) || 0;
     if (p.remainingAmount != null && p.remainingAmount !== "") {
-      map[key].remaining = Math.max(map[key].remaining, Number(p.remainingAmount) || 0);
+      map[key].remainList.push(Number(p.remainingAmount) || 0);
     }
     if (p.paidAmount != null && p.paidAmount !== "") {
-      map[key].paid = Math.max(map[key].paid, Number(p.paidAmount) || 0);
+      map[key].paidList.push(Number(p.paidAmount) || 0);
     }
     if (p.paymentMethod) map[key].method = p.paymentMethod;
     if (p.settlement) map[key].settlement = p.settlement;
+  });
+  Object.values(map).forEach((info) => {
+    const remainList = info.remainList || [];
+    const paidList = info.paidList || [];
+    const sameish = (list) => list.length > 1 && list.every((v) => Math.abs(v - list[0]) < 0.51);
+    info.remaining = !remainList.length ? 0 : (sameish(remainList) ? remainList[0] : remainList.reduce((a, b) => a + b, 0));
+    info.paid = !paidList.length ? 0 : (sameish(paidList) ? paidList[0] : paidList.reduce((a, b) => a + b, 0));
+    if (info.remaining > info.total + 0.5) info.remaining = Math.max(...remainList);
+    if (info.paid > info.total + 0.5) info.paid = Math.max(...paidList);
   });
   return map;
 }

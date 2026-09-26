@@ -90,7 +90,7 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
   const th = useTheme();
   const { invoice, date, supplier, products, createdAt, paymentMethod, bankName, accountName, isPartial, paidAmount, remainingAmount } = invoiceData;
   const sp         = loadShopProfile();
-  const ownerLines = sp.owners.filter(o => o.name || o.nameUr);
+  const ownerLines = (sp.owners || []).filter(o => o.name || o.nameUr);
 
   const L = isUrdu ? {
     shopName:     sp.shopNameUr || sp.shopName,
@@ -221,7 +221,15 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
 
   const lineItems = [];
   (products || []).forEach(prod => {
-    (prod.rows || []).forEach(row => {
+    const rows = (prod.rows && prod.rows.length)
+      ? prod.rows
+      : [{
+          qty: Number(prod.qty) || 0,
+          purchasePrice: Number(prod.productPrice) || 0,
+          amount: Number(prod.total) || 0,
+          desc: `${Number(prod.qty) || 0}pc × Rs${Number(prod.productPrice) || 0}/pc`,
+        }];
+    rows.forEach(row => {
       lineItems.push(parseRow(row, prod.category, prod.productName, prod.productPrice || 0));
     });
   });
@@ -840,15 +848,19 @@ function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchas
 
     setSaving(false);
     if (allOk) {
-      await recordTradeFinance({
-        kind: "purchase",
-        partyName: supplier,
-        invoice: invoiceNum,
-        date,
-        paid: pay.paidAmount,
-        remaining: pay.remainingAmount,
-        accountId: pay.accountId,
-      });
+      try {
+        await recordTradeFinance({
+          kind: "purchase",
+          partyName: supplier,
+          invoice: invoiceNum,
+          date,
+          paid: pay.paidAmount,
+          remaining: pay.remainingAmount,
+          accountId: pay.accountId,
+        });
+      } catch (e) {
+        console.error(e);
+      }
       setInvoiceData({
         invoice: invoiceNum, date, supplier, products: invoiceProducts,
         paymentMethod: pay.paymentMethod, bankName: pay.bankName, accountName: pay.accountName,

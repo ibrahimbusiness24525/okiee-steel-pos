@@ -6,6 +6,7 @@ import { useResponsive, Icon, ICONS, Modal, Table } from "../components/shared";
 import { formatPKR, formatDateTime, printThermalOrA4, downloadInvoicePdf, sharePdfOnWhatsApp, loadShopProfile, inDateFilter } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
 import InventoryStockTable, { inventoryStats } from "../components/InventoryStockTable";
+import { netSaleAmount, saleReturnedAmount } from "../utils/returnsStore";
 
 function groupByInvoice(list) {
   const map = new Map();
@@ -80,8 +81,8 @@ function findProduct(products, id, name) {
   );
 }
 
-/** Same profit math on dashboard KPI and analytics. */
-function calcInvoiceProfit(sale) {
+/** Same profit math on dashboard KPI and analytics. Sale returns shrink sale + cost. */
+function calcInvoiceProfit(sale, saleReturns) {
   const billTotal = Number(sale?.grandTotal) || Number(sale?.total) || 0;
   const passThroughFees = (Number(sale?.loaderFee) || 0) + (Number(sale?.bindingFee) || 0);
   let costAmt = 0;
@@ -103,12 +104,20 @@ function calcInvoiceProfit(sale) {
     });
   }
   const saleAmt = hasCost ? costedSaleAmt : (billTotal - passThroughFees);
-  return { saleAmt, costAmt, profit: saleAmt - costAmt, hasCost };
+  const ret = saleReturnedAmount(sale, saleReturns);
+  const gross = billTotal > 0 ? billTotal : saleAmt;
+  const keep = gross > 0 ? Math.max(0, (gross - ret) / gross) : 1;
+  return {
+    saleAmt: saleAmt * keep,
+    costAmt: costAmt * keep,
+    profit: (saleAmt - costAmt) * keep,
+    hasCost,
+  };
 }
 
-function periodProfit(sales) {
+function periodProfit(sales, saleReturns) {
   return (sales || []).reduce((sum, s) => {
-    const r = calcInvoiceProfit(s);
+    const r = calcInvoiceProfit(s, saleReturns);
     return r.hasCost ? sum + r.profit : sum;
   }, 0);
 }
@@ -186,6 +195,45 @@ function flattenSales(list, products) {
     }
   });
   return lines;
+}
+
+function flattenSaleReturnItems(returns) {
+  const lines = [];
+  (returns || []).forEach((r) => {
+    (r.items || []).forEach((it) => {
+      const qty = Number(it.qty) || 0;
+      const saleAmt = Number(it.amount) || Number(it.subtotal) || qty * (Number(it.rate) || 0);
+      if (qty <= 0 && saleAmt <= 0) return;
+      lines.push({
+        name: String(it.productName || it.name || "").trim() || "—",
+        qty,
+        saleAmt,
+      });
+    });
+  });
+  return lines;
+}
+
+function applySaleReturnsToLines(saleLines, saleReturns) {
+  const leftover = flattenSaleReturnItems(saleReturns);
+  return (saleLines || []).map((line) => {
+    let qty = Number(line.qty) || 0;
+    let saleAmt = Number(line.saleAmt) || 0;
+    const origSale = saleAmt;
+    leftover.forEach((r) => {
+      if (String(r.name).toLowerCase() !== String(line.name).toLowerCase()) return;
+      const takeAmt = Math.min(saleAmt, Number(r.saleAmt) || 0);
+      const takeQty = Math.min(qty, Number(r.qty) || 0);
+      saleAmt -= takeAmt;
+      qty -= takeQty;
+      r.saleAmt = (Number(r.saleAmt) || 0) - takeAmt;
+      r.qty = (Number(r.qty) || 0) - takeQty;
+    });
+    if (saleAmt <= 0.009 && qty <= 0.009) return null;
+    const keep = origSale > 0 ? saleAmt / origSale : 0;
+    const costAmt = (Number(line.costAmt) || 0) * keep;
+    return { ...line, qty, saleAmt, costAmt, profit: saleAmt - costAmt };
+  }).filter(Boolean);
 }
 
 function groupByKey(rows, keyFn) {
@@ -371,7 +419,7 @@ function AnalyticsPrintSheet({ shop, periodLabel, actionLabel, packs = [], summa
   const tdS = { fontSize: "9px", fontWeight: 700, padding: "2px 2px", borderBottom: "1px dotted #000", verticalAlign: "top" };
   const names = packs.map((p) => p.title).filter(Boolean);
   const PrintTable = ({ pack }) => (
-    pack.rows.length === 0 ? (
+    !(pack.rows || []).length ? (
       <div style={{ textAlign: "center" }}>{pack.empty}</div>
     ) : (
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -393,6 +441,7 @@ function AnalyticsPrintSheet({ shop, periodLabel, actionLabel, packs = [], summa
   );
   return (
     <div id="thermal-invoice" style={page}>
+      <div className="print-sheet">
       <div style={{ textAlign: "center", fontWeight: 900, fontSize: "14px" }}>{shop?.shopName || "STEELPOS"}</div>
       <div style={{ textAlign: "center", fontWeight: 900, fontSize: "12px", marginTop: 2 }}>
         {isUrdu ? "رپورٹ" : "REPORT"}
@@ -423,8 +472,9 @@ function AnalyticsPrintSheet({ shop, periodLabel, actionLabel, packs = [], summa
       <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 900 }}>
         <span>{isUrdu ? "منافع" : "Profit"}</span><span>{formatPKR(summary.profit)}</span>
       </div>
+      </div>
       {packs.map((pack, idx) => (
-        <div key={pack.title || idx}>
+        <div key={pack.title || idx} className="print-sheet" style={{ pageBreakInside: "avoid" }}>
           <div style={line} />
           <div style={{ fontWeight: 900, textAlign: "center", marginBottom: 4 }}>{pack.title}</div>
           <PrintTable pack={pack} />
@@ -452,7 +502,7 @@ function AnalyticsPrintSheet({ shop, periodLabel, actionLabel, packs = [], summa
 }
 
 function ReportTable({ cols, rows, empty, th, footer, hideFooter }) {
-  if (!rows.length) {
+  if (!rows?.length) {
     return (
       <div style={{ padding: 18, textAlign: "center", color: th.textDim, border: `1px dashed ${th.border}`, borderRadius: 12, fontSize: 13 }}>
         {empty}
@@ -551,6 +601,8 @@ function DailyAnalyticsModal({
   sales = [],
   purchases = [],
   products = [],
+  saleReturns = [],
+  purchaseReturns = [],
   initialFilter = "today",
   initialFrom = "",
   initialTo = "",
@@ -578,16 +630,18 @@ function DailyAnalyticsModal({
   const modalFilteredSales = (sales || []).filter(inRange);
   const modalFilteredPurchases = (purchases || []).filter(inRange);
   const modalFilteredExpenses = (expenses || []).filter(inRange);
+  const modalFilteredPurchaseReturns = (purchaseReturns || []).filter(inRange);
 
-  // Recalculate totals based on filtered data
-  const modalTotalSales = modalFilteredSales.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
-  const modalTotalPurchases = modalFilteredPurchases.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
+  // Recalculate totals based on filtered data (returns reduce the original sale)
+  const modalTotalSales = modalFilteredSales.reduce((s, p) => s + netSaleAmount(p, saleReturns), 0);
+  const modalTotalPurchases = modalFilteredPurchases.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0)
+    - modalFilteredPurchaseReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
   
-  const modalProfit = periodProfit(modalFilteredSales);
-  const modalHasCost = modalFilteredSales.some((s) => calcInvoiceProfit(s).hasCost);
+  const modalProfit = periodProfit(modalFilteredSales, saleReturns);
+  const modalHasCost = modalFilteredSales.some((s) => calcInvoiceProfit(s, saleReturns).hasCost);
 
   const purLines = flattenPurchases(modalFilteredPurchases, products);
-  const saleLines = flattenSales(modalFilteredSales, products);
+  const saleLines = applySaleReturnsToLines(flattenSales(modalFilteredSales, products), saleReturns);
   const purItem = groupByKey(purLines, (r) => r.name);
   const purCat = groupByKey(purLines, (r) => r.category);
   const purSup = groupByKey(purLines, (r) => r.supplier);
@@ -1108,8 +1162,8 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   const filteredPurchaseReturns = (purchaseReturns || []).filter((r) => inRange(r));
   const filteredExpenses = (expenses || []).filter((e) => inRange(e));
 
-  const totalSalesCount    = filteredSales.length;
-  const totalSalesAmount   = filteredSales.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
+  const totalSalesCount    = filteredSales.filter((s) => netSaleAmount(s, saleReturns) > 0.009).length;
+  const totalSalesAmount   = filteredSales.reduce((s, p) => s + netSaleAmount(p, saleReturns), 0);
   const totalPurchaseCount = filteredPurchases.length;
   const totalPurchaseAmt   = filteredPurchases.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
   const saleReturnAmt = filteredSaleReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
@@ -1122,7 +1176,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
 
   // ─── PROFIT / LOSS — per invoice, real margin ────────────────────────────────
   const invoiceProfitRows = filteredSales.map((s) => {
-    const { saleAmt, costAmt, profit, hasCost } = calcInvoiceProfit(s);
+    const { saleAmt, costAmt, profit, hasCost } = calcInvoiceProfit(s, saleReturns);
     return {
       invoice:  s.invoice || s.invoiceNum || "—",
       customer: s.customer || "—",
@@ -1138,7 +1192,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   const costedRows          = invoiceProfitRows.filter((r) => r.hasCost);
   const totalSaleForProfit  = costedRows.reduce((a, r) => a + r.saleAmt, 0);
   const totalCostForProfit  = costedRows.reduce((a, r) => a + r.costAmt, 0);
-  const overallProfit       = periodProfit(filteredSales);
+  const overallProfit       = periodProfit(filteredSales, saleReturns);
   const hasAnyCostData      = invoiceProfitRows.some((r) => r.hasCost);
 
   // ─── Supplier grouping ────────────────────────────────────────────────────────
@@ -1152,20 +1206,20 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   });
   const filteredSuppliers = Object.values(supplierMap)
     .sort((a, b) => b.total - a.total)
-    .filter((s) => s.name.toLowerCase().includes(supplierSearch.toLowerCase()));
+    .filter((s) => String(s.name || "").toLowerCase().includes(supplierSearch.toLowerCase()));
 
   // ─── Customer grouping ────────────────────────────────────────────────────────
   const customerMap = {};
   filteredSales.forEach((s) => {
     const key = s.customer || "Unknown";
     if (!customerMap[key]) customerMap[key] = { name: key, total: 0, count: 0, sales: [] };
-    customerMap[key].total += s.total || 0;
+    customerMap[key].total += netSaleAmount(s, saleReturns);
     customerMap[key].count += 1;
     customerMap[key].sales.push(s);
   });
   const filteredCustomers = Object.values(customerMap)
     .sort((a, b) => b.total - a.total)
-    .filter((c) => c.name.toLowerCase().includes(customerSearch.toLowerCase()));
+    .filter((c) => String(c.name || "").toLowerCase().includes(customerSearch.toLowerCase()));
 
   const filterLabel = () => {
     if (filter==="today")  return t.today    || "Today";
@@ -1642,6 +1696,8 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
           sales={sales}
           purchases={purchases}
           products={products}
+          saleReturns={saleReturns}
+          purchaseReturns={purchaseReturns}
           initialFilter={filter}
           initialFrom={customFrom}
           initialTo={customTo}

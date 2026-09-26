@@ -61,11 +61,11 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
       : (form.name||form.subType||form.category);
     setSaving(true);
     let payload={name:resolvedName,category:form.category,stock:Number(form.stock)||0,unit:form.unit||"piece"};
-    if(form.category==="Pipe") payload={...payload,price:parseFloat(form.price)||0,pipeType:form.pipeType,pipeSubType:form.pipeSubType,pipeInch:form.pipeInch,gauge:form.gauge,length:form.length,weight:Number(form.weight)||0,basePrice:Number(form.basePrice)||0,percentage:Number(form.percentage)||0,size:form.pipeInch};
-    else if(form.category==="Chader") payload={...payload,subType:form.subType,purchasePrice:parseFloat(form.purchasePrice)||0};
-    else if(form.category==="Net") payload={...payload,subType:form.subType,gauge:form.gauge||"",width:form.width||"",purchasePrice:parseFloat(form.purchasePrice)||0};
+    if(form.category==="Pipe") payload={...payload,price:parseFloat(form.price)||0,purchasePrice:parseFloat(form.purchasePrice)||0,pipeType:form.pipeType,pipeSubType:form.pipeSubType,pipeInch:form.pipeInch,gauge:form.gauge,length:form.length,weight:Number(form.weight)||0,basePrice:Number(form.basePrice)||0,percentage:Number(form.percentage)||0,size:form.pipeInch};
+    else if(form.category==="Chader") payload={...payload,subType:form.subType,purchasePrice:parseFloat(form.purchasePrice)||0,price:parseFloat(form.price)||0};
+    else if(form.category==="Net") payload={...payload,subType:form.subType,gauge:form.gauge||"",width:form.width||"",purchasePrice:parseFloat(form.purchasePrice)||0,price:parseFloat(form.price)||0};
     else if(form.category==="Hardware") payload={...payload,subType:form.subType,purchasePrice:parseFloat(form.purchasePrice)||0,price:parseFloat(form.price)||0};
-    else if(form.category==="Custom") payload={...payload,purchasePrice:parseFloat(form.purchasePrice)||0};
+    else if(form.category==="Custom") payload={...payload,purchasePrice:parseFloat(form.purchasePrice)||0,price:parseFloat(form.price)||0};
     if(editing){
       const res=await api.updateProduct(editing,payload);
       if(res.success){await loadProducts(); if(loadPurchases) await loadPurchases(); setShowModal(false);}else alert(res.message);
@@ -361,6 +361,13 @@ function PipeForm({ form, setForm }) {
             <input type="text" inputMode="decimal" value={form.price||""} onChange={e=>setForm(p=>({...p,price:e.target.value}))} placeholder="e.g. 28.5" style={{...s,paddingLeft:44,border:"2px solid rgba(26,188,156,0.4)",fontSize:17,fontWeight:700}} onFocus={e=>e.target.style.borderColor="#1abc9c"} onBlur={e=>e.target.style.borderColor="rgba(26,188,156,0.4)"}/>
           </div>
           {form.price&&parseFloat(form.price)>0&&(<p style={{color:"#34d399",fontSize:13,margin:"4px 0 0"}}>{formatPKR(parseFloat(form.price))} / {isUrdu?"فٹ":"feet"}</p>)}
+          <div style={{marginTop:12}}>
+            <LabelRow text={isUrdu ? "فروخت قیمت فی فٹ (روپے)" : "Sale price per feet (PKR)"}/>
+            <div style={{position:"relative"}}>
+              <span style={{position:"absolute",left:14,top:"50%",transform:"translateY(-50%)",color:th.textMuted,fontSize:14,fontWeight:600}}>Rs</span>
+              <input type="text" inputMode="decimal" value={form.purchasePrice||""} onChange={e=>setForm(p=>({...p,purchasePrice:e.target.value}))} placeholder="0" style={{...s,paddingLeft:44}} onFocus={e=>e.target.style.borderColor="#1abc9c"} onBlur={e=>e.target.style.borderColor=th.inputBorder}/>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -398,6 +405,13 @@ function ChaderForm({ form, setForm }) {
         label={isUrdu ? "خریداری قیمت (روپے) - اختیاری" : "Purchase Price (PKR) - Optional"}
         value={form.purchasePrice}
         onChange={v=>setForm(p=>({...p,purchasePrice:v}))}
+        placeholder="0"
+        inputMode="decimal"
+      />
+      <FInput
+        label={isUrdu ? "فروخت قیمت (روپے) - اختیاری" : "Sale Price (PKR) - Optional"}
+        value={form.price}
+        onChange={v=>setForm(p=>({...p,price:v}))}
         placeholder="0"
         inputMode="decimal"
       />
@@ -472,6 +486,13 @@ function NetForm({ form, setForm }) {
         placeholder="0"
         inputMode="decimal"
       />
+      <FInput
+        label={isUrdu ? "فروخت قیمت (روپے) - اختیاری" : "Sale Price (PKR) - Optional"}
+        value={form.price}
+        onChange={v=>setForm(p=>({...p,price:v}))}
+        placeholder="0"
+        inputMode="decimal"
+      />
     </div>
   );
 }
@@ -520,6 +541,13 @@ function CustomForm({ form, setForm }) {
         label={isUrdu ? "خریداری قیمت (روپے) - اختیاری" : "Purchase Price (PKR) - Optional"}
         value={form.purchasePrice}
         onChange={v=>setForm(p=>({...p,purchasePrice:v}))}
+        placeholder="0"
+        inputMode="decimal"
+      />
+      <FInput
+        label={isUrdu ? "فروخت قیمت (روپے) - اختیاری" : "Sale Price (PKR) - Optional"}
+        value={form.price}
+        onChange={v=>setForm(p=>({...p,price:v}))}
         placeholder="0"
         inputMode="decimal"
       />
@@ -575,10 +603,10 @@ export function ProductQuickAddModal({ loadProducts, loadPurchases, onClose, onS
       : (form.name || form.subType || form.category);
     setSaving(true);
     let payload = { name: resolvedName, category: form.category, stock: Number(form.stock) || 0, unit: form.unit || "piece" };
-    if (form.category === "Pipe") payload = { ...payload, price: parseFloat(form.price) || 0, pipeType: form.pipeType, pipeSubType: form.pipeSubType, pipeInch: form.pipeInch, gauge: form.gauge, length: form.length, weight: Number(form.weight) || 0, basePrice: Number(form.basePrice) || 0, percentage: Number(form.percentage) || 0, size: form.pipeInch };
-    else if (form.category === "Chader") payload = { ...payload, subType: form.subType, purchasePrice: parseFloat(form.purchasePrice) || 0 };
-    else if (form.category === "Net") payload = { ...payload, subType: form.subType, gauge: form.gauge || "", width: form.width || "", purchasePrice: parseFloat(form.purchasePrice) || 0 };
-    else if (form.category === "Custom") payload = { ...payload, purchasePrice: parseFloat(form.purchasePrice) || 0 };
+    if (form.category === "Pipe") payload = { ...payload, price: parseFloat(form.price) || 0, purchasePrice: parseFloat(form.purchasePrice) || 0, pipeType: form.pipeType, pipeSubType: form.pipeSubType, pipeInch: form.pipeInch, gauge: form.gauge, length: form.length, weight: Number(form.weight) || 0, basePrice: Number(form.basePrice) || 0, percentage: Number(form.percentage) || 0, size: form.pipeInch };
+    else if (form.category === "Chader") payload = { ...payload, subType: form.subType, purchasePrice: parseFloat(form.purchasePrice) || 0, price: parseFloat(form.price) || 0 };
+    else if (form.category === "Net") payload = { ...payload, subType: form.subType, gauge: form.gauge || "", width: form.width || "", purchasePrice: parseFloat(form.purchasePrice) || 0, price: parseFloat(form.price) || 0 };
+    else if (form.category === "Custom") payload = { ...payload, purchasePrice: parseFloat(form.purchasePrice) || 0, price: parseFloat(form.price) || 0 };
     const qty = Number(payload.stock) || 0;
     const res = await api.addProduct({ ...payload, stock: 0 });
     if (!res.success) { alert(res.message); setSaving(false); return; }
