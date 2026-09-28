@@ -342,23 +342,20 @@ function lotsFromContext(product, ctx) {
 
   const remaining = lots.filter((l) => l.remaining > 0.0001);
   const costValue = remaining.reduce((s, l) => s + l.remaining * l.unitCost, 0);
-  const avgCost = held > 0 ? costValue / held : fallback;
+  const fifoCost = remaining.length ? Number(remaining[0].unitCost) || fallback : fallback;
   const sale = costAndSale(product).sale;
-  const profitPc = sale - avgCost;
-  const remainingNewest = remaining.slice().sort((a, b) => {
-    const stampA = `${a.date || ""}|${a.createdAt || ""}`;
-    const stampB = `${b.date || ""}|${b.createdAt || ""}`;
-    return stampB.localeCompare(stampA);
-  });
+  const profitPc = sale - fifoCost;
+  const profitStock = remaining.reduce((s, l) => s + l.remaining * (sale - (Number(l.unitCost) || 0)), 0);
   return {
-    remaining: remainingNewest,
+    remaining,
     allLots: lots,
     stock: held,
-    avgCost: Math.round((Number(avgCost) || 0) * 100) / 100,
+    fifoCost: Math.round((Number(fifoCost) || 0) * 100) / 100,
+    avgCost: Math.round((Number(fifoCost) || 0) * 100) / 100,
     costValue,
     sale,
     profitPc,
-    profitStock: profitPc * held,
+    profitStock,
     sold: Math.max(0, sold - saleRet),
     purchRet,
   };
@@ -367,6 +364,44 @@ function lotsFromContext(product, ctx) {
 export function stockLotsForProduct(product, opts = {}) {
   const ctx = opts.ctx || makeLotContext(opts);
   return lotsFromContext(product, ctx);
+}
+
+/** FIFO cost of selling `qty` (oldest remaining purchase lots first). */
+export function fifoCostForQty(product, qty, opts = {}, extraQty = 0) {
+  const lots = stockLotsForProduct(product, opts);
+  const need0 = Math.max(0, Number(qty) || 0);
+  if (need0 <= 0) return 0;
+  const layers = (lots.allLots || []).map((l) => ({
+    remaining: Number(l.remaining) || 0,
+    bought: Number(l.bought) || Number(l.remaining) || 0,
+    unitCost: Number(l.unitCost) || 0,
+  }));
+  let extra = Math.max(0, Number(extraQty) || 0);
+  for (const layer of layers) {
+    if (extra <= 0) break;
+    const room = Math.max(0, layer.bought - layer.remaining);
+    const give = Math.min(room, extra);
+    layer.remaining += give;
+    extra -= give;
+  }
+  if (extra > 0) {
+    if (layers[0]) layers[0].remaining += extra;
+    else layers.push({ remaining: extra, unitCost: Number(lots.fifoCost) || 0 });
+  }
+  let need = need0;
+  let cost = 0;
+  for (const layer of layers) {
+    if (need <= 0) break;
+    const take = Math.min(layer.remaining, need);
+    if (take <= 0) continue;
+    cost += take * layer.unitCost;
+    need -= take;
+  }
+  if (need > 0) {
+    const fb = Number(lots.fifoCost) || Number(costAndSale(product).cost) || 0;
+    cost += need * fb;
+  }
+  return Math.round(cost * 100) / 100;
 }
 
 function InventoryPrintSheet({ rows, total, isUrdu, kind }) {
@@ -476,7 +511,7 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t }) {
       </div>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <MiniStat th={th} label={isUrdu ? "اوسط لاگت / پیس" : "Avg cost / pc"} value={formatPKR(lots.avgCost)} />
+        <MiniStat th={th} label={isUrdu ? "پہلی لاگت / پیس" : "First cost / pc"} value={formatPKR(lots.fifoCost)} />
         <MiniStat th={th} label={isUrdu ? "فروخت قیمت / پیس" : "Sale / pc"} value={formatPKR(lots.sale)} />
         <MiniStat th={th} label={isUrdu ? "منافع / پیس" : "Profit / pc"} value={formatPKR(lots.profitPc)} color={profitColor} />
         <MiniStat th={th} label={isUrdu ? "کل منافع (اسٹاک)" : "Profit on stock"} value={formatPKR(lots.profitStock)} color={profitColor} />
@@ -484,8 +519,8 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t }) {
 
       <p style={{ color: th.textMuted, fontSize: 12, margin: 0, lineHeight: 1.45 }}>
         {isUrdu
-          ? "موجودہ اسٹاک کی اوسط خرید قیمت۔ فروخت اسی اوسط لاگت پر منافع کے ساتھ شمار ہوتی ہے۔"
-          : "Available stock is valued at the average purchase price of remaining lots. Selling uses this average cost to calculate profit."}
+          ? "پہلے خریدی گئی مال پہلے فروخت ہوتی ہے۔ منافع اسی خریداری کی لاگت سے نکلتی ہے۔"
+          : "Oldest purchase is sold first. Profit uses that lot’s cost, not an average."}
       </p>
 
       <div>
@@ -669,7 +704,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
       name: productDisplayName(p) || p.name || "—",
       category: [cat, status].filter(Boolean).join(" · "),
       stock: stockLabel(p.category, stock),
-      value: lots.costValue || stock * lots.avgCost,
+      value: lots.costValue || stock * lots.fifoCost,
     };
   });
   const printTotal = printRows.reduce((s, r) => s + r.value, 0);
@@ -744,7 +779,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
         </button>
       </div>
       <p style={{ color: th.textMuted, fontSize: 12, margin: "-4px 0 10px" }}>
-        {isUrdu ? "تفصیل کے لیے قطار پر کلک کریں" : "Click a row for purchase dates, average cost and profit"}
+        {isUrdu ? "تفصیل کے لیے قطار پر کلک کریں" : "Click a row for purchase lots (first in, first out) and profit"}
       </p>
       <div style={{ paddingBottom: inventory.length ? 8 : 0 }}>
       <Table
@@ -772,7 +807,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
               {stockLabel(p.category, stock)}
               {!isDemand && low ? statusBadge(false) : null}
             </span>,
-            <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(lots.avgCost)}</span>,
+            <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(lots.fifoCost)}</span>,
             <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(lots.sale)}</span>,
             <span style={{ fontWeight: 700, whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(lots.costValue)}</span>,
           );

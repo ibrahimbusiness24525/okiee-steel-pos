@@ -598,7 +598,10 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
   const wrapRef = useRef(null);
   const keepInViewRef = useRef(false);
   const [open,         setOpen]         = useState(true);
-  const [searchQuery,  setSearchQuery]  = useState("");
+  const [searchQuery,  setSearchQuery]  = useState(() => {
+    const found = products.find(p => p._id === block.productId);
+    return found?.name || "";
+  });
   const makeEmptyRow = (product) => prefillPurchaseRow(product.category, product);
 
   const handleSelectProduct = (product) => {
@@ -753,28 +756,29 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
 }
 
 // ─── Purchase Form Modal ──────────────────────────────────────────────────────
-function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchases, onSave, onClose, extraNames=[] }) {
+function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchases, onSave, onClose, extraNames=[], prefill = null, onRemoveLines }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const isUrdu = lang === "ur";
   const accounts = useAccounts();
+  const isEdit = !!prefill?.isEdit;
 
-  const [supplier,    setSupplier]    = useState("");
-  const [invoiceNum,  setInvoiceNum]  = useState(`PO-${Date.now().toString().slice(-4)}`);
-  const [date,        setDate]        = useState(todayStr());
+  const [supplier,    setSupplier]    = useState(prefill?.supplier || "");
+  const [invoiceNum,  setInvoiceNum]  = useState(prefill?.invoice || `PO-${Date.now().toString().slice(-4)}`);
+  const [date,        setDate]        = useState(prefill?.date || todayStr());
   const [saving,      setSaving]      = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
   const [invoiceData, setInvoiceData] = useState(null);
-  const [payForm,     setPayForm]     = useState({ settlement: "full", accountId: "", paidAmount: "" });
-  const [discountMode, setDiscountMode] = useState("pkr");
-  const [discount, setDiscount] = useState("");
-  const [cashPaid, setCashPaid] = useState("");
+  const [payForm,     setPayForm]     = useState(prefill?.payForm || { settlement: "full", accountId: "", paidAmount: "" });
+  const [discountMode, setDiscountMode] = useState(prefill?.discountMode || "pkr");
+  const [discount, setDiscount] = useState(prefill?.discount || "");
+  const [cashPaid, setCashPaid] = useState(prefill?.cashPaid || "");
   const [quickPick, setQuickPick] = useState(false);
   const [quickProduct, setQuickProduct] = useState(false);
   const [quickHardware, setQuickHardware] = useState(false);
 
-  const newBlock = () => ({ _id: Date.now() + Math.random(), productId: "", rows: [] });
-  const [blocks, setBlocks] = useState([newBlock()]);
+  const newBlock = () => ({ _id: Date.now() + Math.random(), productId: "", rows: [], purchaseId: "" });
+  const [blocks, setBlocks] = useState(() => (prefill?.blocks?.length ? prefill.blocks : [newBlock()]));
 
   const addBlock    = () => setBlocks(bs => [...bs, newBlock()]);
   const removeBlock = (idx) => setBlocks(bs => bs.filter((_, i) => i !== idx));
@@ -837,6 +841,7 @@ function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchas
         ? block.rows[0].unit 
         : null;
       const res  = await onSave({
+        purchaseId: block.purchaseId || "",
         supplier, invoice: invoiceNum, date, productId: block.productId, rows: block.rows, total, qty, rate, category, productPrice: purchasePricePerUnit,
         paymentMethod: pay.paymentMethod, bankName: pay.bankName, accountId: pay.accountId, accountName: pay.accountName,
         settlement: pay.settlement, isPartial: pay.isPartial, paidAmount: pay.paidAmount, remainingAmount: pay.remainingAmount,
@@ -850,6 +855,11 @@ function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchas
       if (!res || !res.success) { allOk = false; break; }
       invoiceProducts.push({ productName: product?.name || "", category, rows: block.rows, total, qty, productPrice: purchasePricePerUnit });
     }
+      if (isEdit && Array.isArray(prefill?.existingIds)) {
+        const used = new Set(blocks.map((b) => String(b.purchaseId || "")).filter(Boolean));
+        const leftover = prefill.existingIds.filter((id) => id && !used.has(String(id)));
+        if (leftover.length && onRemoveLines) await onRemoveLines(leftover);
+      }
     } catch (e) {
       console.error(e);
       allOk = false;
@@ -859,6 +869,15 @@ function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchas
     setSaving(false);
     if (allOk) {
       try {
+        if (isEdit) {
+          await reverseTradeFinance({
+            kind: "purchase",
+            partyName: prefill.supplier,
+            invoice: prefill.invoice,
+            paid: prefill.paidAmount,
+            accountId: prefill.accountId,
+          });
+        }
         await recordTradeFinance({
           kind: "purchase",
           partyName: supplier,
@@ -1014,7 +1033,7 @@ function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchas
           </div>
         )}
 
-        <SaveBtn label={saving ? "..." : t.savePurchase} onClick={handleSave} loading={saving} disabled={!canSave} />
+        <SaveBtn label={saving ? "..." : (isEdit ? (isUrdu ? "خریداری محفوظ کریں" : "Save changes") : t.savePurchase)} onClick={handleSave} loading={saving} disabled={!canSave} />
       </div>
       {quickPick && (
         <Modal title={isUrdu ? "نیا آئٹم" : "Add new item"} onClose={() => setQuickPick(false)} layer={220}>
@@ -1077,6 +1096,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
   const [customTo,         setCustomTo]         = useState("");
   const [viewGroup,        setViewGroup]        = useState(null);
   const [purchaseSearch,   setPurchaseSearch]   = useState("");
+  const [editGroup,        setEditGroup]        = useState(null);
 
   const handleSave = async (payload) => {
     const { supplier, invoice, date, productId, rows, total, qty, rate, category, productPrice } = payload;
@@ -1100,11 +1120,65 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
       changeDue: Number(payload.changeDue) || 0,
       unit: payload.unit || rows?.[0]?.unit || matchedProd?.unit || "",
     };
-    const res = await api.addPurchase(data);
+    const res = payload.purchaseId
+      ? await api.updatePurchase(payload.purchaseId, data)
+      : await api.addPurchase(data);
     if (res.success) { await loadPurchases(); await loadProducts(); }
     else alert(res.message || "Error saving purchase");
     return res;
   };
+
+  const handleRemoveLines = async (ids) => {
+    for (const id of ids) {
+      const res = await api.deletePurchase(id);
+      if (!res.success) alert(res.message);
+    }
+    await loadPurchases();
+    await loadProducts();
+  };
+
+  const productIdOf = (p) => {
+    const raw = p?.product;
+    if (raw && typeof raw === "object") return raw._id || raw.id || "";
+    return raw || "";
+  };
+
+  const buildPurchasePrefill = (g) => {
+    const items = g.items || [g];
+    const head = g.head || items[0] || {};
+    const paid = Number(head.paidAmount) || 0;
+    const remaining = Number(head.remainingAmount) || 0;
+    const settlement = head.settlement || (remaining > 0 ? (paid > 0 ? "partial" : "credit") : "full");
+    return {
+      isEdit: true,
+      supplier: head.supplier || "",
+      invoice: head.invoice || head.invoiceNum || "",
+      date: head.date || todayStr(),
+      paidAmount: paid,
+      accountId: head.accountId || "",
+      discountMode: head.discountType || "pkr",
+      discount: head.discountPct || head.discount || "",
+      cashPaid: head.cashReceived || "",
+      payForm: {
+        settlement,
+        accountId: head.accountId || "",
+        paidAmount: remaining > 0 ? String(paid) : "",
+      },
+      existingIds: items.map((p) => p._id).filter(Boolean),
+      blocks: items.map((p) => ({
+        _id: Date.now() + Math.random(),
+        purchaseId: p._id || "",
+        productId: productIdOf(p),
+        rows: (p.rows && p.rows.length) ? p.rows : [],
+      })),
+    };
+  };
+
+  const openEditPurchase = (g) => {
+    setEditGroup(g);
+    setShowModal(true);
+  };
+  const closePurchaseModal = () => { setShowModal(false); setEditGroup(null); };
 
   const delGroup = async (g) => {
     const items = g.items || [g];
@@ -1361,7 +1435,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
               ↩ {isMobile ? (isUrdu ? "واپسی" : "Return") : t.purchaseReturn}
             </button>
             <button
-              onClick={() => setShowModal(true)}
+              onClick={() => { setEditGroup(null); setShowModal(true); }}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "white", fontWeight: 600, fontSize: 14 }}
             >
               <Icon path={ICONS.plus} size={15} />{isMobile ? "+" : t.addPurchase}
@@ -1369,7 +1443,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
           </div>
         </div>
         <Table
-          cols={[t.invoiceNum, isUrdu ? "تاریخ / وقت" : "Date / Time", t.supplier, t.name, t.category, t.quantity, t.totalLabel, isUrdu ? "ادائیگی" : "Pay"]}
+          cols={[t.invoiceNum, isUrdu ? "تاریخ / وقت" : "Date / Time", t.supplier, t.name, t.category, t.quantity, t.totalLabel, isUrdu ? "ادائیگی" : "Pay", "🖨️"]}
           rows={purchaseGroups.map((g) => {
             const p = g.head;
             const multi = g.items.length > 1;
@@ -1395,9 +1469,14 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
                 g.due > 0
                   ? <span style={{ fontSize: 11, padding: "2px 7px", borderRadius: 20, background: "rgba(248,113,113,0.15)", color: "#f87171", fontWeight: 700, whiteSpace: "nowrap" }}>⏳ {formatPKR(g.due)}</span>
                   : <span style={{ fontSize: 11, padding: "2px 7px", borderRadius: 20, background: "rgba(52,211,153,0.12)", color: "#34d399", fontWeight: 600 }}>{p.accountName || p.bankName || (isUrdu ? "ادا" : "Paid")}</span>,
+                <button onClick={(e)=>{ e.stopPropagation(); openPurchaseInvoice(g); }}
+                  style={{background:"rgba(96,165,250,0.12)",border:"none",borderRadius:6,color:"#60a5fa",cursor:"pointer",padding:"4px 10px",fontSize:13}}
+                  onMouseEnter={e=>e.currentTarget.style.background="rgba(96,165,250,0.25)"}
+                  onMouseLeave={e=>e.currentTarget.style.background="rgba(96,165,250,0.12)"}>🖨️</button>,
               ],
             };
           })}
+          onEdit={openEditPurchase}
           onRowClick={(g) => setViewGroup(g)}
         />
       </div>
@@ -1495,7 +1574,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
       )}
 
       {showModal && (
-        <Modal title={t.addPurchase} onClose={() => setShowModal(false)} wide>
+        <Modal title={editGroup ? (isUrdu ? "خریداری ترمیم کریں" : "Edit Purchase") : t.addPurchase} onClose={closePurchaseModal} wide>
           <PurchaseFormModal
             products={products}
             purchases={purchases}
@@ -1507,7 +1586,9 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
               ...products.map((p) => p.lastSupplier),
             ]}
             onSave={handleSave}
-            onClose={() => setShowModal(false)}
+            onRemoveLines={handleRemoveLines}
+            prefill={editGroup ? buildPurchasePrefill(editGroup) : null}
+            onClose={closePurchaseModal}
           />
         </Modal>
       )}

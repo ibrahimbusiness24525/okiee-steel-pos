@@ -191,12 +191,12 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
         </div>
       </div>
       <Table
-        cols={[t.number, t.pipeProduct, isUrdu ? "اوسط لاگت / فروخت قیمت" : "Avg cost / Sale Price", t.type, t.subType||"Sub Type"]}
+        cols={[t.number, t.pipeProduct, isUrdu ? "لاگت / فروخت قیمت" : "Cost / Sale Price", t.type, t.subType||"Sub Type"]}
         rows={displayed.map((p,i)=>{
           const cc=catColor[p.category]||catColor.Custom;
           const isPipe = p.category==="Pipe";
           const lots = stockLotsForProduct(p, { ctx: lotCtx });
-          const cost = Number(lots.avgCost) || 0;
+          const cost = Number(lots.fifoCost || lots.avgCost) || 0;
           const sale = Number(lots.sale) || Number(p.price) || 0;
           const costShown = revealedCost.has(p._id);
           const fmtRs = (n) => {
@@ -208,7 +208,7 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
           const eyeBtn = cost > 0 ? (
             <button
               type="button"
-              title={costShown ? (isUrdu ? "اوسط لاگت چھپائیں" : "Hide avg cost") : (isUrdu ? "اوسط لاگت دکھائیں" : "Show avg cost")}
+              title={costShown ? (isUrdu ? "لاگت چھپائیں" : "Hide cost") : (isUrdu ? "لاگت دکھائیں" : "Show cost")}
               onClick={(e) => toggleCostPrice(p._id, e)}
               style={{
                 display:"inline-flex", alignItems:"center", justifyContent:"center",

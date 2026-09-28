@@ -1,17 +1,17 @@
 import { useState, useRef, useLayoutEffect, useMemo } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS, Modal, StatCard, Table, WeightKgGInput, useTypeaheadNav } from "../components/shared";
+import { useResponsive, Icon, ICONS, Modal, StatCard, Table, WeightKgGInput, useTypeaheadNav, DateFilterBar } from "../components/shared";
 import { api } from "../utils/api";
 import { netSaleAmount, saleReturnedAmount, netSaleItems } from "../utils/returnsStore";
-import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, printThermalOrA4 } from "../utils/helpers";
+import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, printThermalOrA4, inDateFilter } from "../utils/helpers";
 import { convertQuantity, convertPrice, getUnitLabel, canConvert, unitOptions, productUnitOf } from "../utils/unitConversion";
 import { OkiieeBrandFooter, parseSaleInvoiceRow } from "../components/InvoiceComponents";
 import { productDisplayName } from "../utils/constants";
 import PaymentTerms, { useAccounts, derivePayment, isPayValid, calcDiscount, DiscountCashFields } from "../components/PaymentTerms";
 import { recordTradeFinance, reverseTradeFinance } from "../utils/tradeFinance";
 import PartyNamePicker from "../components/PartyNamePicker";
-import { stockLotsForProduct, makeLotContext } from "../components/InventoryStockTable";
+import { stockLotsForProduct, makeLotContext, fifoCostForQty } from "../components/InventoryStockTable";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BILLING PAGE — COMPLETE UPDATE
@@ -907,7 +907,7 @@ function PipeBillingRows({ rows, onChange, purchasePrice, avgCost = 0, availStoc
   return (
     <div style={{display:"flex",flexDirection:"column",gap:8}}>
       <div style={{padding:"7px 11px",borderRadius:8,background:"rgba(96,165,250,0.08)",border:"1px solid rgba(96,165,250,0.2)",fontSize:13,color:"#60a5fa",fontWeight:600}}>
-        🔩 {isUrdu ? "اوسط لاگت" : "Avg cost"}{showCost ? `: Rs ${fmtAvgCost(avgCost || purchasePrice)}/pc` : ""} <CostEyeBtn show={showCost} onToggle={onToggleCost} /> — {isUrdu ? "مارکپ % داخل کریں" : "Enter markup % for sale price"}
+        🔩 {isUrdu ? "لاگت" : "Cost"}{showCost ? `: Rs ${fmtAvgCost(avgCost || purchasePrice)}/pc` : ""} <CostEyeBtn show={showCost} onToggle={onToggleCost} /> — {isUrdu ? "مارکپ % داخل کریں" : "Enter markup % for sale price"}
       </div>
       <div style={{padding:"6px 11px",borderRadius:8,background:availStock===0?"rgba(248,113,113,0.1)":"rgba(52,211,153,0.08)",border:`1px solid ${availStock===0?"rgba(248,113,113,0.3)":"rgba(52,211,153,0.2)"}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <span style={{fontSize:12,color:th.textMuted}}>{isUrdu?"دستیاب Stock:":"Available Stock:"}</span>
@@ -973,8 +973,8 @@ function ChaderBillingRows({ rows, onChange, purchasePrice, avgCost = 0, availSt
     <div style={{display:"flex",flexDirection:"column",gap:8}}>
       <div style={{padding:"7px 11px",borderRadius:8,background:ppZero?"rgba(251,191,36,0.08)":"rgba(52,211,153,0.08)",border:ppZero?"1px solid rgba(251,191,36,0.3)":"1px solid rgba(52,211,153,0.2)",fontSize:13,color:ppZero?"#fbbf24":"#34d399",fontWeight:600}}>
         📋 {ppZero
-          ? (isUrdu ? "⚠️ اوسط لاگت سیٹ نہیں — Sale price نیچے خود داخل کریں" : "⚠️ Avg cost not set — enter sale price/kg manually below")
-          : <>{isUrdu ? "اوسط لاگت" : "Avg cost"}{showCost ? `: Rs ${fmtAvgCost(shownCost)}/kg` : ""} <CostEyeBtn show={showCost} onToggle={onToggleCost} /> — {isUrdu ? "Sale price نیچے تبدیل کریں" : "Sale price editable below"}</>
+          ? (isUrdu ? "⚠️ لاگت سیٹ نہیں — Sale price نیچے خود داخل کریں" : "⚠️ Cost not set — enter sale price/kg manually below")
+          : <>{isUrdu ? "لاگت" : "Cost"}{showCost ? `: Rs ${fmtAvgCost(shownCost)}/kg` : ""} <CostEyeBtn show={showCost} onToggle={onToggleCost} /> — {isUrdu ? "Sale price نیچے تبدیل کریں" : "Sale price editable below"}</>
         }
       </div>
       <div style={{padding:"6px 11px",borderRadius:8,background:availStock===0?"rgba(248,113,113,0.1)":"rgba(52,211,153,0.08)",border:`1px solid ${availStock===0?"rgba(248,113,113,0.3)":"rgba(52,211,153,0.2)"}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -1038,8 +1038,8 @@ function NetBillingRows({ rows, onChange, purchasePrice, avgCost = 0, availStock
     <div style={{display:"flex",flexDirection:"column",gap:8}}>
       <div style={{padding:"7px 11px",borderRadius:8,background:ppZero?"rgba(251,191,36,0.08)":"rgba(244,114,182,0.08)",border:ppZero?"1px solid rgba(251,191,36,0.3)":"1px solid rgba(244,114,182,0.2)",fontSize:13,color:ppZero?"#fbbf24":"#f472b6",fontWeight:600}}>
         🕸️ {ppZero
-          ? (isUrdu ? "⚠️ اوسط لاگت سیٹ نہیں — Sale price نیچے خود داخل کریں" : "⚠️ Avg cost not set — enter sale price/ft manually below")
-          : <>{isUrdu ? "اوسط لاگت" : "Avg cost"}{showCost ? `: Rs ${fmtAvgCost(shownCost)}/ft` : ""} <CostEyeBtn show={showCost} onToggle={onToggleCost} /> — {isUrdu ? "Sale price نیچے تبدیل کریں" : "Sale price editable below"}</>
+          ? (isUrdu ? "⚠️ لاگت سیٹ نہیں — Sale price نیچے خود داخل کریں" : "⚠️ Cost not set — enter sale price/ft manually below")
+          : <>{isUrdu ? "لاگت" : "Cost"}{showCost ? `: Rs ${fmtAvgCost(shownCost)}/ft` : ""} <CostEyeBtn show={showCost} onToggle={onToggleCost} /> — {isUrdu ? "Sale price نیچے تبدیل کریں" : "Sale price editable below"}</>
         }
       </div>
       <div style={{padding:"6px 11px",borderRadius:8,background:availStock===0?"rgba(248,113,113,0.1)":"rgba(244,114,182,0.08)",border:`1px solid ${availStock===0?"rgba(248,113,113,0.3)":"rgba(244,114,182,0.2)"}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -1223,7 +1223,7 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
     return found ? productDisplayName(found) : "";
   });
   const selectedProduct = products.find(p => (p._id || p.id) === block.productId);
-  const avgCost = selectedProduct ? (Number(stockLotsForProduct(selectedProduct, lotOpts).avgCost) || 0) : 0;
+  const fifoCost = selectedProduct ? (Number(stockLotsForProduct(selectedProduct, lotOpts).fifoCost) || 0) : 0;
   const category   = selectedProduct?.category || "";
   const availStock = Number(selectedProduct?.stock) || 0;
   const catColors  = { Pipe:"#60a5fa", Chader:"#34d399", Net:"#f472b6", Hardware:"#fbbf24", Custom:"#a78bfa" };
@@ -1326,14 +1326,14 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
               ? convertPrice(rawSale, pUnit, saleUnit)
               : rawSale;
             const displayAvg = (category === "Hardware" || category === "Custom") && canConvert(pUnit, saleUnit)
-              ? convertPrice(avgCost, pUnit, saleUnit)
-              : avgCost;
+              ? convertPrice(fifoCost, pUnit, saleUnit)
+              : fifoCost;
             return (
             <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderRadius:8,background:catBgs[category]||"transparent",border:`1px solid ${(catColors[category]||"#aaa")}40`,flexWrap:"wrap"}}>
               <span style={{color:catColors[category],fontSize:12,fontWeight:700}}>{category}</span>
               <span style={{color:th.text,fontSize:13,fontWeight:600}}>{productDisplayName(selectedProduct)}</span>
               <span style={{marginLeft:"auto",color:"#fbbf24",fontSize:12,fontWeight:700,padding:"2px 8px",borderRadius:8,background:th.input,display:"inline-flex",alignItems:"center",gap:4}}>
-                {isUrdu ? "اوسط لاگت" : "Avg cost"}{showCost ? `: Rs ${fmtAvgCost(displayAvg)}/${uLbl}` : ""}
+                {isUrdu ? "لاگت" : "Cost"}{showCost ? `: Rs ${fmtAvgCost(displayAvg)}/${uLbl}` : ""}
                 <CostEyeBtn show={showCost} onToggle={() => setShowCost((v) => !v)} color="#fbbf24" />
               </span>
               <span style={{color:displayPrice>0?catColors[category]:"#f87171",fontSize:12,fontWeight:600,padding:"2px 8px",borderRadius:8,background:th.input}}>
@@ -1342,11 +1342,11 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
             </div>
             );
           })()}
-          {category==="Pipe"     && <PipeBillingRows    rows={block.pipeRows||[]}   onChange={rows=>onChange({...block,pipeRows:rows})}   purchasePrice={Number(selectedProduct?.price)||Number(selectedProduct?.purchasePrice)||0} avgCost={avgCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
-          {category==="Chader"   && <ChaderBillingRows  rows={block.chaderRows||[]} onChange={rows=>onChange({...block,chaderRows:rows})} purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} avgCost={avgCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
-          {category==="Net"      && <NetBillingRows     rows={block.netRows||[]}    onChange={rows=>onChange({...block,netRows:rows})}    purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} avgCost={avgCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
-          {category==="Hardware" && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} avgCost={avgCost} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)} catLabel="Hardware Total" catColor="#fbbf24" catBg="rgba(251,191,36,0.08)"/>}
-          {category==="Custom"   && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} avgCost={avgCost} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)} catLabel="Custom Total"   catColor="#a78bfa" catBg="rgba(167,139,250,0.08)"/>}
+          {category==="Pipe"     && <PipeBillingRows    rows={block.pipeRows||[]}   onChange={rows=>onChange({...block,pipeRows:rows})}   purchasePrice={Number(selectedProduct?.price)||Number(selectedProduct?.purchasePrice)||0} avgCost={fifoCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
+          {category==="Chader"   && <ChaderBillingRows  rows={block.chaderRows||[]} onChange={rows=>onChange({...block,chaderRows:rows})} purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} avgCost={fifoCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
+          {category==="Net"      && <NetBillingRows     rows={block.netRows||[]}    onChange={rows=>onChange({...block,netRows:rows})}    purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} avgCost={fifoCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
+          {category==="Hardware" && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} avgCost={fifoCost} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)} catLabel="Hardware Total" catColor="#fbbf24" catBg="rgba(251,191,36,0.08)"/>}
+          {category==="Custom"   && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} avgCost={fifoCost} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)} catLabel="Custom Total"   catColor="#a78bfa" catBg="rgba(167,139,250,0.08)"/>}
           {!category && (
             <div style={{padding:"12px",textAlign:"center",color:th.textDim,fontSize:13,borderRadius:8,border:`1px dashed ${th.border}`}}>
               {isUrdu ? "👆 Product منتخب کریں billing شروع کریں" : "👆 Select a product to start billing"}
@@ -1754,38 +1754,31 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
     const items = blocks.map(block => {
       const prod = products.find(p => (p._id||p.id) === block.productId);
       const cat  = prod?.category || "";
-      const avg  = prod ? (Number(stockLotsForProduct(prod, lotOpts).avgCost) || 0) : 0;
+      const extra = extraStockOf(block.productId);
       const pp   = (cat === "Pipe")
         ? (Number(prod?.price) || Number(prod?.purchasePrice) || 0)
         : (Number(prod?.purchasePrice) || 0);
-      const costRate = avg > 0 ? avg : pp;
       let rows   = [];
-      let costTotal = 0; // total cost for this item (purchase price × qty)
+      let itemQty = 0;
       if (cat === "Pipe") {
         const r = block.pipeRows[0] || {};
         const c = pipeBillCalc(pp, r.percentage, r.qty, r.length);
         const pricePerPc = c.effectivePrice * (Number(r.length)||0);
         rows = [{ desc:`${r.qty||0}pc × Rs${pricePerPc.toFixed(0)}/pc`, amount:c.total }];
-        // Cost: use purchasePercentage stored in product to get actual cost per ft
-        // e.g. bought at -5%: cost = pp * 0.95, sold at -3%: sale = pp * 0.97 → profit = 2%
-        const purchPct = Number(prod?.purchasePercentage) || 0;
-        const actualCostPerFt = pp * (1 + purchPct / 100);
-        const costPerPc = actualCostPerFt * (Number(r.length)||0);
-        const rawCost = costPerPc * (Number(r.qty)||0);
-        costTotal = avg > 0 ? costRate * (Number(r.qty)||0) : rawCost;
+        itemQty = Number(r.qty) || 0;
       } else if (cat === "Chader") {
         const r  = block.chaderRows[0] || {};
         const sp = r.salePrice !== undefined && r.salePrice !== "" ? r.salePrice : pp;
         const c  = chaderBillCalc(sp, r.weight);
         rows = [{ desc:`${r.weight}kg × Rs${Number(sp).toFixed(0)}/kg`, amount:c.total }];
-        costTotal = costRate * (Number(r.weight)||0);
+        itemQty = Number(r.weight) || 0;
       } else if (cat === "Net") {
         const r  = block.netRows[0] || {};
         const sp = r.salePrice !== undefined && r.salePrice !== "" ? r.salePrice : pp;
         const c  = netBillCalc(sp, r.feet);
         const widthPart = r.width ? `ft×${r.width}×` : "ft×";
         rows = [{ desc:`${r.feet}${widthPart} Rs${Number(sp).toFixed(0)}/ft`, amount:c.total }];
-        costTotal = costRate * (Number(r.feet)||0) * (Number(r.width)||1);
+        itemQty = (Number(r.feet) || 0) * (Number(r.width) || 1);
       } else {
         const r  = block.hwRows[0] || {};
         const pUnit = productUnitOf(prod);
@@ -1794,26 +1787,15 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
         const c  = hwBillCalc(sp, r.qty);
         const uLbl = getUnitLabel(saleUnit);
         rows = [{ desc:`${fmtQtyNice(r.qty||0)} ${uLbl} × Rs${fmtAvgCost(sp)}/${uLbl}`, amount:c.total, unit: saleUnit, qty: Number(r.qty)||0 }];
-        const costPerSaleUnit = canConvert(pUnit, saleUnit) ? convertPrice(costRate, pUnit, saleUnit) : costRate;
-        costTotal = costPerSaleUnit * (Number(r.qty)||0);
-      }
-      const subtotal = rows.reduce((s,r) => s + r.amount, 0);
-      // itemQty = actual stock-unit quantity being sold for THIS product (pc/kg/ft),
-      // used by backend to check + deduct stock per product in a multi-product sale.
-      let itemQty = 0;
-      if (cat === "Pipe")        itemQty = Number(block.pipeRows[0]?.qty)   || 0;
-      else if (cat === "Chader") itemQty = Number(block.chaderRows[0]?.weight) || 0;
-      else if (cat === "Net")    itemQty = Number(block.netRows[0]?.feet)   || 0;
-      else {
-        const r = block.hwRows[0] || {};
-        const pUnit = productUnitOf(prod);
-        const saleUnit = r.unit || pUnit;
         itemQty = canConvert(saleUnit, pUnit)
           ? convertQuantity(Number(r.qty) || 0, saleUnit, pUnit)
           : (Number(r.qty) || 0);
-        const stockQty = (Number(prod?.stock) || 0) + extraStockOf(block.productId);
+        const stockQty = (Number(prod?.stock) || 0) + extra;
         if (itemQty > stockQty && itemQty <= stockQty + 0.1) itemQty = stockQty;
       }
+      const costTotal = prod ? fifoCostForQty(prod, itemQty, lotOpts, extra) : 0;
+      const costRate = itemQty > 0 ? costTotal / itemQty : (prod ? (Number(stockLotsForProduct(prod, lotOpts).fifoCost) || pp) : pp);
+      const subtotal = rows.reduce((s,r) => s + r.amount, 0);
       return {
         productName: productDisplayName(prod), category: cat, rows, subtotal, costPrice: costRate, costTotal,
         productId: block.productId || (prod?._id || prod?.id || ""),
@@ -2108,6 +2090,10 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
   const [reprintData,   setReprintData]   = useState(null);
   const [editData,      setEditData]      = useState(null);
   const [viewSale,      setViewSale]      = useState(null);
+  const [dateFilter,    setDateFilter]    = useState("today");
+  const [customFrom,    setCustomFrom]    = useState("");
+  const [customTo,      setCustomTo]      = useState("");
+  const [saleSearch,    setSaleSearch]    = useState("");
 
   const shopSales = sales || [];
   const saleRecency = (s) => {
@@ -2118,10 +2104,30 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
     const d = Date.parse(s?.date || "");
     return Number.isFinite(d) ? d : 0;
   };
-  const recentSales = [...shopSales].sort((a, b) => saleRecency(b) - saleRecency(a));
-  const today2       = todayStr();
-  const todaySales   = shopSales.filter(s => s.date === today2);
-  const todayRevenue = todaySales.reduce((s,x) => s + netSaleAmount(x, saleReturns), 0);
+  const recentSales = [...shopSales]
+    .filter((s) => inDateFilter(s.date, dateFilter, customFrom, customTo, s.createdAt))
+    .filter((s) => {
+      const q = saleSearch.trim().toLowerCase();
+      if (!q) return true;
+      return [
+        s.invoice, s.invoiceNum, s.customer, s.productName,
+        safeProductName(s.product),
+        ...(s.items || []).map((it) => it.productName),
+      ].filter(Boolean).join(" ").toLowerCase().includes(q);
+    })
+    .sort((a, b) => saleRecency(b) - saleRecency(a));
+  const periodRevenue = recentSales.reduce((s,x) => s + netSaleAmount(x, saleReturns), 0);
+  const filterLabel = dateFilter === "today" ? (isUrdu ? "آج" : "Today")
+    : dateFilter === "yesterday" ? (isUrdu ? "کل" : "Yesterday")
+    : dateFilter === "week" ? (isUrdu ? "ایک ہفتہ" : "1 Week")
+    : dateFilter === "month" ? (isUrdu ? "ایک مہینہ" : "1 Month")
+    : (customFrom || customTo) ? `${customFrom || "…"} → ${customTo || "…"}`
+    : (isUrdu ? "تاریخ" : "Date");
+  const filterRevenueLabel = dateFilter === "today" ? t.todayRevenue
+    : dateFilter === "yesterday" ? (isUrdu ? "کل کی آمدنی" : "Yesterday Revenue")
+    : dateFilter === "week" ? (isUrdu ? "ہفتہ کی آمدنی" : "Week Revenue")
+    : dateFilter === "month" ? (isUrdu ? "مہینہ کی آمدنی" : "Month Revenue")
+    : (isUrdu ? "آمدنی" : "Revenue");
 
   const handleSave = async (payload) => {
     const firstProductName = payload.items[0]?.productName;
@@ -2263,13 +2269,54 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
     });
   };
 
+  const printFiltered = () => {
+    if (!recentSales.length) return;
+    const items = recentSales.flatMap((s) => {
+      const net = netSaleItems(s, saleReturns).filter((it) => !it.fullyReturned && (Number(it.subtotal) || 0) > 0.009);
+      if (net.length) return net;
+      return s.items || [{ productName: s.productName || safeProductName(s.product), category: "", rows: [{ desc: `1pc × Rs${s.total}/pc`, amount: s.total }], subtotal: s.total }];
+    });
+    const grandTotal = items.reduce((sum, i) => sum + (Number(i.subtotal) || 0), 0);
+    setReprintData({
+      invoice: isUrdu ? `فروخت · ${filterLabel}` : `Sales — ${filterLabel}`,
+      date: todayStr(),
+      customer: isUrdu ? "تمام گاہک" : "All customers",
+      items, grandTotal,
+      paymentMethod: "cash", bankName: "",
+      loaderName: "", loaderFee: 0, bindingFee: 0,
+      discount: 0, cashReceived: 0, changeDue: 0,
+      isPartial: false, paidAmount: grandTotal, remainingAmount: 0,
+    });
+  };
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
 
       {/* Stat cards */}
       <div style={{ display:"grid", gridTemplateColumns:isMobile?"1fr 1fr":"repeat(auto-fit,minmax(160px,1fr))", gap:12 }}>
-        <StatCard label={t.todayRevenue}    value={formatPKR(todayRevenue)} icon={ICONS.trend_up} color="#1abc9c" sub={`${todaySales.length} ${t.todayInvoices}`}/>
+        <StatCard label={filterRevenueLabel}    value={formatPKR(periodRevenue)} icon={ICONS.trend_up} color="#1abc9c" sub={`${recentSales.length} ${isUrdu ? "فروخت" : "sales"}`}/>
         <StatCard label={t.productsInStock} value={products.filter(p=>p.stock>0).length} icon={ICONS.box} color="#9b59b6"/>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", padding: "12px 14px", borderRadius: 14, border: `1px solid ${th.border}`, background: th.bgCard }}>
+        <DateFilterBar
+          filter={dateFilter}
+          setFilter={setDateFilter}
+          customFrom={customFrom}
+          setCustomFrom={setCustomFrom}
+          customTo={customTo}
+          setCustomTo={setCustomTo}
+          search={saleSearch}
+          setSearch={setSaleSearch}
+          searchPlaceholder={isUrdu ? "انوائس / گاہک / آئٹم" : "Invoice / customer / item"}
+        />
+        <button
+          onClick={printFiltered}
+          disabled={!recentSales.length}
+          style={{ padding: "8px 14px", borderRadius: 10, border: "none", cursor: recentSales.length ? "pointer" : "not-allowed", background: recentSales.length ? "linear-gradient(135deg,#1abc9c,#2980b9)" : th.thHead, color: recentSales.length ? "#fff" : th.textMuted, fontWeight: 700, fontSize: 13 }}
+        >
+          🖨️ {isUrdu ? "پرنٹ / PDF" : "Print / PDF"}
+        </button>
       </div>
 
       {/* Header row */}
