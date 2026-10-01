@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS, Modal, StatCard, Table, DateFilterBar } from "../components/shared";
+import { useResponsive, Icon, ICONS, Modal, StatCard, Table, DateFilterBar, EditHistoryModal } from "../components/shared";
 import { api } from "../utils/api";
 import { saveSaleReturn, removeSaleReturn, netSaleAmount, saleReturnedAmount, netSaleItems } from "../utils/returnsStore";
 import { formatPKR, todayStr, loadShopProfile, pxToPageHeightMM, inDateFilter } from "../utils/helpers";
@@ -208,6 +208,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
   const [reprintData,   setReprintData]   = useState(null);
   const [editData,      setEditData]      = useState(null);
   const [viewSale,      setViewSale]      = useState(null);
+  const [historySale,   setHistorySale]   = useState(null);
   const [dateFilter,    setDateFilter]    = useState("today");
   const [customFrom,    setCustomFrom]    = useState("");
   const [customTo,      setCustomTo]      = useState("");
@@ -515,6 +516,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
           };
           })}
           onEdit={openEdit}
+          onHistory={(s) => setHistorySale(s)}
           onRowClick={(s) => setViewSale(s)}
         />
       </div>
@@ -540,6 +542,15 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
             saleReturns={saleReturns}
           />
         </Modal>
+      )}
+
+      {historySale && (
+        <EditHistoryModal
+          title={isUrdu ? `ترمیم تاریخ · ${historySale.invoice || ""}` : `Edit history · ${historySale.invoice || ""}`}
+          history={historySale.editHistory || []}
+          onClose={() => setHistorySale(null)}
+          isUrdu={isUrdu}
+        />
       )}
 
       {showReturnModal && (

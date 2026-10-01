@@ -196,7 +196,7 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
           const cc=catColor[p.category]||catColor.Custom;
           const isPipe = p.category==="Pipe";
           const lots = stockLotsForProduct(p, { ctx: lotCtx });
-          const cost = Number(lots.fifoCost || lots.avgCost) || 0;
+          const cost = Number(lots.latestCost || lots.avgCost || lots.fifoCost) || 0;
           const sale = Number(lots.sale) || Number(p.price) || 0;
           const costShown = revealedCost.has(p._id);
           const fmtRs = (n) => {

@@ -343,15 +343,21 @@ function lotsFromContext(product, ctx) {
   const remaining = lots.filter((l) => l.remaining > 0.0001);
   const costValue = remaining.reduce((s, l) => s + l.remaining * l.unitCost, 0);
   const fifoCost = remaining.length ? Number(remaining[0].unitCost) || fallback : fallback;
+  // Display cost = latest purchase price (newest lot by stamp), while profit still uses FIFO.
+  const latestLot = [...lots].sort((a, b) => stampOf(a).localeCompare(stampOf(b)));
+  const newest = latestLot[latestLot.length - 1];
+  const latestCost = newest ? Number(newest.unitCost) || fallback : fallback;
   const sale = costAndSale(product).sale;
   const profitPc = sale - fifoCost;
   const profitStock = remaining.reduce((s, l) => s + l.remaining * (sale - (Number(l.unitCost) || 0)), 0);
+  const roundedLatest = Math.round((Number(latestCost) || 0) * 100) / 100;
   return {
     remaining,
     allLots: lots,
     stock: held,
     fifoCost: Math.round((Number(fifoCost) || 0) * 100) / 100,
-    avgCost: Math.round((Number(fifoCost) || 0) * 100) / 100,
+    latestCost: roundedLatest,
+    avgCost: roundedLatest,
     costValue,
     sale,
     profitPc,
@@ -511,7 +517,7 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t }) {
       </div>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <MiniStat th={th} label={isUrdu ? "پہلی لاگت / پیس" : "First cost / pc"} value={formatPKR(lots.fifoCost)} />
+        <MiniStat th={th} label={isUrdu ? "تازہ لاگت / پیس" : "Latest cost / pc"} value={formatPKR(lots.latestCost)} />
         <MiniStat th={th} label={isUrdu ? "فروخت قیمت / پیس" : "Sale / pc"} value={formatPKR(lots.sale)} />
         <MiniStat th={th} label={isUrdu ? "منافع / پیس" : "Profit / pc"} value={formatPKR(lots.profitPc)} color={profitColor} />
         <MiniStat th={th} label={isUrdu ? "کل منافع (اسٹاک)" : "Profit on stock"} value={formatPKR(lots.profitStock)} color={profitColor} />
@@ -519,8 +525,8 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t }) {
 
       <p style={{ color: th.textMuted, fontSize: 12, margin: 0, lineHeight: 1.45 }}>
         {isUrdu
-          ? "پہلے خریدی گئی مال پہلے فروخت ہوتی ہے۔ منافع اسی خریداری کی لاگت سے نکلتی ہے۔"
-          : "Oldest purchase is sold first. Profit uses that lot’s cost, not an average."}
+          ? "اسکرین پر تازہ ترین خرید قیمت دکھتی ہے۔ فروخت پر منافع پہلے والے اسٹاک (FIFO) کی لاگت سے بنتی ہے۔"
+          : "Screen shows the latest purchase cost. Sale profit still uses the oldest remaining stock (FIFO)."}
       </p>
 
       <div>
@@ -807,7 +813,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
               {stockLabel(p.category, stock)}
               {!isDemand && low ? statusBadge(false) : null}
             </span>,
-            <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(lots.fifoCost)}</span>,
+            <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(lots.latestCost)}</span>,
             <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(lots.sale)}</span>,
             <span style={{ fontWeight: 700, whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(lots.costValue)}</span>,
           );

@@ -217,6 +217,7 @@ export const ICONS = {
   coins:     "M12 2a10 10 0 100 20A10 10 0 0012 2z M12 6v6l4 2",
   book:      "M4 19.5A2.5 2.5 0 016.5 17H20 M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z",
   menu:      "M3 12h18 M3 6h18 M3 18h18",
+  history:   "M3 3v5h5 M3.05 13A9 9 0 1012 3a9.75 9.75 0 00-6.74 2.74L3 8 M12 7v5l3 3",
 };
 
 export function Modal({ title, onClose, children, wide, xl, layer = 50, headerRight }) {
@@ -470,11 +471,12 @@ export function DateFilterBar({ filter, setFilter, customFrom, setCustomFrom, cu
   );
 }
 
-export function Table({ cols, rows, onEdit, onDelete, onRowClick, compact }) {
+export function Table({ cols, rows, onEdit, onDelete, onHistory, onRowClick, compact }) {
   const th = useTheme();
   const {t} = useLang();
   const { isMobile } = useResponsive();
   const cellPad = compact ? "8px 10px" : "12px 16px";
+  const hasActions = !!(onEdit || onDelete || onHistory);
   if (isMobile) {
     return (
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -491,8 +493,9 @@ export function Table({ cols, rows, onEdit, onDelete, onRowClick, compact }) {
                 </div>
               ))}
             </div>
-            {(onEdit || onDelete) && (
+            {hasActions && (
               <div style={{display:"flex",gap:8,marginTop:12,paddingTop:10,borderTop:`1px solid ${th.border}`}} onClick={(e) => e.stopPropagation()}>
+                {onHistory && <button onClick={()=>onHistory(row.data)} style={{flex:1,padding:"8px",borderRadius:10,border:"1px solid rgba(167,139,250,0.35)",background:"rgba(167,139,250,0.1)",color:"#a78bfa",cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"'Segoe UI',sans-serif"}}>🕘 History</button>}
                 {onEdit && <button onClick={()=>onEdit(row.data)} style={{flex:1,padding:"8px",borderRadius:10,border:"1px solid rgba(59,130,246,0.3)",background:"rgba(59,130,246,0.08)",color:"#60a5fa",cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"'Segoe UI',sans-serif"}}>✏️ {t.edit}</button>}
                 {onDelete && <button onClick={()=>onDelete(row.data)} style={{flex:1,padding:"8px",borderRadius:10,border:"1px solid rgba(239,68,68,0.3)",background:"rgba(239,68,68,0.08)",color:"#f87171",cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"'Segoe UI',sans-serif"}}>🗑️ {t.delete}</button>}
               </div>
@@ -509,7 +512,7 @@ export function Table({ cols, rows, onEdit, onDelete, onRowClick, compact }) {
           <thead>
             <tr style={{borderBottom:`1px solid ${th.border}`,background:th.thHead}}>
               {cols.map(c=><th key={c} style={{textAlign:"left",padding:cellPad,color:th.textMuted,fontSize:11,textTransform:"uppercase",letterSpacing:"0.08em",fontWeight:700,whiteSpace:"nowrap"}}>{c}</th>)}
-              {(onEdit||onDelete)&&<th style={{textAlign:"right",padding:cellPad,color:th.textMuted,fontSize:11,textTransform:"uppercase",fontWeight:600}}>{t.actions}</th>}
+              {hasActions&&<th style={{textAlign:"right",padding:cellPad,color:th.textMuted,fontSize:11,textTransform:"uppercase",fontWeight:600}}>{t.actions}</th>}
             </tr>
           </thead>
           <tbody>
@@ -520,9 +523,13 @@ export function Table({ cols, rows, onEdit, onDelete, onRowClick, compact }) {
                 onMouseEnter={e=>e.currentTarget.style.background=th.rowHover}
                 onMouseLeave={e=>{e.currentTarget.style.background="transparent"}}>
                 {row.cells.map((cell,j)=><td key={j} style={{padding:cellPad,color:th.text,verticalAlign:"middle"}}>{cell}</td>)}
-                {(onEdit||onDelete)&&(
+                {hasActions&&(
                   <td style={{padding:"12px 16px",textAlign:"right"}} onClick={(e) => e.stopPropagation()}>
                     <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:8}}>
+                      {onHistory&&<button title="Edit history" onClick={()=>onHistory(row.data)} style={{padding:"6px",borderRadius:8,border:"none",cursor:"pointer",background:"transparent",color:th.textDim}}
+                        onMouseEnter={e=>{e.currentTarget.style.background="rgba(167,139,250,0.15)";e.currentTarget.style.color="#a78bfa"}}
+                        onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color=th.textDim}}>
+                        <Icon path={ICONS.history} size={15}/></button>}
                       {onEdit&&<button onClick={()=>onEdit(row.data)} style={{padding:"6px",borderRadius:8,border:"none",cursor:"pointer",background:"transparent",color:th.textDim}}
                         onMouseEnter={e=>{e.currentTarget.style.background="rgba(59,130,246,0.15)";e.currentTarget.style.color="#60a5fa"}}
                         onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color=th.textDim}}>
@@ -540,5 +547,66 @@ export function Table({ cols, rows, onEdit, onDelete, onRowClick, compact }) {
         </table>
       </div>
     </div>
+  );
+}
+
+export function EditHistoryModal({ title, history = [], onClose, isUrdu }) {
+  const th = useTheme();
+  const rows = [...(history || [])].sort((a, b) => {
+    const tb = Date.parse(b.at || b.createdAt || "") || 0;
+    const ta = Date.parse(a.at || a.createdAt || "") || 0;
+    return tb - ta;
+  });
+  const fmtWhen = (at) => {
+    if (!at) return "—";
+    const d = new Date(at);
+    if (Number.isNaN(d.getTime())) return String(at);
+    return d.toLocaleString(isUrdu ? "ur-PK" : "en-PK", {
+      day: "2-digit", month: "short", year: "numeric",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
+  };
+  return (
+    <Modal title={title || (isUrdu ? "ترمیم کی تاریخ" : "Edit history")} onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {!rows.length && (
+          <div style={{ textAlign: "center", padding: "28px 12px", color: th.textMuted, fontSize: 14 }}>
+            {isUrdu ? "ابھی کوئی ترمیم نہیں ہوئی" : "No edits yet"}
+          </div>
+        )}
+        {rows.map((h, i) => (
+          <div key={i} style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${th.border}`, background: th.bgCard }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+              <span style={{ color: "#a78bfa", fontWeight: 800, fontSize: 13 }}>#{rows.length - i}</span>
+              <span style={{ color: th.text, fontWeight: 700, fontSize: 13 }}>{fmtWhen(h.at)}</span>
+            </div>
+            <div style={{ color: th.textMuted, fontSize: 12, marginBottom: 4 }}>
+              {(h.byName || h.byEmail)
+                ? `${isUrdu ? "ترمیم از" : "Edited by"} ${h.byName || h.byEmail}${h.byEmail && h.byName ? ` · ${h.byEmail}` : ""}`
+                : (isUrdu ? "ترمیم" : "Edit")}
+            </div>
+            <div style={{ color: th.text, fontSize: 13, fontWeight: 600 }}>
+              {isUrdu ? "تبدیلی" : "Changed"}: {h.summary || (isUrdu ? "اپڈیٹ" : "updated")}
+            </div>
+            {(h.before || h.after) && (
+              <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 11 }}>
+                <div style={{ padding: 8, borderRadius: 8, background: "rgba(248,113,113,0.08)", color: th.textMuted }}>
+                  <div style={{ fontWeight: 700, marginBottom: 4, color: "#f87171" }}>{isUrdu ? "پہلے" : "Before"}</div>
+                  <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit" }}>
+                    {JSON.stringify(h.before || {}, null, 0).replace(/[{}"]/g, "").replace(/,/g, "\n")}
+                  </pre>
+                </div>
+                <div style={{ padding: 8, borderRadius: 8, background: "rgba(52,211,153,0.08)", color: th.textMuted }}>
+                  <div style={{ fontWeight: 700, marginBottom: 4, color: "#34d399" }}>{isUrdu ? "بعد" : "After"}</div>
+                  <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit" }}>
+                    {JSON.stringify(h.after || {}, null, 0).replace(/[{}"]/g, "").replace(/,/g, "\n")}
+                  </pre>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </Modal>
   );
 }

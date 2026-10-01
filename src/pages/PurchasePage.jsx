@@ -1,7 +1,7 @@
 import { useState, useRef, useLayoutEffect, useMemo } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table, WeightKgGInput, useTypeaheadNav, DateFilterBar } from "../components/shared";
+import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table, WeightKgGInput, useTypeaheadNav, DateFilterBar, EditHistoryModal } from "../components/shared";
 import { api } from "../utils/api";
 import { savePurchaseReturn, removePurchaseReturn } from "../utils/returnsStore";
 import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, inDateFilter, formatDateTime, printThermalOrA4 } from "../utils/helpers";
@@ -1097,6 +1097,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
   const [viewGroup,        setViewGroup]        = useState(null);
   const [purchaseSearch,   setPurchaseSearch]   = useState("");
   const [editGroup,        setEditGroup]        = useState(null);
+  const [historyGroup,     setHistoryGroup]     = useState(null);
 
   const handleSave = async (payload) => {
     const { supplier, invoice, date, productId, rows, total, qty, rate, category, productPrice } = payload;
@@ -1477,9 +1478,26 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
             };
           })}
           onEdit={openEditPurchase}
+          onHistory={(g) => setHistoryGroup(g)}
           onRowClick={(g) => setViewGroup(g)}
         />
       </div>
+
+      {historyGroup && (
+        <EditHistoryModal
+          title={isUrdu
+            ? `ترمیم تاریخ · ${historyGroup.head?.invoice || historyGroup.head?.invoiceNum || ""}`
+            : `Edit history · ${historyGroup.head?.invoice || historyGroup.head?.invoiceNum || ""}`}
+          history={(historyGroup.items || []).flatMap((it) =>
+            (it.editHistory || []).map((h) => ({
+              ...h,
+              summary: `${it.productName || safeProductName(it.product) || "item"}: ${h.summary || "updated"}`,
+            }))
+          )}
+          onClose={() => setHistoryGroup(null)}
+          isUrdu={isUrdu}
+        />
+      )}
 
       {viewGroup && (
         <Modal

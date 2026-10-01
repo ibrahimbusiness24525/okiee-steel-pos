@@ -1,7 +1,7 @@
 import { useState, useRef, useLayoutEffect, useMemo } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS, Modal, StatCard, Table, WeightKgGInput, useTypeaheadNav, DateFilterBar } from "../components/shared";
+import { useResponsive, Icon, ICONS, Modal, StatCard, Table, WeightKgGInput, useTypeaheadNav, DateFilterBar, EditHistoryModal } from "../components/shared";
 import { api } from "../utils/api";
 import { netSaleAmount, saleReturnedAmount, netSaleItems } from "../utils/returnsStore";
 import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, printThermalOrA4, inDateFilter } from "../utils/helpers";
@@ -1223,7 +1223,8 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
     return found ? productDisplayName(found) : "";
   });
   const selectedProduct = products.find(p => (p._id || p.id) === block.productId);
-  const fifoCost = selectedProduct ? (Number(stockLotsForProduct(selectedProduct, lotOpts).fifoCost) || 0) : 0;
+  const lotInfo = selectedProduct ? stockLotsForProduct(selectedProduct, lotOpts) : null;
+  const displayCost = lotInfo ? (Number(lotInfo.latestCost) || Number(lotInfo.fifoCost) || 0) : 0;
   const category   = selectedProduct?.category || "";
   const availStock = Number(selectedProduct?.stock) || 0;
   const catColors  = { Pipe:"#60a5fa", Chader:"#34d399", Net:"#f472b6", Hardware:"#fbbf24", Custom:"#a78bfa" };
@@ -1326,8 +1327,8 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
               ? convertPrice(rawSale, pUnit, saleUnit)
               : rawSale;
             const displayAvg = (category === "Hardware" || category === "Custom") && canConvert(pUnit, saleUnit)
-              ? convertPrice(fifoCost, pUnit, saleUnit)
-              : fifoCost;
+              ? convertPrice(displayCost, pUnit, saleUnit)
+              : displayCost;
             return (
             <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderRadius:8,background:catBgs[category]||"transparent",border:`1px solid ${(catColors[category]||"#aaa")}40`,flexWrap:"wrap"}}>
               <span style={{color:catColors[category],fontSize:12,fontWeight:700}}>{category}</span>
@@ -1342,11 +1343,11 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
             </div>
             );
           })()}
-          {category==="Pipe"     && <PipeBillingRows    rows={block.pipeRows||[]}   onChange={rows=>onChange({...block,pipeRows:rows})}   purchasePrice={Number(selectedProduct?.price)||Number(selectedProduct?.purchasePrice)||0} avgCost={fifoCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
-          {category==="Chader"   && <ChaderBillingRows  rows={block.chaderRows||[]} onChange={rows=>onChange({...block,chaderRows:rows})} purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} avgCost={fifoCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
-          {category==="Net"      && <NetBillingRows     rows={block.netRows||[]}    onChange={rows=>onChange({...block,netRows:rows})}    purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} avgCost={fifoCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
-          {category==="Hardware" && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} avgCost={fifoCost} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)} catLabel="Hardware Total" catColor="#fbbf24" catBg="rgba(251,191,36,0.08)"/>}
-          {category==="Custom"   && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} avgCost={fifoCost} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)} catLabel="Custom Total"   catColor="#a78bfa" catBg="rgba(167,139,250,0.08)"/>}
+          {category==="Pipe"     && <PipeBillingRows    rows={block.pipeRows||[]}   onChange={rows=>onChange({...block,pipeRows:rows})}   purchasePrice={Number(selectedProduct?.price)||Number(selectedProduct?.purchasePrice)||0} avgCost={displayCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
+          {category==="Chader"   && <ChaderBillingRows  rows={block.chaderRows||[]} onChange={rows=>onChange({...block,chaderRows:rows})} purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} avgCost={displayCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
+          {category==="Net"      && <NetBillingRows     rows={block.netRows||[]}    onChange={rows=>onChange({...block,netRows:rows})}    purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} avgCost={displayCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
+          {category==="Hardware" && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} avgCost={displayCost} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)} catLabel="Hardware Total" catColor="#fbbf24" catBg="rgba(251,191,36,0.08)"/>}
+          {category==="Custom"   && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} avgCost={displayCost} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)} catLabel="Custom Total"   catColor="#a78bfa" catBg="rgba(167,139,250,0.08)"/>}
           {!category && (
             <div style={{padding:"12px",textAlign:"center",color:th.textDim,fontSize:13,borderRadius:8,border:`1px dashed ${th.border}`}}>
               {isUrdu ? "👆 Product منتخب کریں billing شروع کریں" : "👆 Select a product to start billing"}
@@ -2090,6 +2091,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
   const [reprintData,   setReprintData]   = useState(null);
   const [editData,      setEditData]      = useState(null);
   const [viewSale,      setViewSale]      = useState(null);
+  const [historySale,   setHistorySale]   = useState(null);
   const [dateFilter,    setDateFilter]    = useState("today");
   const [customFrom,    setCustomFrom]    = useState("");
   const [customTo,      setCustomTo]      = useState("");
@@ -2369,6 +2371,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
           ]
         };})}
         onEdit={openEdit}
+        onHistory={(s) => setHistorySale(s)}
         onRowClick={(s) => setViewSale(s)}
       />
 
@@ -2381,6 +2384,15 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
         >
           <BillingNewSaleModal products={products} onSave={handleSave} onClose={closeModal} isUrdu={isUrdu} loaders={loaders} extraNames={sales.map(s=>s.customer)} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} prefill={editData ? buildEditPayload(editData) : null}/>
         </Modal>
+      )}
+
+      {historySale && (
+        <EditHistoryModal
+          title={isUrdu ? `ترمیم تاریخ · ${historySale.invoice || ""}` : `Edit history · ${historySale.invoice || ""}`}
+          history={historySale.editHistory || []}
+          onClose={() => setHistorySale(null)}
+          isUrdu={isUrdu}
+        />
       )}
 
       {viewSale && (
