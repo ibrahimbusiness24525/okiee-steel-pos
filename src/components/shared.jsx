@@ -566,6 +566,51 @@ export function EditHistoryModal({ title, history = [], onClose, isUrdu }) {
       hour: "2-digit", minute: "2-digit", second: "2-digit",
     });
   };
+  const sameVal = (a, b) => {
+    if (a === b) return true;
+    if (typeof a === "number" || typeof b === "number") {
+      return Math.abs((Number(a) || 0) - (Number(b) || 0)) < 0.009;
+    }
+    try { return JSON.stringify(a ?? null) === JSON.stringify(b ?? null); }
+    catch { return String(a) === String(b); }
+  };
+  const fmtVal = (v) => {
+    if (v == null || v === "") return "—";
+    if (typeof v === "number") return String(v);
+    if (typeof v === "string" || typeof v === "boolean") return String(v);
+    if (Array.isArray(v)) {
+      if (!v.length) return "—";
+      return v.map((it, idx) => {
+        if (it && typeof it === "object") {
+          const name = it.productName || it.name || `item ${idx + 1}`;
+          const parts = [name];
+          if (it.qty != null) parts.push(`qty ${it.qty}`);
+          if (it.subtotal != null) parts.push(`Rs ${it.subtotal}`);
+          if (it.total != null) parts.push(`Rs ${it.total}`);
+          if (it.rate != null) parts.push(`@ ${it.rate}`);
+          return parts.join(" · ");
+        }
+        return String(it);
+      }).join("\n");
+    }
+    if (typeof v === "object") {
+      return Object.entries(v).map(([k, val]) => `${k}: ${fmtVal(val)}`).join("\n");
+    }
+    return String(v);
+  };
+  const onlyChanged = (before, after) => {
+    const b = before && typeof before === "object" ? before : {};
+    const a = after && typeof after === "object" ? after : {};
+    const keys = [...new Set([...Object.keys(b), ...Object.keys(a)])];
+    const beforeOut = {};
+    const afterOut = {};
+    keys.forEach((k) => {
+      if (sameVal(b[k], a[k])) return;
+      beforeOut[k] = b[k];
+      afterOut[k] = a[k];
+    });
+    return { beforeOut, afterOut, count: Object.keys(beforeOut).length };
+  };
   return (
     <Modal title={title || (isUrdu ? "ترمیم کی تاریخ" : "Edit history")} onClose={onClose}>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -574,7 +619,10 @@ export function EditHistoryModal({ title, history = [], onClose, isUrdu }) {
             {isUrdu ? "ابھی کوئی ترمیم نہیں ہوئی" : "No edits yet"}
           </div>
         )}
-        {rows.map((h, i) => (
+        {rows.map((h, i) => {
+          const { beforeOut, afterOut, count } = onlyChanged(h.before, h.after);
+          const changedKeys = Object.keys(beforeOut);
+          return (
           <div key={i} style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${th.border}`, background: th.bgCard }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
               <span style={{ color: "#a78bfa", fontWeight: 800, fontSize: 13 }}>#{rows.length - i}</span>
@@ -586,26 +634,37 @@ export function EditHistoryModal({ title, history = [], onClose, isUrdu }) {
                 : (isUrdu ? "ترمیم" : "Edit")}
             </div>
             <div style={{ color: th.text, fontSize: 13, fontWeight: 600 }}>
-              {isUrdu ? "تبدیلی" : "Changed"}: {h.summary || (isUrdu ? "اپڈیٹ" : "updated")}
+              {isUrdu ? "تبدیلی" : "Changed"}: {h.summary || changedKeys.join(", ") || (isUrdu ? "اپڈیٹ" : "updated")}
             </div>
-            {(h.before || h.after) && (
-              <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 11 }}>
-                <div style={{ padding: 8, borderRadius: 8, background: "rgba(248,113,113,0.08)", color: th.textMuted }}>
-                  <div style={{ fontWeight: 700, marginBottom: 4, color: "#f87171" }}>{isUrdu ? "پہلے" : "Before"}</div>
-                  <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit" }}>
-                    {JSON.stringify(h.before || {}, null, 0).replace(/[{}"]/g, "").replace(/,/g, "\n")}
-                  </pre>
+            {count > 0 ? (
+              <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 12 }}>
+                <div style={{ padding: 8, borderRadius: 8, background: "rgba(248,113,113,0.08)", color: th.text }}>
+                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#f87171" }}>{isUrdu ? "پہلے" : "Before"}</div>
+                  {changedKeys.map((k) => (
+                    <div key={k} style={{ marginBottom: 6 }}>
+                      <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700 }}>{k}</div>
+                      <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontWeight: 600 }}>{fmtVal(beforeOut[k])}</div>
+                    </div>
+                  ))}
                 </div>
-                <div style={{ padding: 8, borderRadius: 8, background: "rgba(52,211,153,0.08)", color: th.textMuted }}>
-                  <div style={{ fontWeight: 700, marginBottom: 4, color: "#34d399" }}>{isUrdu ? "بعد" : "After"}</div>
-                  <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit" }}>
-                    {JSON.stringify(h.after || {}, null, 0).replace(/[{}"]/g, "").replace(/,/g, "\n")}
-                  </pre>
+                <div style={{ padding: 8, borderRadius: 8, background: "rgba(52,211,153,0.08)", color: th.text }}>
+                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#34d399" }}>{isUrdu ? "بعد" : "After"}</div>
+                  {changedKeys.map((k) => (
+                    <div key={k} style={{ marginBottom: 6 }}>
+                      <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700 }}>{k}</div>
+                      <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontWeight: 600 }}>{fmtVal(afterOut[k])}</div>
+                    </div>
+                  ))}
                 </div>
+              </div>
+            ) : (
+              <div style={{ marginTop: 8, color: th.textMuted, fontSize: 12 }}>
+                {isUrdu ? "کوئی فیلڈ تبدیل نہیں" : "No field differences recorded"}
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
     </Modal>
   );
