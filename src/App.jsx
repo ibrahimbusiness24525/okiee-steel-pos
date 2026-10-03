@@ -137,7 +137,20 @@ function AppInner() {
   const [expenses,  setExpenses]  = useState([]);
 
   const loadLoaders   = async () => { try { const r = await api.getLoaders();   if (r.success) setLoaders(r.loaders || []); } catch (e) {} };
-  const loadProducts  = async () => { const r = await api.getProducts();  if (r.success) setProducts(Array.isArray(r.products) ? r.products : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
+  const loadProducts  = async (opts = {}) => {
+    try {
+      if (opts.reconcile) {
+        const rr = await api.reconcileStock(opts.productIds || []);
+        if (rr?.success && Array.isArray(rr.products)) {
+          setProducts(rr.products);
+          return rr;
+        }
+      }
+    } catch { /* fall through to normal load */ }
+    const r = await api.getProducts();
+    if (r.success) setProducts(Array.isArray(r.products) ? r.products : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []);
+    return r;
+  };
   const loadPurchases = async () => { const r = await api.getPurchases(); if (r.success) setPurchases(Array.isArray(r.purchases) ? r.purchases : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
   const loadSales     = async () => { const r = await api.getSales();     if (r.success) setSales(Array.isArray(r.sales) ? r.sales : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
   const loadSaleReturns = async () => { try { const r = await listSaleReturns(); if (r.success) setSaleReturns(r.returns || []); } catch (e) {} };
@@ -169,7 +182,8 @@ function AppInner() {
 
   useEffect(() => {
     if (user && user.role !== "superadmin") {
-      loadProducts();
+      // Fix any stock that was doubled by old purchase-edit bugs.
+      loadProducts({ reconcile: true });
       loadSales();
       loadLoaders();
       loadSaleReturns();

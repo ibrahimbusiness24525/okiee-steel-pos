@@ -327,17 +327,24 @@ function lotsFromContext(product, ctx) {
     }
     held = stock;
   } else if (stock > held + 0.0001) {
-    lots.push({
-      date: "—",
-      invoice: "—",
-      supplier: "—",
-      bought: stock - held,
-      remaining: stock - held,
-      unitCost: fallback,
-      createdAt: "",
-      opening: true,
-    });
-    held = stock;
+    // Only invent an Opening lot when there is truly no purchase history.
+    // If purchases exist but product.stock is higher, stock is wrong (old edit bug) —
+    // do not create a fake Opening that doubles inventory value.
+    if (!raw.length) {
+      lots.push({
+        date: "—",
+        invoice: "—",
+        supplier: "—",
+        bought: stock - held,
+        remaining: stock - held,
+        unitCost: fallback,
+        createdAt: "",
+        opening: true,
+      });
+      held = stock;
+    } else {
+      held = lots.reduce((s, l) => s + l.remaining, 0);
+    }
   }
 
   const remaining = lots.filter((l) => l.remaining > 0.0001);
@@ -793,8 +800,8 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
         onRowClick={(p) => setDetail(p)}
         cols={cols}
         rows={inventory.map((p) => {
-          const stock = Number(p.stock) || 0;
           const lots = lotsOf(p);
+          const stock = Number(lots.stock) || Number(p.stock) || 0;
           const bill = billOf(p);
           const name = productDisplayName(p) || p.name || "—";
           const title = p.barcode ? `${name} · ${p.barcode}` : name;

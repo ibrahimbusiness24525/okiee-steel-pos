@@ -1124,7 +1124,10 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
     const res = payload.purchaseId
       ? await api.updatePurchase(payload.purchaseId, data)
       : await api.addPurchase(data);
-    if (res.success) { await loadPurchases(); await loadProducts(); }
+    if (res.success) {
+      await loadPurchases();
+      await loadProducts({ reconcile: true, productIds: [productId].filter(Boolean) });
+    }
     else alert(res.message || "Error saving purchase");
     return res;
   };

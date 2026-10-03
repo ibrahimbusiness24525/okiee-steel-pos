@@ -22,6 +22,7 @@ export const authHeaders = () => ({ "Content-Type": "application/json", Authoriz
 export const api = {
   login: (email, password) => smartFetch(`${API}/auth/login`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({email,password}) }).then(async r => { const d = await r.json(); if(!r.ok) throw new Error(d.message||"Server error"); return d; }),
   getProducts:   () => smartFetch(`${API}/products`,  {headers:authHeaders()}).then(r=>r.json()),
+  reconcileStock: (productIds) => smartFetch(`${API}/products/reconcile-stock`, {method:"POST",headers:authHeaders(),body:JSON.stringify({ productIds: productIds || [] })}).then(r=>r.json()),
   addProduct:    (d) => smartFetch(`${API}/products`,  {method:"POST",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   updateProduct: (id,d) => smartFetch(`${API}/products/${id}`,{method:"PUT",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   deleteProduct: (id) => smartFetch(`${API}/products/${id}`,{method:"DELETE",headers:authHeaders()}).then(r=>r.json()),
