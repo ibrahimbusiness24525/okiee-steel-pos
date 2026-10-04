@@ -7,6 +7,9 @@ import { formatPKR, formatDateTime, printThermalOrA4, downloadInvoicePdf, shareP
 import { safeProductName } from "../utils/constants";
 import InventoryStockTable, { inventoryStats } from "../components/InventoryStockTable";
 import { netSaleAmount, saleReturnedAmount, netSaleItems } from "../utils/returnsStore";
+import {
+  slipPage, slipLine, ThermalSlipHeader, ThermalSlipFooter,
+} from "../components/ThermalSlipTheme";
 
 function groupByInvoice(list) {
   const map = new Map();
@@ -81,16 +84,20 @@ function findProduct(products, id, name) {
   );
 }
 
-/** Same profit math on dashboard KPI and analytics. Sale returns shrink sale + cost per item. */
+/** Same profit math on dashboard KPI and analytics. Sale returns shrink sale + cost per item.
+ *  Loader fee is never profit — only item sale amounts count. */
 function calcInvoiceProfit(sale, saleReturns) {
   const items = netSaleItems(sale, saleReturns);
   const billTotal = Number(sale?.grandTotal) || Number(sale?.total) || 0;
-  const passThroughFees = (Number(sale?.loaderFee) || 0) + (Number(sale?.bindingFee) || 0);
+  const bindingFee = Number(sale?.bindingFee) || 0;
+  const loaderFee = Number(sale?.loaderFee) || 0;
   let costAmt = 0;
   let costedSaleAmt = 0;
   let hasCost = false;
+  let itemsSaleAmt = 0;
   items.forEach((item) => {
     if (item.fullyReturned) return;
+    itemsSaleAmt += Number(item.subtotal) || 0;
     if (item.costTotal !== undefined && item.costTotal !== null && Number(item.costTotal) > 0) {
       const sub = Number(item.subtotal) || 0;
       let itemCost = Number(item.costTotal) || 0;
@@ -103,7 +110,12 @@ function calcInvoiceProfit(sale, saleReturns) {
       hasCost = true;
     }
   });
-  const saleAmt = hasCost ? costedSaleAmt : Math.max(0, (billTotal - passThroughFees) - saleReturnedAmount(sale, saleReturns));
+  // Prefer item subtotals (excludes loader). Fallback strips binding + loader from old totals.
+  const saleAmt = hasCost
+    ? costedSaleAmt
+    : Math.max(0, (itemsSaleAmt > 0
+      ? itemsSaleAmt
+      : (billTotal - bindingFee - loaderFee)) - (itemsSaleAmt > 0 ? 0 : saleReturnedAmount(sale, saleReturns)));
   return { saleAmt, costAmt, profit: saleAmt - costAmt, hasCost, items };
 }
 
@@ -396,17 +408,6 @@ function analyticsReportPack(reportKey, isUrdu, d) {
 }
 
 function AnalyticsPrintSheet({ shop, periodLabel, actionLabel, packs = [], summary, isUrdu }) {
-  const page = {
-    width: "65mm",
-    maxWidth: "65mm",
-    fontFamily: "'Courier New', Courier, monospace",
-    fontSize: "11px",
-    color: "#000",
-    background: "#fff",
-    padding: "4px",
-    boxSizing: "border-box",
-  };
-  const line = { borderTop: "1px dashed #000", margin: "6px 0" };
   const thS = { textAlign: "left", fontSize: "9px", fontWeight: 900, borderBottom: "1px solid #000", padding: "2px 2px" };
   const tdS = { fontSize: "9px", fontWeight: 700, padding: "2px 2px", borderBottom: "1px dotted #000", verticalAlign: "top" };
   const names = packs.map((p) => p.title).filter(Boolean);
@@ -432,42 +433,39 @@ function AnalyticsPrintSheet({ shop, periodLabel, actionLabel, packs = [], summa
     )
   );
   return (
-    <div id="thermal-invoice" style={page}>
+    <div id="thermal-invoice" style={slipPage}>
       <div className="print-sheet">
-      <div style={{ textAlign: "center", fontWeight: 900, fontSize: "14px" }}>{shop?.shopName || "STEELPOS"}</div>
-      <div style={{ textAlign: "center", fontWeight: 900, fontSize: "12px", marginTop: 2 }}>
-        {isUrdu ? "رپورٹ" : "REPORT"}
-      </div>
-      <div style={line} />
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
+      <ThermalSlipHeader title={isUrdu ? "رپورٹ" : "REPORT"} isUrdu={isUrdu} />
+      <div style={slipLine} />
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
         <span>{isUrdu ? "مدت" : "Period"}</span><span style={{ fontWeight: 900 }}>{periodLabel}</span>
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
         <span>{isUrdu ? "بٹن" : "Action"}</span><span style={{ fontWeight: 900 }}>{actionLabel || "—"}</span>
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
         <span>{isUrdu ? "فلٹرز" : "Filters"}</span><span style={{ fontWeight: 900 }}>{names.length}</span>
       </div>
       {names.map((n, i) => (
         <div key={i} style={{ fontSize: "9px" }}>{i + 1}. {n}</div>
       ))}
-      <div style={line} />
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
+      <div style={slipLine} />
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
         <span>{isUrdu ? "فروخت" : "Sales"}</span><span>{formatPKR(summary.sales)}</span>
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
         <span>{isUrdu ? "خریداری" : "Purchases"}</span><span>{formatPKR(summary.purchases)}</span>
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
         <span>{isUrdu ? "اخراجات" : "Expenses"}</span><span>{formatPKR(summary.expenses)}</span>
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 900 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 900, fontSize: 11 }}>
         <span>{isUrdu ? "منافع" : "Profit"}</span><span>{formatPKR(summary.profit)}</span>
       </div>
       </div>
       {packs.map((pack, idx) => (
         <div key={pack.title || idx} className="print-sheet" style={{ pageBreakInside: "avoid" }}>
-          <div style={line} />
+          <div style={slipLine} />
           <div style={{ fontWeight: 900, textAlign: "center", marginBottom: 4 }}>{pack.title}</div>
           <PrintTable pack={pack} />
           {pack.extra && pack.extra.rows?.length > 0 && (
@@ -487,8 +485,7 @@ function AnalyticsPrintSheet({ shop, periodLabel, actionLabel, packs = [], summa
           )}
         </div>
       ))}
-      <div style={line} />
-      <div style={{ textAlign: "center", fontSize: "9px" }}>okiiee Software</div>
+      <ThermalSlipFooter isUrdu={isUrdu} role="admin" />
     </div>
   );
 }
@@ -1353,6 +1350,8 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
     const totalPaid      = salesList.reduce((a,s) => a+(Number(s.paidAmount)||Number(s.total)||0), 0);
     const totalRemaining = salesList.reduce((a,s) => a+(Number(s.remainingAmount)||0), 0);
     const isPartial      = totalRemaining > 0;
+    const settlement = firstSale.settlement
+      || (isPartial ? ((totalPaid === 0 ? "credit" : "partial")) : "full");
     return {
       invoice:         invoiceTitle,
       date:            toDateStr(today),
@@ -1361,6 +1360,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
       grandTotal,
       paymentMethod:   firstSale.paymentMethod || "cash",
       bankName:        firstSale.bankName || "",
+      settlement,
       isPartial,
       paidAmount:      totalPaid,
       remainingAmount: totalRemaining,

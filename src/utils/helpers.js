@@ -118,28 +118,26 @@ function copyTableShell(table) {
 
 function isBrandish(n) {
   if (!n || n.nodeType !== 1) return false;
-  if (n.classList?.contains("inv-brand") || n.querySelector?.(".inv-brand")) return true;
-  const t = (n.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-  return t.includes("okiiee") || t.includes("okiiiee software");
+  // Only the dedicated brand node — do not strip disclaimer blocks that
+  // merely mention the software name somewhere inside.
+  return n.classList?.contains("inv-brand");
 }
 
 export function makeOkiieeBrandFooter() {
   const wrap = document.createElement("div");
   wrap.className = "inv-brand";
-  wrap.style.cssText = "text-align:center;margin-top:6px;padding-top:6px;border-top:1px dashed #000;";
+  wrap.style.cssText = "text-align:center;margin-top:8px;";
+  const line = document.createElement("div");
+  line.style.cssText = "border-top:1px solid #000;margin:5px 0;";
   const title = document.createElement("div");
   title.className = "inv-brand-title";
-  title.style.cssText = "font-weight:800;font-size:13px;letter-spacing:0.2px;line-height:17px;";
-  title.textContent = "For okiiee Software";
+  title.style.cssText = "font-weight:800;font-size:10px;margin-top:3px;";
+  title.textContent = "Powered By okiiee Software Company";
   const p1 = document.createElement("div");
   p1.className = "inv-brand-phone";
-  p1.style.cssText = "font-weight:700;font-size:11px;line-height:15px;margin-top:3px;";
-  p1.textContent = "03090001316";
-  const p2 = document.createElement("div");
-  p2.className = "inv-brand-phone";
-  p2.style.cssText = "font-weight:700;font-size:11px;line-height:15px;";
-  p2.textContent = "03057903867";
-  wrap.append(title, p1, p2);
+  p1.style.cssText = "font-weight:700;font-size:10px;margin-top:2px;";
+  p1.textContent = "UAN : 03090001316 - 03057903867";
+  wrap.append(line, title, p1);
   return wrap;
 }
 
@@ -247,7 +245,7 @@ function printPageCss({ isA4, pageHeightMM }) {
   const thermalH = Math.max(80, Math.min(pageHeightMM || 297, 297));
   const page = isA4
     ? `@page { size: A4 portrait; margin: 8mm 10mm; }`
-    : `@page { size: 3in ${thermalH}mm; margin: 1.5mm; }`;
+    : `@page { size: 80mm ${thermalH}mm; margin: 1.5mm; }`;
   return `
     ${page}
     @media print {
@@ -289,12 +287,12 @@ function printPageCss({ isA4, pageHeightMM }) {
         position: relative !important;
         left: 0 !important;
         top: 0 !important;
-        width: 100% !important;
-        max-width: 100% !important;
-        margin: 0 !important;
-        padding: 2mm 1mm !important;
+        width: 80mm !important;
+        max-width: 80mm !important;
+        margin: 0 auto !important;
+        padding: 2mm 1.5mm !important;
         background: #fff !important;
-        font-size: 13px !important;
+        font-size: 12px !important;
         line-height: 1.35 !important;
       }
       #thermal-invoice-print * { box-sizing: border-box !important; max-width: 100% !important; }
@@ -307,8 +305,8 @@ function printPageCss({ isA4, pageHeightMM }) {
       #thermal-invoice-print table { page-break-inside: auto; width: 100% !important; }
       #thermal-invoice-print tr { page-break-inside: avoid; break-inside: avoid; }
       #thermal-invoice-print thead { display: table-header-group !important; }
-      .inv-brand-title { font-size: 13px !important; font-weight: 800 !important; }
-      .inv-brand-phone { font-size: 11px !important; font-weight: 700 !important; }
+      .inv-brand-title { font-size: 10px !important; font-weight: 800 !important; }
+      .inv-brand-phone { font-size: 10px !important; font-weight: 700 !important; }
       button { display: none !important; }
     }
   `;
@@ -436,12 +434,12 @@ export function printThermalOrA4(mode = "thermal", filename) {
   portal.style.position = "absolute";
   portal.style.left = "-9999px";
   portal.style.top = "0";
-  portal.style.width = isA4 ? "210mm" : "3in";
+  portal.style.width = isA4 ? "210mm" : "80mm";
 
   const clone = inv.cloneNode(true);
   clone.id = "thermal-invoice-print";
-  clone.style.width = isA4 ? "190mm" : "3in";
-  clone.style.maxWidth = isA4 ? "190mm" : "3in";
+  clone.style.width = isA4 ? "190mm" : "80mm";
+  clone.style.maxWidth = isA4 ? "190mm" : "80mm";
   clone.style.margin = "0";
   clone.style.boxSizing = "border-box";
   clone.style.color = "#000";
@@ -506,21 +504,94 @@ export const formatWeightKgG = (dec) => {
   return `${kg}kg ${g}g`;
 };
 
-// Shop Profile helpers
+// Shop Profile helpers — per-admin (tenant) cache + localStorage
 export const SHOP_PROFILE_KEY = "steelpos_shop_profile";
+let _shopTenantId = "";
+let _shopProfileCache = null;
+
 export const defaultShopProfile = () => ({
   shopName: "", shopNameUr: "", address: "", addressUr: "", logoBase64: "",
   owners: [{ name: "", nameUr: "", phone: "" }],
 });
+
+export function normalizeShopProfile(parsed) {
+  const base = defaultShopProfile();
+  if (!parsed || typeof parsed !== "object") return base;
+  let owners = Array.isArray(parsed.owners) ? parsed.owners : base.owners;
+  owners = owners.slice(0, 3).map((o) => ({
+    name: String(o?.name || ""),
+    nameUr: String(o?.nameUr || ""),
+    phone: String(o?.phone || ""),
+  }));
+  if (!owners.length) owners = base.owners;
+  return {
+    shopName: String(parsed.shopName || ""),
+    shopNameUr: String(parsed.shopNameUr || ""),
+    address: String(parsed.address || ""),
+    addressUr: String(parsed.addressUr || ""),
+    logoBase64: String(parsed.logoBase64 || ""),
+    owners,
+  };
+}
+
+export function shopProfileStorageKey(adminId = _shopTenantId) {
+  const id = String(adminId || "").trim();
+  return id ? `${SHOP_PROFILE_KEY}_${id}` : SHOP_PROFILE_KEY;
+}
+
+export function setShopProfileTenant(adminId) {
+  const id = String(adminId || "");
+  if (id !== _shopTenantId) {
+    _shopTenantId = id;
+    _shopProfileCache = null;
+  }
+}
+
+export function clearShopProfileCache() {
+  _shopTenantId = "";
+  _shopProfileCache = null;
+}
+
+export function isShopProfileEmpty(p) {
+  const n = normalizeShopProfile(p);
+  return !n.shopName && !n.shopNameUr && !n.address && !n.logoBase64
+    && !(n.owners || []).some((o) => o.name || o.nameUr || o.phone);
+}
+
 export const loadShopProfile = () => {
+  if (_shopProfileCache) {
+    return normalizeShopProfile(_shopProfileCache);
+  }
   try {
-    const s = localStorage.getItem(SHOP_PROFILE_KEY);
+    const key = shopProfileStorageKey();
+    let s = localStorage.getItem(key);
+    // Legacy single-key fallback only when no tenant-scoped cache yet
+    if (!s && _shopTenantId) s = null;
+    if (!s && !_shopTenantId) s = localStorage.getItem(SHOP_PROFILE_KEY);
     const parsed = s ? JSON.parse(s) : null;
-    const base = defaultShopProfile();
-    if (!parsed || typeof parsed !== "object") return base;
-    return { ...base, ...parsed, owners: Array.isArray(parsed.owners) ? parsed.owners : base.owners };
+    return normalizeShopProfile(parsed);
   } catch {
     return defaultShopProfile();
   }
 };
-export const saveShopProfile = (p) => localStorage.setItem(SHOP_PROFILE_KEY, JSON.stringify(p));
+
+/** Write memory + per-admin localStorage (used after API fetch/save). */
+export const applyShopProfile = (p) => {
+  const next = normalizeShopProfile(p);
+  _shopProfileCache = next;
+  try {
+    localStorage.setItem(shopProfileStorageKey(), JSON.stringify(next));
+  } catch { /* quota */ }
+  return next;
+};
+
+export const saveShopProfile = (p) => applyShopProfile(p);
+
+export function loadLegacyShopProfile() {
+  try {
+    const s = localStorage.getItem(SHOP_PROFILE_KEY);
+    return s ? normalizeShopProfile(JSON.parse(s)) : defaultShopProfile();
+  } catch {
+    return defaultShopProfile();
+  }
+}

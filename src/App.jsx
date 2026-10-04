@@ -8,6 +8,14 @@ import { listPurchaseReturns, listSaleReturns } from "./utils/returnsStore";
 import { applyHardwareSalePrices } from "./utils/productPrices";
 import { expenseApi } from "./utils/expenseStore";
 import { ledgerApi } from "./utils/ledgerStore";
+import {
+  setShopProfileTenant,
+  clearShopProfileCache,
+  applyShopProfile,
+  normalizeShopProfile,
+  isShopProfileEmpty,
+  loadLegacyShopProfile,
+} from "./utils/helpers";
 
 // Pages
 import LoginPage from "./pages/LoginPage";
@@ -192,6 +200,40 @@ function AppInner() {
     }
   }, [user]);
 
+  // Each admin has their own shop profile; staff inherits their admin's branding.
+  useEffect(() => {
+    if (!user || user.role === "superadmin") {
+      clearShopProfileCache();
+      return;
+    }
+    const tenantId = user.role === "admin"
+      ? (user._id || user.id)
+      : (user.createdBy || user._id || user.id);
+    setShopProfileTenant(tenantId);
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await api.getShopProfile();
+        if (cancelled) return;
+        let profile = normalizeShopProfile(r.success ? r.profile : null);
+        // One-time migrate: old browser-only profile → this admin's server profile
+        if (user.role === "admin" && isShopProfileEmpty(profile)) {
+          const legacy = loadLegacyShopProfile();
+          if (!isShopProfileEmpty(legacy)) {
+            profile = legacy;
+            applyShopProfile(profile);
+            try { await api.saveShopProfile(profile); } catch { /* offline ok */ }
+            return;
+          }
+        }
+        applyShopProfile(profile);
+      } catch {
+        if (!cancelled) applyShopProfile(normalizeShopProfile(null));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user]);
+
   const handleLogin = (u) => {
     setUser(u);
     setActive(homePage(u.role));
@@ -200,6 +242,7 @@ function AppInner() {
   const handleLogout = () => {
     localStorage.removeItem("steelpos_token");
     localStorage.removeItem(PAGE_KEY);
+    clearShopProfileCache();
     setUser(null);
     setActiveState("dashboard");
     setProducts([]); setPurchases([]); setSales([]); setStaff([]); setLoaders([]); setSaleReturns([]); setPurchaseReturns([]); setParties([]); setExpenses([]);

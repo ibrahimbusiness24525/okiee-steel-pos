@@ -113,7 +113,14 @@ function LoginPage({ onLogin }) {
       const data = await api.login(cleanEmail, cleanPassword);
       if (data.token) {
         localStorage.setItem("steelpos_token", data.token);
-        onLogin({ _id: data._id, name: data.name, email: data.email, role: data.role });
+        onLogin({
+          _id: data._id,
+          name: data.name,
+          email: data.email,
+          role: data.role,
+          createdBy: data.createdBy || null,
+          businessName: data.businessName || "",
+        });
       } else {
         setError(data.message || t.wrongCredentials);
       }

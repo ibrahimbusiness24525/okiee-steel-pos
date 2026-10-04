@@ -6,7 +6,19 @@ import { api } from "../utils/api";
 import { netSaleAmount, saleReturnedAmount, netSaleItems } from "../utils/returnsStore";
 import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, printThermalOrA4, inDateFilter } from "../utils/helpers";
 import { convertQuantity, convertPrice, getUnitLabel, canConvert, unitOptions, productUnitOf } from "../utils/unitConversion";
-import { OkiieeBrandFooter, parseSaleInvoiceRow } from "../components/InvoiceComponents";
+import { parseSaleInvoiceRow } from "../components/InvoiceComponents";
+import {
+  thermalPrintStyles,
+  slipPage,
+  ThermalSlipHeader,
+  ThermalSlipMeta,
+  ThermalSlipItemsTable,
+  ThermalSlipTotals,
+  ThermalSlipFooter,
+  packLabel,
+  saleTypeLabel,
+  saleReceiptTitle,
+} from "../components/ThermalSlipTheme";
 import { productDisplayName } from "../utils/constants";
 import PaymentTerms, { useAccounts, derivePayment, isPayValid, calcDiscount, DiscountCashFields } from "../components/PaymentTerms";
 import { recordTradeFinance, reverseTradeFinance } from "../utils/tradeFinance";
@@ -154,157 +166,14 @@ const getPaymentBadgeStyle = (paymentMethod) => {
   return { background:"rgba(52,211,153,0.15)", color:"#34d399" };
 };
 
-// ─── PRINT STYLES ────────────────────────────────────────────────────────────
-// NOTE: this <style> tag is only a fallback for direct Ctrl+P while the
-// modal happens to be open. It mirrors the SAME fonts/weights used in the
-// live preview below (Arial, normal weights) so screen and print never
-// disagree. It must NOT force a different font or font-weight onto the
-// invoice — that mismatch was the actual bug being reported.
-const thermalPrintStyles = `
-@page {
-  size: 3in 297mm;
-  margin: 1.5mm;
-}
-
-@media print {
-
-html,
-body{
-    margin:0 !important;
-    padding:0 !important;
-    background:#fff !important;
-    font-family:Arial, sans-serif;
-    font-size:14px;
-}
-
-body *{
-    visibility:hidden !important;
-}
-
-#print-portal-overlay,
-#print-portal-overlay *,
-#thermal-invoice-print,
-#thermal-invoice-print *,
-#thermal-invoice,
-#thermal-invoice *{
-    visibility:visible !important;
-    color:#000 !important;
-}
-
-#thermal-invoice-print,
-#thermal-invoice{
-    position:relative !important;
-    left:0 !important;
-    top:0 !important;
-    width:100% !important;
-    padding:2mm 1mm !important;
-    background:#fff;
-    box-sizing:border-box;
-    font-size:12px;
-    line-height:1.35;
-}
-
-/* HEADER */
-.bill-title{
-    text-align:center;
-    font-size:26px;
-    margin-bottom:8px;
-}
-
-.bill-info{
-    text-align:center;
-    font-size:13px;
-    line-height:1.3;
-}
-
-/* TABLE */
-
-.invoice-table{
-    width:100%;
-    table-layout:fixed;
-    border-collapse:collapse;
-}
-
-.invoice-table thead{
-    border-top:1px dashed #000;
-    border-bottom:1px dashed #000;
-}
-
-.invoice-table th{
-    padding:8px 0;
-    font-size:15px;
-    font-weight:600;
-}
-
-.invoice-table td{
-    padding:8px 0;
-    vertical-align:top;
-    word-break:break-word;
-}
-
-/* COLUMN WIDTHS */
-
-.col-sn{
-width:10%;
-text-align:center;
-}
-
-.col-item{
-width:42%;
-text-align:left;
-}
-
-.col-qty{
-width:12%;
-text-align:center;
-}
-
-.col-price{
-width:18%;
-text-align:right;
-}
-
-.col-amt{
-width:18%;
-text-align:right;
-}
-
-/* TOTAL AREA */
-
-.summary{
-border-top:1px dashed #000;
-padding-top:8px;
-}
-
-.summary-row{
-display:flex;
-justify-content:space-between;
-margin-bottom:6px;
-}
-
-.total{
-font-size:22px;
-font-weight:600;
-}
-
-.footer{
-text-align:center;
-margin-top:20px;
-}
-
-button{
-display:none !important;
-}
-
-}
-`;
+// Print CSS imported from ThermalSlipTheme (80mm theme).
 
 // ─── INVOICE COMPONENT ───────────────────────────────────────────────────────
 function BillingSaleInvoice({ invoiceData, onClose, isUrdu }) {
   const th = useTheme();
   const {
     invoice, date, customer, items, grandTotal,
-    paymentMethod, bankName, accountName,
+    paymentMethod, bankName, accountName, settlement,
     paidAmount, remainingAmount, isPartial,
     loaderName, loaderFee, bindingFee,
     discount, cashReceived, changeDue,
@@ -317,8 +186,8 @@ function BillingSaleInvoice({ invoiceData, onClose, isUrdu }) {
   const discountAmt = Number(discount) || 0;
   const cashIn = Number(cashReceived) || 0;
   const changeAmt = Number(changeDue) || 0;
-  // grandTotal already includes loaderFee + bindingFee - discount (bill total charged to customer).
-  const productsSubtotal = Number(grandTotal) - (Number(loaderFee) || 0) - (Number(bindingFee) || 0) + discountAmt;
+  const feeLoad = Number(loaderFee) || 0;
+  const feeBind = Number(bindingFee) || 0;
 
   const L = isUrdu ? {
     shopName:      sp.shopNameUr || sp.shopName,
@@ -387,489 +256,105 @@ function BillingSaleInvoice({ invoiceData, onClose, isUrdu }) {
   const lineItems = [];
   (items || []).forEach(item => {
     (item.rows || []).forEach(row => {
-      lineItems.push(parseRow(row, item.category, item.productName));
+      const li = parseRow(row, item.category, item.productName);
+      lineItems.push({
+        ...li,
+        pack: packLabel(item.category, li.qty),
+      });
     });
   });
 
-  const page = {
-  width: "3in",
-  margin: "0 auto",
-  fontFamily: "Arial, sans-serif",
-  fontSize: "14px",
-  color: "#000",
-  background: "#fff",
-  padding: "6px 4px 10px",
-  boxSizing: "border-box",
-};
+  const itemsGross = lineItems.reduce((s, li) => s + (Number(li.amount) || 0), 0);
+  const gt = Number(grandTotal) || 0;
+  // Old sales may have baked loader into grandTotal — strip it from Bill Amount.
+  const expectedWithLoader = Math.round((itemsGross + feeLoad + feeBind - discountAmt) * 100) / 100;
+  const expectedWithout = Math.round((itemsGross + feeBind - discountAmt) * 100) / 100;
+  const loaderInStoredTotal = feeLoad > 0 && itemsGross > 0
+    && Math.abs(gt - expectedWithLoader) + 0.01 < Math.abs(gt - expectedWithout);
+  const productsSubtotal = itemsGross > 0
+    ? itemsGross
+    : Math.max(0, (loaderInStoredTotal ? gt - feeLoad : gt) - feeBind + discountAmt);
+  // Bill Amount = after discount (items + binding − discount); never include loader fee.
+  const netFromItems = Math.max(0, Math.round((productsSubtotal + feeBind - discountAmt) * 100) / 100);
+  const storedNet = loaderInStoredTotal ? Math.max(0, Math.round((gt - feeLoad) * 100) / 100) : gt;
+  const billAmount = itemsGross > 0
+    ? (discountAmt > 0.009 && Math.abs(storedNet - productsSubtotal) < 0.5 ? netFromItems : (storedNet > 0 && Math.abs(storedNet - netFromItems) < 0.5 ? storedNet : netFromItems))
+    : storedNet;
 
-const center = {
-  textAlign: "center",
-};
+  const creditLike = paymentMethod === "credit"
+    || settlement === "credit"
+    || settlement === "partial"
+    || !!isPartial
+    || remaining > 0.009;
+  const extras = [];
+  if (feeBind > 0) extras.push({ label: L.bindingFeeLbl, value: formatPKR(feeBind) });
+  extras.push({
+    label: L.payLbl,
+    value: creditLike
+      ? (isUrdu ? "ادھار (Credit)" : (paid > 0 ? "Partial Credit" : "Credit"))
+      : getPaymentLabel(paymentMethod, accountName || bankName, isUrdu),
+  });
+  const notes = [];
+  if (loaderName || feeLoad > 0) {
+    if (loaderName) notes.push({ label: L.loaderLbl, value: loaderName });
+    if (feeLoad > 0) notes.push({ label: L.loaderFeeLbl, value: formatPKR(feeLoad) });
+  }
 
-const bold900 = {
-  fontWeight: 500,
-};
-
-const dash = {
-  borderTop: "1px dashed #000",
-  margin: "8px 0",
-};
-
-const tbl = {
-  width: "100%",
-  borderCollapse: "collapse",
-  tableLayout: "fixed",
-};
-
-const thS = (w, align) => ({
-  width: w,
-  padding: "6px 3px", // sab equal gap
-  fontWeight: 600,
-  fontSize: "11px",
-
-  textAlign: align || "center",
-
-  whiteSpace: "nowrap",
-  overflow: "hidden",
-});
-
-const tdS = (align) => ({
-  padding: "6px 3px", // equal spacing
-  fontWeight: 400,
-  fontSize: "11px",
-
-  textAlign: align || "center",
-  verticalAlign: "top",
-
-  wordBreak: "break-word",
-  overflowWrap: "break-word",
-});
-
-const tdNum = (align) => ({
-  padding: "6px 3px", // same gap
-  fontWeight: 400,
-  fontSize: "11px",
-
-  textAlign: align || "right",
-
-  whiteSpace: "nowrap",
-});
-
-
-/* BALANCED WIDTHS */
-
-const COL_SN = "8%";
-const COL_ITEM = "40%";
-const COL_QTY = "16%";
-const COL_PRICE = "18%";
-const COL_AMT = "18%";
-
-
-  // ── PRINT MECHANISM ─────────────────────────────────────────────────────
-  // Two things this must guarantee:
-  // 1) No blank page: the portal stays in normal document flow (real width
-  //    & height) instead of width:0/height:0/overflow:hidden, which is what
-  //    used to make some browsers compute a zero-height printable area.
-  // 2) Print must look IDENTICAL to the on-screen preview: we clone the
-  //    actual rendered #thermal-invoice node as-is and do NOT overwrite its
-  //    font-family/font-weight on the clone. Previously the clone was force-
-  //    set to Courier New + font-weight 900 on every element, which is why
-  //    the printed receipt looked different from the preview (different
-  //    font, everything bold). That override is removed below.
   const handlePrint = () => printThermalOrA4("thermal");
 
   return (
     <>
       <style>{thermalPrintStyles}</style>
-      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:16 }}>
-
-        {/* ── Buttons ── */}
-        <div style={{ display:"flex", gap:10, width:"100%" }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+        <div style={{ display: "flex", gap: 10, width: "100%" }}>
           <button onClick={handlePrint}
-            style={{ flex:1, padding:"10px", borderRadius:10, border:"none", background:"linear-gradient(135deg,#1abc9c,#2980b9)", color:"white", fontWeight:700, fontSize:14, cursor:"pointer" }}>
+            style={{ flex: 1, padding: "10px", borderRadius: 10, border: "none", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "white", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
             🖨️ {isUrdu ? "پرنٹ کریں" : "Print Invoice"}
           </button>
           <button onClick={onClose}
-            style={{ padding:"10px 18px", borderRadius:10, border:`1px solid ${th.border}`, background:th.bgCard, color:th.textMuted, fontWeight:600, fontSize:14, cursor:"pointer" }}>
+            style={{ padding: "10px 18px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.textMuted, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
             ✕ {isUrdu ? "بند کریں" : "Close"}
           </button>
         </div>
 
-        {/* ── Preview wrapper ── */}
-        <div style={{ background:"#f0f0f0", padding:"14px", borderRadius:12, border:"1px solid #ccc", width:"100%", overflowX:"auto" }}>
-          <div id="thermal-invoice" style={page}>
-
-            {/* Shop logo */}
-            {sp.logoBase64 && (
-              <div style={{ ...center, marginBottom:6 }}>
-                <img src={sp.logoBase64} alt="logo" style={{ maxWidth:56, maxHeight:40, objectFit:"contain" }}/>
-              </div>
-            )}
-
-            {/* Shop name */}
-            <div
-style={{
-...center,
-fontSize:"22px",
-fontWeight:700,
-lineHeight:"28px",
-marginBottom:"4px",
-letterSpacing:"0.3px"
-}}
->{L.shopName}</div>
-
-            {/* Address */}
-            {L.address && <div style={{ ...center, ...bold900, fontSize:"10px", marginTop:4, lineHeight:1.4 }}>{L.address}</div>}
-
-            {/* Owner phones */}
-            {L.phone1 && <div style={{ ...center, ...bold900, fontSize:"10px", marginTop:2 }}>{L.phone1}</div>}
-            {L.phone2 && <div style={{ ...center, ...bold900, fontSize:"10px", marginTop:1 }}>{L.phone2}</div>}
-            {L.phone3 && <div style={{ ...center, ...bold900, fontSize:"10px", marginTop:1 }}>{L.phone3}</div>}
-
-            {/* ── Bill No / Date row ── */}
-            <table style={{ ...tbl, marginTop:8 }}>
-              <tbody>
-                <tr>
-                  <td style={tdS("left")}>{L.billNoLbl}: {invoice}</td>
-                  <td style={tdS("right")}>
-                    {L.dateLbl}: {new Date(date).toLocaleDateString(
-                      isUrdu ? "ur-PK" : "en-PK",
-                      { day:"2-digit", month:"short", year:"numeric" }
-                    )}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-
-            {/* Customer line */}
-            <div style={{ fontWeight:900, fontSize:"11px", marginTop:2 }}>{L.customerLbl}: {customer}</div>
-
-            <div style={dash}/>
-
-            {/* ── Items table — header + rows + subtotal in ONE table so the
-                 5 columns stay locked/aligned (separate tables before this
-                 fix each computed their own widths independently, which is
-                 what caused the column "stretching"/misalignment). ── */}
-          {/* ITEMS TABLE */}
-<table className="inv-items" style={{ ...tbl, marginTop: 2 }}>
-
-<colgroup>
-<col style={{width:COL_SN}}/>
-<col style={{width:COL_ITEM}}/>
-<col style={{width:COL_QTY}}/>
-<col style={{width:COL_PRICE}}/>
-<col style={{width:COL_AMT}}/>
-</colgroup>
-
-<thead>
-
-<tr>
-
-<th style={thS(COL_SN,"center")}>
-{L.colSN}
-</th>
-
-<th style={thS(COL_ITEM,"left")}>
-{L.colItem}
-</th>
-
-<th style={thS(COL_QTY,"center")}>
-{L.colQty}
-</th>
-
-<th style={thS(COL_PRICE,"right")}>
-Price
-</th>
-
-<th style={thS(COL_AMT,"right")}>
-Amount
-</th>
-
-</tr>
-
-</thead>
-
-<tbody>
-
-{lineItems.map((li,i)=>(
-
-<tr key={i}>
-
-<td style={tdS("center")}>
-{i+1}
-</td>
-
-<td
-style={{
-...tdS("left"),
-paddingRight:"6px"
-}}
->
-{li.item}
-</td>
-
-<td style={{...tdNum("center"), whiteSpace:"normal", wordBreak:"break-word", lineHeight:1.25, fontSize:"10px"}}>
-  {li.qty}
-</td>
-
-<td style={tdNum("right")}>
-  {
-    Number.isInteger(Number(li.price))
-      ? Number(li.price)
-      : Number(li.price).toFixed(1)
-  }
-</td>
-
-<td style={tdNum("right")}>
-  {
-    Number.isInteger(Number(li.amount))
-      ? Number(li.amount)
-      : Number(li.amount).toFixed(1)
-  }
-</td>
-
-</tr>
-
-))}
-
-</tbody>
-
-</table>
-
-<div style={dash}/>
-
-
-{/* SUBTOTAL */}
-<table style={tbl}>
-
-<colgroup>
-<col style={{ width:"8%" }} />
-<col style={{ width:"40%" }} />
-<col style={{ width:"12%" }} />
-<col style={{ width:"20%" }} />
-<col style={{ width:"20%" }} />
-</colgroup>
-
-<tbody>
-
-<tr>
-
-<td
-style={{
-...tdS("left"),
-fontWeight:600
-}}
-colSpan={2}
->
-{L.subtotalLbl}
-</td>
-
-<td style={tdNum("center")}>
-{lineItems.length}
-</td>
-
-<td
-style={tdNum("right")}
-colSpan={2}
->
-{formatPKR(productsSubtotal)}
-</td>
-
-</tr>
-
-</tbody>
-
-</table>
-
-            <div style={dash}/>
-
-            {/* ── Subtotal — own table, same colgroup so its columns line up
-                 with the items table above it ── */}
-        
-
-            <div style={dash}/>
-
-            {/* ── TOTAL ── */}
-            {discountAmt > 0 && (
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:"12px", fontWeight:700, marginBottom:4 }}>
-                <span>{isUrdu ? "رعایت" : "Discount"}</span>
-                <span>- {formatPKR(discountAmt)}</span>
-              </div>
-            )}
-            <div style={{ display:"flex", justifyContent:"space-between", fontSize:"15px", fontWeight:900 }}>
-              <span>{L.totalLbl}</span>
-              <span>{formatPKR(grandTotal)}</span>
-            </div>
-            {cashIn > 0 && (
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:"12px", fontWeight:700, marginTop:4 }}>
-                <span>{isUrdu ? "وصول رقم" : "Cash received"}</span>
-                <span>{formatPKR(cashIn)}</span>
-              </div>
-            )}
-            {changeAmt > 0 && (
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:"13px", fontWeight:900, marginTop:4 }}>
-                <span>{isUrdu ? "واپسی (چینج)" : "Change"}</span>
-                <span>{formatPKR(changeAmt)}</span>
-              </div>
-            )}
-
-            {/* ── Partial payment breakdown (kept, styled plainly) ── */}
-            {isPartial && paid > 0 && (
-              <>
-                <div style={dash}/>
-                <table style={tbl}>
-                  <tbody>
-                    <tr>
-                      <td style={tdS("left")}>{L.paidNowLbl}</td>
-                      <td style={tdS("right")} colSpan={4}>{formatPKR(paid)}</td>
-                    </tr>
-                    <tr>
-                      <td style={tdS("left")}>{L.remainingLbl}</td>
-                      <td style={tdS("right")} colSpan={4}>{formatPKR(remaining)}</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <div style={{ textAlign:"center", marginTop:4, fontWeight:900, fontSize:"10px", letterSpacing:"0.4px" }}>
-                  {remaining > 0 ? `⚠ ${L.partialBadge}` : `✓ ${L.fullPaidBadge}`}
-                </div>
-              </>
-            )}
-            {!isPartial && (
-              <div style={{ textAlign:"center", marginTop:6, fontWeight:900, fontSize:"10px", letterSpacing:"0.4px" }}>
-                ✓ {L.fullPaidBadge}
-              </div>
-            )}
-
-          
-           
-
-            <div style={dash}/>
-
-            {/* ── Payment & loader info ── */}
-       <table style={{ ...tbl }}>
-
-<tbody>
-
-<tr>
-
-<td
-style={{
-...tdS("left"),
-width:"30%",
-verticalAlign:"middle",
-padding:"6px 3px"
-}}
->
-{L.payLbl}
-</td>
-
-<td
-colSpan={4}
-style={{
-...tdS("right"),
-width:"70%",
-verticalAlign:"middle",
-padding:"6px 3px",
-whiteSpace:"nowrap"
-}}
->
-{getPaymentLabel(paymentMethod, accountName || bankName, isUrdu)}
-</td>
-
-</tr>
-
-{loaderName && (
-<tr>
-
-<td style={{...tdS("left"),verticalAlign:"middle"}}>
-{L.loaderLbl}
-</td>
-
-<td
-colSpan={4}
-style={{
-...tdS("right"),
-verticalAlign:"middle"
-}}
->
-{loaderName}
-</td>
-
-</tr>
-)}
-
-{loaderName && Number(loaderFee)>0 && (
-<tr>
-
-<td style={{...tdS("left"),verticalAlign:"middle"}}>
-{L.loaderFeeLbl}
-</td>
-
-<td
-colSpan={4}
-style={{
-...tdS("right"),
-verticalAlign:"middle"
-}}
->
-{formatPKR(Number(loaderFee))}
-</td>
-
-</tr>
-)}
-
-{Number(bindingFee)>0 && (
-<tr>
-
-<td style={{...tdS("left"),verticalAlign:"middle"}}>
-{L.bindingFeeLbl}
-</td>
-
-<td
-colSpan={4}
-style={{
-...tdS("right"),
-verticalAlign:"middle"
-}}
->
-{formatPKR(Number(bindingFee))}
-</td>
-
-</tr>
-)}
-
-<tr>
-
-<td style={{...tdS("left"),verticalAlign:"middle"}}>
-{L.timeLbl}
-</td>
-
-<td
-colSpan={4}
-style={{
-...tdS("right"),
-verticalAlign:"middle"
-}}
->
-{new Date().toLocaleTimeString(
-isUrdu?"ur-PK":"en-PK",
-{
-hour:"2-digit",
-minute:"2-digit"
-}
-)}
-</td>
-
-</tr>
-
-</tbody>
-
-</table>
-
-            <div style={dash}/>
-
-            <OkiieeBrandFooter />
-
+        <div style={{ background: "#f0f0f0", padding: "14px", borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto" }}>
+          <div id="thermal-invoice" style={slipPage}>
+            <ThermalSlipHeader title={saleReceiptTitle({ isCredit: creditLike, isUrdu })} isUrdu={isUrdu} />
+            <ThermalSlipMeta
+              billNo={invoice}
+              date={date}
+              partyLabel={L.customerLbl}
+              partyName={customer}
+              cashSaleLabel={saleTypeLabel({
+                invoice, paymentMethod, settlement, remainingAmount: remaining, isPartial: creditLike, isUrdu,
+              })}
+              isUrdu={isUrdu}
+            />
+            <ThermalSlipItemsTable
+              isUrdu={isUrdu}
+              rows={lineItems.map((li) => ({
+                item: li.item,
+                pack: li.pack,
+                qty: li.qty,
+                price: li.price,
+                amount: li.amount,
+              }))}
+            />
+            <ThermalSlipTotals
+              isUrdu={isUrdu}
+              itemCount={lineItems.length}
+              gross={productsSubtotal}
+              billAmount={billAmount}
+              discount={discountAmt}
+              cashReceived={cashIn > 0 ? cashIn : (creditLike ? 0 : billAmount)}
+              changeDue={changeAmt}
+              paidAmount={paid}
+              remainingAmount={remaining}
+              isPartial={creditLike}
+              extras={extras}
+              notes={notes}
+            />
+            <ThermalSlipFooter isUrdu={isUrdu} role="admin" />
           </div>
         </div>
       </div>
@@ -1418,7 +903,7 @@ function LoaderSection({ loaderForm, setLoaderForm, isUrdu, loaders=[] }) {
           </div>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-          {loaderFee > 0 && <span style={{ color:"#a78bfa", fontWeight:800, fontSize:14, padding:"2px 10px", borderRadius:20, background:"rgba(167,139,250,0.12)" }}>+{formatPKR(loaderFee)}</span>}
+          {loaderFee > 0 && <span style={{ color:"#a78bfa", fontWeight:800, fontSize:14, padding:"2px 10px", borderRadius:20, background:"rgba(167,139,250,0.12)" }}>{formatPKR(loaderFee)}</span>}
           {hasLoader
             ? <button onClick={clear} style={{ fontSize:12, color:"#f87171", background:"rgba(248,113,113,0.1)", border:"1px solid rgba(248,113,113,0.3)", borderRadius:8, padding:"4px 10px", cursor:"pointer", fontWeight:600 }}>✕ {isUrdu?"ہٹائیں":"Remove"}</button>
             : <span style={{ color:th.textDim, fontSize:18, lineHeight:1, display:"inline-block", transform:open?"rotate(180deg)":"rotate(0deg)" }}>⌄</span>
@@ -1477,8 +962,8 @@ function LoaderSection({ loaderForm, setLoaderForm, isUrdu, loaders=[] }) {
                 </div>
                 {loaderFee > 0 && (
                   <div style={{ marginTop:6, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"6px 12px", borderRadius:8, background:"rgba(167,139,250,0.08)", border:"1px solid rgba(167,139,250,0.2)" }}>
-                    <span style={{ color:th.textMuted, fontSize:12 }}>{isUrdu?"کل میں شامل ہوگی":"Will be added to total"}</span>
-                    <span style={{ color:"#a78bfa", fontWeight:800, fontSize:14 }}>+ {formatPKR(loaderFee)}</span>
+                    <span style={{ color:th.textMuted, fontSize:12 }}>{isUrdu?"کل/قابل وصول میں شامل نہیں — صرف لوڈر ریکارڈ":"Not in bill / receivable — loader record only"}</span>
+                    <span style={{ color:"#a78bfa", fontWeight:800, fontSize:14 }}>{formatPKR(loaderFee)}</span>
                   </div>
                 )}
               </div>
@@ -1710,16 +1195,14 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
     return [emptySaleBlock()];
   });
 
-  // productsTotal = sum of item sale prices only (this is what profit is based on).
-  // loaderFeeAmt is added on top so the customer's bill covers the loader's charge,
-  // but it must NEVER be treated as sale revenue for profit purposes.
+  // productsTotal = item sale prices (profit + payable/receivable base).
+  // loaderFee is NOT added to bill — only recorded for the Loader section.
   const productsTotal = blocks.reduce((s,b) => s + getBillingBlockSubtotal(b, products), 0);
   const loaderFeeAmt  = Number(loaderForm.fee) || 0;
-  // Chader "binding mazdori" — only relevant when this sale actually contains a
-  // Chader item, same pass-through-charge treatment as loaderFee.
+  // Chader "binding mazdori" — still part of the customer bill.
   const hasChaderItem = blocks.some(b => products.find(p => (p._id||p.id) === b.productId)?.category === "Chader");
   const bindingFeeAmt = hasChaderItem ? (Number(bindingFee) || 0) : 0;
-  const billBeforeDiscount = productsTotal + loaderFeeAmt + bindingFeeAmt;
+  const billBeforeDiscount = productsTotal + bindingFeeAmt;
   const discountAmt = calcDiscount(billBeforeDiscount, discount, discountMode);
   const grandTotal = Math.max(0, Math.round((billBeforeDiscount - discountAmt) * 100) / 100);
   const finalTotal = grandTotal;
@@ -1936,12 +1419,6 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
             <span style={{color:th.textMuted,fontSize:14}}>{isUrdu?"Items کل:":"Items total:"}</span>
             <span style={{color:"#34d399",fontWeight:700,fontSize:16}}>{formatPKR(productsTotal)}</span>
           </div>
-          {loaderFeeAmt > 0 && (
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <span style={{color:"#a78bfa",fontSize:14}}>{isUrdu?"لوڈر فیس:":"Loader Fee:"}</span>
-              <span style={{color:"#a78bfa",fontWeight:700,fontSize:16}}>{formatPKR(loaderFeeAmt)}</span>
-            </div>
-          )}
           {bindingFeeAmt > 0 && (
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <span style={{color:"#fbbf24",fontSize:14}}>{isUrdu?"بائنڈنگ مزدوری:":"Binding Mazdori:"}</span>
@@ -1969,6 +1446,12 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
             <span style={{color:th.text,fontWeight:700,fontSize:15}}>{isUrdu?"کل رقم:":"Grand Total:"}</span>
             <span style={{color:"#34d399",fontWeight:900,fontSize:21}}>{formatPKR(grandTotal)}</span>
           </div>
+          {loaderFeeAmt > 0 && (
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 8px",borderRadius:8,background:"rgba(167,139,250,0.08)",border:"1px dashed rgba(167,139,250,0.35)"}}>
+              <span style={{color:"#a78bfa",fontSize:13}}>{isUrdu?"لوڈر فیس (کل میں نہیں):":"Loader Fee (not in total):"}</span>
+              <span style={{color:"#a78bfa",fontWeight:700,fontSize:15}}>{formatPKR(loaderFeeAmt)}</span>
+            </div>
+          )}
           {tendered > 0 && (
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <span style={{color:th.textMuted,fontSize:13}}>{isUrdu?"وصول رقم:":"Cash received:"}</span>
@@ -2256,18 +1739,31 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
 
   const handleReprint = (s) => {
     const items = netSaleItems(s, saleReturns).filter((it) => !it.fullyReturned && (Number(it.subtotal) || 0) > 0.009);
-    const grandTotal = items.length
-      ? items.reduce((sum, i) => sum + (Number(i.subtotal) || 0), 0)
-      : Number(s.grandTotal) || Number(s.total) || 0;
+    const itemsSum = items.reduce((sum, i) => sum + (Number(i.subtotal) || 0), 0);
+    const disc = Number(s.discount) || 0;
+    const bind = Number(s.bindingFee) || 0;
+    const storedGt = Number(s.grandTotal) || Number(s.total) || 0;
+    // Prefer stored net total; if missing, items − discount + binding.
+    const grandTotal = storedGt > 0
+      ? storedGt
+      : Math.max(0, Math.round((itemsSum + bind - disc) * 100) / 100);
+    const rem = Number(s.remainingAmount) || 0;
+    const settle = s.settlement || (s.isPartial || rem > 0.009
+      ? ((Number(s.paidAmount) || 0) === 0 ? "credit" : "partial")
+      : "full");
     setReprintData({
       invoice:s.invoice, date:s.date, customer:s.customer,
       items: items.length ? items : (s.items || [{ productName:s.productName||safeProductName(s.product), category:"", rows:[{ desc:`1pc × Rs${s.total}/pc`, amount:s.total }], subtotal:s.total }]),
       grandTotal, paymentMethod:s.paymentMethod||"cash", bankName:s.accountName||s.bankName||"",
+      accountName: s.accountName || "",
+      settlement: settle,
       loaderName:s.loaderName||"", loaderFee:s.loaderFee||0, bindingFee:s.bindingFee||0,
       discount:s.discount||0, cashReceived:s.cashReceived||0, changeDue:s.changeDue||0,
-      isPartial:s.isPartial||false,
-      paidAmount: (s.isPartial || s.settlement === "credit") ? (Number(s.paidAmount)||0) : (Number(s.paidAmount)||grandTotal),
-      remainingAmount:s.remainingAmount||0,
+      isPartial: !!(s.isPartial || rem > 0.009 || settle === "credit" || settle === "partial"),
+      paidAmount: (settle === "credit" || settle === "partial" || s.isPartial || rem > 0.009)
+        ? (Number(s.paidAmount)||0)
+        : (Number(s.paidAmount)||grandTotal),
+      remainingAmount: rem,
     });
   };
 

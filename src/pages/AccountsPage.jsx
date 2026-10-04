@@ -3,12 +3,15 @@ import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard } from "../components/shared";
 import { api } from "../utils/api";
-import { formatPKR, loadShopProfile, printThermalOrA4 } from "../utils/helpers";
+import { formatPKR, printThermalOrA4 } from "../utils/helpers";
 import { PAKISTAN_BANKS } from "../utils/constants";
 import { liveBalance } from "../utils/tradeFinance";
 import { expenseApi, ensurePendingAccountCuts } from "../utils/expenseStore";
 import { buildAccountStatement } from "../utils/accountStatement";
 import { flushLocalAccountDeltas } from "../utils/accountBalance";
+import {
+  slipPage, slipLine, ThermalSlipHeader, ThermalSlipFooter,
+} from "../components/ThermalSlipTheme";
 
 function OutlineBtn({ onClick, color, children }) {
   return (
@@ -27,45 +30,20 @@ function OutlineBtn({ onClick, color, children }) {
 }
 
 function AccountStatementSheet({ acc, built, isUrdu }) {
-  const sp = loadShopProfile();
-  const ownerLines = (sp.owners || []).filter((o) => o.name || o.nameUr);
-  const shopName = isUrdu ? (sp.shopNameUr || sp.shopName) : sp.shopName;
-  const address = isUrdu ? (sp.addressUr || sp.address) : sp.address;
-  const phoneLine = (o) => isUrdu
-    ? `${o.nameUr || o.name}: ${o.phone}`
-    : `${o.name}: ${o.phone}`;
-  const dash = { borderTop: "1px dashed #000", margin: "8px 0" };
-  const page = {
-    width: "65mm", margin: "0 auto", fontFamily: "Arial, sans-serif", fontSize: "12px",
-    color: "#000", background: "#fff", padding: "8px 8px 12px", boxSizing: "border-box",
-  };
   const kind = acc.type === "bank" ? (isUrdu ? "بینک" : "Bank")
     : acc.type === "wallet" ? (isUrdu ? "والٹ" : "Wallet")
       : (isUrdu ? "نقد" : "Cash");
   return (
     <div style={{ background: "#f0f0f0", padding: 14, borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto" }}>
-      <div id="thermal-invoice" style={page}>
-        {sp.logoBase64 && (
-          <div style={{ textAlign: "center", marginBottom: 6 }}>
-            <img src={sp.logoBase64} alt="logo" style={{ maxWidth: 56, maxHeight: 40, objectFit: "contain" }} />
-          </div>
-        )}
-        {shopName ? <div style={{ textAlign: "center", fontSize: 18, fontWeight: 800, lineHeight: "24px" }}>{shopName}</div> : null}
-        {address && <div style={{ textAlign: "center", fontSize: 10, marginTop: 4 }}>{address}</div>}
-        {ownerLines.slice(0, 3).map((o, i) => (
-          <div key={i} style={{ textAlign: "center", fontSize: 10, marginTop: 1 }}>{phoneLine(o)}</div>
-        ))}
-        <div style={dash} />
-        <div style={{ textAlign: "center", fontWeight: 800, fontSize: 13 }}>
-          {isUrdu ? "بینک / والٹ بیان" : "Bank / Wallet statement"}
-        </div>
+      <div id="thermal-invoice" style={slipPage}>
+        <ThermalSlipHeader title={isUrdu ? "اکاؤنٹ بیان" : "ACCOUNT STATEMENT"} isUrdu={isUrdu} />
         <div style={{ marginTop: 8, fontWeight: 800, fontSize: 12 }}>{acc.name}</div>
         <div style={{ fontSize: 11 }}>{kind}{acc.bankName ? ` · ${acc.bankName}` : ""}</div>
         {acc.accountNumber ? <div style={{ fontSize: 11, fontFamily: "monospace" }}>{acc.accountNumber}</div> : null}
         <div style={{ marginTop: 6, fontWeight: 800, fontSize: 13 }}>
           {isUrdu ? "بیلنس" : "Balance"}: {formatPKR(built.closing)}
         </div>
-        <div style={dash} />
+        <div style={slipLine} />
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 800, padding: "3px 0" }}>
           <span>{isUrdu ? "ابتدائی بیلنس" : "Opening"}</span>
           <span>{formatPKR(built.opening)}</span>
@@ -83,7 +61,7 @@ function AccountStatementSheet({ acc, built, isUrdu }) {
             <div style={{ fontSize: 10, textAlign: "right" }}>{isUrdu ? "بیلنس" : "Bal"} {formatPKR(l.balance)}</div>
           </div>
         ))}
-        <div style={dash} />
+        <div style={slipLine} />
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
           <span>{isUrdu ? "کل اندر" : "Total in"}</span>
           <span style={{ fontWeight: 700 }}>{formatPKR(built.totalIn)}</span>
@@ -96,10 +74,7 @@ function AccountStatementSheet({ acc, built, isUrdu }) {
           <span>{isUrdu ? "اختتامی بیلنس" : "Closing"}</span>
           <span>{formatPKR(built.closing)}</span>
         </div>
-        <div style={dash} />
-        <div style={{ textAlign: "center", fontSize: 10, fontWeight: 700 }}>
-          {isUrdu ? "شکریہ" : "Thank you"}
-        </div>
+        <ThermalSlipFooter isUrdu={isUrdu} role="admin" />
       </div>
     </div>
   );

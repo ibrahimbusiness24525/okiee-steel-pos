@@ -2,9 +2,12 @@ import { useState, useMemo } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { Table, Modal } from "./shared";
-import { formatPKR, formatWeightKgG, loadShopProfile, printThermalOrA4, todayStr } from "../utils/helpers";
+import { formatPKR, formatWeightKgG, printThermalOrA4, todayStr } from "../utils/helpers";
 import { productDisplayName } from "../utils/constants";
 import { pidOf } from "./StockReturns";
+import {
+  slipPage, slipLine, ThermalSlipHeader, ThermalSlipFooter,
+} from "./ThermalSlipTheme";
 
 const HW_ITEM_CATS = ["Nuts", "Bolts", "Screws", "Washers", "Hinges", "Locks", "Tools", "Fittings", "Valves", "Other"];
 const MAIN_CATS = ["Pipe", "Chader", "Net", "Hardware", "Custom"];
@@ -290,12 +293,41 @@ export function makeLotContext({ purchases = [], sales = [], purchaseReturns = [
   };
 }
 
+function lotDedupeKey(l) {
+  return [
+    String(l.invoice || ""),
+    String(l.date || ""),
+    String(l.createdAt || ""),
+    String(l.bought || 0),
+    String(l.unitCost || 0),
+    String(l.supplier || ""),
+  ].join("|");
+}
+
+/** Merge id-keyed + name-keyed purchase lots so a PO is never dropped when
+ *  productId is missing/wrong on one invoice but productName still matches. */
+function rawLotsForProduct(product, ctx) {
+  const id = pidOf(product?._id || product?.id);
+  const name = String(product?.name || "").trim().toLowerCase();
+  const byId = (id && ctx.purchById[id]) ? ctx.purchById[id] : [];
+  const byName = (name && ctx.purchByName[name]) ? ctx.purchByName[name] : [];
+  if (!byId.length) return byName.slice();
+  if (!byName.length) return byId.slice();
+  const seen = new Set();
+  const merged = [];
+  [...byId, ...byName].forEach((l) => {
+    const key = lotDedupeKey(l);
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(l);
+  });
+  return merged;
+}
+
 function lotsFromContext(product, ctx) {
   const fallback = costAndSale(product).cost;
   const stock = Number(product?.stock) || 0;
-  const id = pidOf(product?._id || product?.id);
-  const name = String(product?.name || "").trim().toLowerCase();
-  const raw = (id && ctx.purchById[id]?.length) ? ctx.purchById[id] : (ctx.purchByName[name] || []);
+  const raw = rawLotsForProduct(product, ctx);
   const lots = raw.map((l) => ({
     ...l,
     remaining: l.bought,
@@ -317,16 +349,10 @@ function lotsFromContext(product, ctx) {
   }
 
   let held = lots.reduce((s, l) => s + l.remaining, 0);
-  if (held > stock) {
-    let extra = held - stock;
-    for (const lot of lots) {
-      if (extra <= 0) break;
-      const take = Math.min(lot.remaining, extra);
-      lot.remaining -= take;
-      extra -= take;
-    }
-    held = stock;
-  } else if (stock > held + 0.0001) {
+  // Do NOT clamp purchase lots down to product.stock — that used to erase whole
+  // invoices (e.g. PO-6799) from the stock detail when stock was temporarily low.
+  // Trust FIFO from purchases/sales; reconcileProductStock keeps product.stock in sync.
+  if (stock > held + 0.0001) {
     // Only invent an Opening lot when there is truly no purchase history.
     // If purchases exist but product.stock is higher, stock is wrong (old edit bug) —
     // do not create a fake Opening that doubles inventory value.
@@ -345,6 +371,8 @@ function lotsFromContext(product, ctx) {
     } else {
       held = lots.reduce((s, l) => s + l.remaining, 0);
     }
+  } else {
+    held = lots.reduce((s, l) => s + l.remaining, 0);
   }
 
   const remaining = lots.filter((l) => l.remaining > 0.0001);
@@ -418,22 +446,10 @@ export function fifoCostForQty(product, qty, opts = {}, extraQty = 0) {
 }
 
 function InventoryPrintSheet({ rows, total, isUrdu, kind }) {
-  const sp = loadShopProfile();
-  const ownerLines = (sp.owners || []).filter((o) => o.name || o.nameUr);
-  const shopName = isUrdu ? (sp.shopNameUr || sp.shopName) : sp.shopName;
-  const address = isUrdu ? (sp.addressUr || sp.address) : sp.address;
-  const page = {
-    width: "65mm", margin: "0 auto",
-    fontFamily: "Arial, sans-serif", fontSize: "13px",
-    color: "#000", background: "#fff",
-    padding: "8px 8px 12px", boxSizing: "border-box",
-  };
-  const center = { textAlign: "center" };
-  const dash = { borderTop: "1px dashed #000", margin: "8px 0" };
   const tbl = { width: "100%", borderCollapse: "collapse", tableLayout: "fixed" };
   const thS = (align) => ({
     padding: "5px 2px", fontWeight: 700, fontSize: "10px",
-    textAlign: align || "center", borderBottom: "1px solid #000",
+    textAlign: align || "center", borderBottom: "1px solid #000", borderTop: "1px solid #000",
   });
   const tdS = (align) => ({
     padding: "4px 2px", fontSize: "10px",
@@ -445,27 +461,12 @@ function InventoryPrintSheet({ rows, total, isUrdu, kind }) {
     : (isUrdu ? "اسٹاک لسٹ رپورٹ" : "STOCK LIST REPORT");
 
   return (
-    <div id="thermal-invoice" style={page}>
-      {sp.logoBase64 && (
-        <div style={{ ...center, marginBottom: 6 }}>
-          <img src={sp.logoBase64} alt="logo" style={{ maxWidth: 56, maxHeight: 40, objectFit: "contain" }} />
-        </div>
-      )}
-      <div style={{ ...center, fontSize: "20px", fontWeight: 800, lineHeight: "24px" }}>{shopName || "STEELPOS"}</div>
-      {address && <div style={{ ...center, fontSize: "10px", marginTop: 4 }}>{address}</div>}
-      {ownerLines[0] && (
-        <div style={{ ...center, fontSize: "10px", marginTop: 2 }}>
-          {(isUrdu ? ownerLines[0].nameUr : ownerLines[0].name) || ownerLines[0].name}: {ownerLines[0].phone}
-        </div>
-      )}
-      <div style={dash} />
-      <div style={{ ...center, fontWeight: 800, fontSize: "14px", letterSpacing: "0.4px" }}>
-        {reportTitle}
-      </div>
-      <div style={{ ...center, fontSize: "10px", marginTop: 4 }}>
+    <div id="thermal-invoice" style={slipPage}>
+      <ThermalSlipHeader title={reportTitle} isUrdu={isUrdu} />
+      <div style={{ textAlign: "center", fontSize: "10px", marginTop: 6, fontWeight: 700 }}>
         {isUrdu ? "تاریخ" : "Date"}: {todayStr()} · {rows.length} {isUrdu ? "آئٹمز" : "items"}
       </div>
-      <div style={dash} />
+      <div style={slipLine} />
       <table className="inv-items" style={tbl}>
         <thead>
           <tr>
@@ -489,13 +490,12 @@ function InventoryPrintSheet({ rows, total, isUrdu, kind }) {
           ))}
         </tbody>
       </table>
-      <div style={dash} />
-      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 900, fontSize: "14px" }}>
+      <div style={slipLine} />
+      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 900, fontSize: "13px" }}>
         <span>{isUrdu ? "کل مالیت" : "TOTAL VALUE"}</span>
         <span>{formatPKR(total)}</span>
       </div>
-      <div style={dash} />
-      <div style={{ ...center, fontWeight: 700, fontSize: "11px", marginTop: 4 }}>OKIIEE SOFTWARE COMPANY</div>
+      <ThermalSlipFooter isUrdu={isUrdu} role="admin" />
     </div>
   );
 }
@@ -538,31 +538,54 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t }) {
 
       <div>
         <div style={{ color: th.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>
-          {isUrdu ? "اسٹاک کن خریداریوں سے ہے" : "Stock on hand — purchased on"}
+          {isUrdu ? "تمام خریداریاں (FIFO)" : "All purchases (FIFO)"}
         </div>
-        <Table
-          compact
-          cols={[
-            t.date,
-            t.invoiceNum,
-            t.supplier,
-            t.stock,
-            isUrdu ? "فی پیس لاگت" : "Cost / pc",
-            t.totalLabel,
-          ]}
-          rows={lots.remaining.map((l) => ({
-            data: l,
-            cells: [
-              <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{l.opening ? (isUrdu ? "پرانا / اوپننگ" : "Opening") : l.date}</span>,
-              <span style={{ fontFamily: "monospace", color: "#60a5fa", fontSize: 12, whiteSpace: "nowrap" }}>{l.invoice}</span>,
-              <span style={{ whiteSpace: "nowrap" }}>{l.supplier}</span>,
-              <span style={{ fontWeight: 700, color: "#34d399", whiteSpace: "nowrap" }}>{stockLabel(product.category, l.remaining)}</span>,
-              <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(l.unitCost)}</span>,
-              <span style={{ fontWeight: 700, whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(l.remaining * l.unitCost)}</span>,
-            ],
-          }))}
-        />
-        {!lots.remaining.length && (
+        <p style={{ color: th.textMuted, fontSize: 11, margin: "0 0 8px", lineHeight: 1.4 }}>
+          {isUrdu
+            ? "تازہ خریداری اوپر۔ فروخت پرانی سے پہلے ہوتی ہے۔ Remaining 0 = ختم۔"
+            : "Latest purchase on top. Sales still consume oldest first. Remaining 0 = used."}
+        </p>
+        <div style={{
+          maxHeight: 8 * 42 + 40,
+          overflowY: "auto",
+          border: `1px solid ${th.border}`,
+          borderRadius: 12,
+        }}>
+          <Table
+            compact
+            cols={[
+              t.date,
+              t.invoiceNum,
+              t.supplier,
+              isUrdu ? "خریدا" : "Bought",
+              isUrdu ? "باقی" : "Remaining",
+              isUrdu ? "فی پیس لاگت" : "Cost / pc",
+              t.totalLabel,
+            ]}
+            rows={[...(lots.allLots || lots.remaining)]
+              .slice()
+              .reverse()
+              .map((l) => {
+                const rem = Number(l.remaining) || 0;
+                const gone = rem <= 0.0001;
+                return {
+                  data: l,
+                  cells: [
+                    <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{l.opening ? (isUrdu ? "پرانا / اوپننگ" : "Opening") : l.date}</span>,
+                    <span style={{ fontFamily: "monospace", color: "#60a5fa", fontSize: 12, whiteSpace: "nowrap" }}>{l.invoice}</span>,
+                    <span style={{ whiteSpace: "nowrap" }}>{l.supplier}</span>,
+                    <span style={{ fontWeight: 700, color: th.textMuted, whiteSpace: "nowrap" }}>{stockLabel(product.category, l.bought)}</span>,
+                    <span style={{ fontWeight: 700, color: gone ? "#f87171" : "#34d399", whiteSpace: "nowrap" }}>
+                      {gone ? (isUrdu ? "0 (ختم)" : "0 (used)") : stockLabel(product.category, rem)}
+                    </span>,
+                    <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(l.unitCost)}</span>,
+                    <span style={{ fontWeight: 700, whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(rem * l.unitCost)}</span>,
+                  ],
+                };
+              })}
+          />
+        </div>
+        {!(lots.allLots || lots.remaining).length && (
           <p style={{ color: th.textMuted, fontSize: 13, margin: "8px 0 0" }}>{isUrdu ? "کوئی خریداری ریکارڈ نہیں" : "No purchase lots on record"}</p>
         )}
       </div>
@@ -615,6 +638,10 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
   const qInv = invSearch.trim().toLowerCase();
   const matchesInvSearch = (p) => {
     if (!qInv) return true;
+    const lotInvoices = (lotsOf(p).allLots || []).some((l) =>
+      String(l.invoice || "").toLowerCase().includes(qInv)
+      || String(l.supplier || "").toLowerCase().includes(qInv)
+    );
     return (p.name || "").toLowerCase().includes(qInv)
       || (p.barcode || "").toLowerCase().includes(qInv)
       || (p.category || "").toLowerCase().includes(qInv)
@@ -622,6 +649,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
       || (p.subType || "").toLowerCase().includes(qInv)
       || (p.lastInvoice || "").toLowerCase().includes(qInv)
       || String(billOf(p)?.invoice || billOf(p)?.invoiceNum || "").toLowerCase().includes(qInv)
+      || lotInvoices
       || (p.lastSupplier || "").toLowerCase().includes(qInv)
       || (Array.isArray(p.suppliers) ? p.suppliers.some((s) => (s?.name || "").toLowerCase().includes(qInv)) : false)
       || (p.hwCategory || "").toLowerCase().includes(qInv)

@@ -1,16 +1,38 @@
-import { useState, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn } from "../components/shared";
 import { api } from "../utils/api";
-import { formatPKR, loadShopProfile, saveShopProfile, defaultShopProfile, SHOP_PROFILE_KEY } from "../utils/helpers";
+import {
+  loadShopProfile,
+  applyShopProfile,
+  normalizeShopProfile,
+} from "../utils/helpers";
 
 function ShopProfilePage() {
   const th = useTheme();
   const { isUrdu } = useLang();
   const [profile, setProfile] = useState(() => loadShopProfile());
   const [saved, setSaved]     = useState(false);
+  const [saving, setSaving]   = useState(false);
+  const [loading, setLoading] = useState(true);
   const [urduLoading, setUrduLoading] = useState({});
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const r = await api.getShopProfile();
+        if (!cancelled && r.success) {
+          const next = normalizeShopProfile(r.profile);
+          setProfile(next);
+          applyShopProfile(next);
+        }
+      } catch { /* keep cached */ }
+      if (!cancelled) setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const inpS = {
     background:"rgba(255,255,255,0.06)", border:`1px solid ${th.border}`,
@@ -61,14 +83,40 @@ function ShopProfilePage() {
     });
   };
 
-  const handleSave = () => {
-    saveShopProfile(profile);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const r = await api.saveShopProfile(profile);
+      if (r.success) {
+        const next = normalizeShopProfile(r.profile || profile);
+        setProfile(next);
+        applyShopProfile(next);
+        setSaved(true);
+        setTimeout(() => setSaved(false), 3000);
+      } else {
+        alert(r.message || (isUrdu ? "محفوظ نہیں ہو سکی" : "Could not save profile"));
+      }
+    } catch (e) {
+      alert(e.message || (isUrdu ? "سرور غلطی" : "Server error"));
+    }
+    setSaving(false);
   };
+
+  if (loading) {
+    return (
+      <div style={{ maxWidth: 600, margin: "0 auto", color: th.textMuted, padding: 24, textAlign: "center" }}>
+        {isUrdu ? "پروفائل لوڈ ہو رہی ہے…" : "Loading shop profile…"}
+      </div>
+    );
+  }
 
   return (
     <div style={{maxWidth:600, margin:"0 auto", display:"flex", flexDirection:"column", gap:20}}>
+      <div style={{ color: th.textMuted, fontSize: 12, marginTop: -6 }}>
+        {isUrdu
+          ? "یہ پروفائل صرف آپ کے اکاؤنٹ کی ہے — ہر admin کی الگ دکان ہوگی۔"
+          : "This profile is for your account only — each admin has their own shop branding."}
+      </div>
 
       {/* Logo & Shop Name Card */}
       <div style={{borderRadius:20, border:`1px solid ${th.border}`, background:th.bgCard, overflow:"hidden"}}>
@@ -272,11 +320,13 @@ function ShopProfilePage() {
         </div>
       )}
 
-      <button onClick={handleSave}
-        style={{padding:"14px", borderRadius:14, border:"none", cursor:"pointer",
-          background:"linear-gradient(135deg,#1abc9c,#2980b9)",
+      <button onClick={handleSave} disabled={saving}
+        style={{padding:"14px", borderRadius:14, border:"none", cursor: saving ? "wait" : "pointer",
+          background:"linear-gradient(135deg,#1abc9c,#2980b9)", opacity: saving ? 0.7 : 1,
           color:"white", fontWeight:700, fontSize:15, boxShadow:"0 4px 15px rgba(26,188,156,0.3)"}}>
-        💾 {isUrdu?"پروفائل محفوظ کریں":"Save Shop Profile"}
+        💾 {saving
+          ? (isUrdu ? "محفوظ ہو رہا ہے…" : "Saving…")
+          : (isUrdu ? "پروفائل محفوظ کریں" : "Save Shop Profile")}
       </button>
     </div>
   );

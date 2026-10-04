@@ -1,5 +1,6 @@
 import { loadShopProfile, parseYmd, sortLedgerEntries, todayStr } from "../utils/helpers";
 import { openingKindOf } from "../utils/ledgerStore";
+import { slipPage, ThermalSlipHeader, ThermalSlipFooter } from "./ThermalSlipTheme";
 
 function money(n) {
   return (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-US", {
@@ -129,21 +130,25 @@ export default function PartyLedgerSheet({ party, entries = [], from = "", to = 
   return (
     <div
       id="thermal-invoice"
-      style={{
-        width: compact ? "3in" : "190mm",
-        maxWidth: compact ? "3in" : "190mm",
+      style={compact ? slipPage : {
+        width: "190mm",
+        maxWidth: "190mm",
         color: "#000",
         background: "#fff",
         fontFamily: "Arial, Helvetica, sans-serif",
-        padding: compact ? 4 : 8,
+        padding: 8,
         boxSizing: "border-box",
       }}
     >
-      <div style={{ textAlign: "center" }}>
-        <div style={{ fontWeight: 800, fontSize: nameFs, letterSpacing: 0.3 }}>{shop.shopName || "STEELPOS"}</div>
-        {shop.address ? <div style={{ fontSize: fs, marginTop: 2 }}>Address: {shop.address}</div> : null}
-        {phones ? <div style={{ fontSize: fs }}>Ph: {phones}</div> : null}
-      </div>
+      {compact ? (
+        <ThermalSlipHeader title={isUrdu ? "کھاتہ" : "LEDGER"} isUrdu={isUrdu} />
+      ) : (
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontWeight: 800, fontSize: nameFs, letterSpacing: 0.3 }}>{shop.shopName || "STEELPOS"}</div>
+          {shop.address ? <div style={{ fontSize: fs, marginTop: 2 }}>Address: {shop.address}</div> : null}
+          {phones ? <div style={{ fontSize: fs }}>Ph: {phones}</div> : null}
+        </div>
+      )}
       <div style={{ borderTop: "1px solid #000", margin: compact ? "6px 0 4px" : "10px 0 8px" }} />
       <div style={{ fontWeight: 800, fontSize: fs }}>
         {isUrdu ? "کھاتہ بتاریخ" : "Account Ledger as on"} : {asOn}
@@ -197,6 +202,7 @@ export default function PartyLedgerSheet({ party, entries = [], from = "", to = 
           </tr>
         </tfoot>
       </table>
+      {compact ? <ThermalSlipFooter isUrdu={isUrdu} role="admin" /> : null}
     </div>
   );
 }

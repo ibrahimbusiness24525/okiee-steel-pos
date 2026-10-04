@@ -1,28 +1,20 @@
 import { useTheme } from "../context/ThemeContext";
 import { formatPKR, loadShopProfile, formatWeightKgG, printThermalOrA4 } from "../utils/helpers";
+import {
+  thermalPrintStyles,
+  slipPage,
+  ThermalSlipHeader,
+  ThermalSlipMeta,
+  ThermalSlipItemsTable,
+  ThermalSlipTotals,
+  ThermalSlipFooter,
+  OkiieeBrandFooter,
+  packLabel,
+  saleTypeLabel,
+  saleReceiptTitle,
+} from "./ThermalSlipTheme";
 
-// ─── Thermal print styles ─────────────────────────────────────────────────────
-export const thermalPrintStyles = `
-@page { size: 3in 297mm; margin: 1.5mm; }
-@media print {
-  html, body { margin:0 !important; padding:0 !important; background:#fff !important; }
-  body * { visibility:hidden !important; }
-  #print-portal-overlay, #print-portal-overlay *,
-  #thermal-invoice-print, #thermal-invoice-print *,
-  #thermal-invoice, #thermal-invoice * { visibility:visible !important; color:#000 !important; }
-  button { display:none !important; }
-}`;
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-export function OkiieeBrandFooter() {
-  return (
-    <div className="inv-brand" style={{ textAlign: "center", marginTop: 6, paddingTop: 6, borderTop: "1px dashed #000" }}>
-      <div className="inv-brand-title" style={{ fontWeight: 800, fontSize: 13, letterSpacing: "0.2px", lineHeight: "17px" }}>For okiiee Software</div>
-      <div className="inv-brand-phone" style={{ fontWeight: 700, fontSize: 11, lineHeight: "15px", marginTop: 3 }}>03090001316</div>
-      <div className="inv-brand-phone" style={{ fontWeight: 700, fontSize: 11, lineHeight: "15px" }}>03057903867</div>
-    </div>
-  );
-}
+export { thermalPrintStyles, OkiieeBrandFooter };
 
 export const getUrduItemLabel = (cat) => {
   switch (cat) {
@@ -304,161 +296,64 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
 
   const lineItems = [];
   (products || []).forEach(prod => {
-    (prod.rows || []).forEach(row => {
-      lineItems.push(parseRow(row, prod.category, prod.productName, prod.productPrice || 0));
+    const rows = (prod.rows && prod.rows.length)
+      ? prod.rows
+      : [{
+          qty: Number(prod.qty) || 0,
+          purchasePrice: Number(prod.productPrice) || 0,
+          amount: Number(prod.total) || 0,
+          desc: `${Number(prod.qty) || 0}pc × Rs${Number(prod.productPrice) || 0}/pc`,
+        }];
+    rows.forEach(row => {
+      const li = parseRow(row, prod.category, prod.productName, prod.productPrice || 0);
+      lineItems.push({ ...li, pack: packLabel(prod.category, li.qty) });
     });
   });
 
   const grandTotal  = lineItems.reduce((s, li) => s + li.amount, 0);
+  const cashSaleNo = String(invoice || "").replace(/\D/g, "") || "";
   const handlePrint = buildPrintHandler("thermal");
   const handlePrintA4 = buildPrintHandler("a4");
   const handlePrintPdf = buildPrintHandler("pdf", `${invoice || "purchase"}-${date || "invoice"}`);
-  const { page, center, bold500, dash, tbl, thS, tdS, tdNum } = sharedStyles;
+  const extras = [
+    { label: L.payLbl, value: getPaymentLabel(paymentMethod, accountName || bankName, isUrdu) },
+  ];
 
   return (
     <>
       <style>{thermalPrintStyles}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
-
         <PrintButtonRow onClose={onClose} isUrdu={isUrdu} handlePrint={handlePrint} handlePrintA4={handlePrintA4} handlePrintPdf={handlePrintPdf} th={th} />
-
         <div style={{ background: "#f0f0f0", padding: "14px", borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto" }}>
-          <div id="thermal-invoice" style={page}>
-
-            {sp.logoBase64 && (
-              <div style={{ ...center, marginBottom: 6 }}>
-                <img src={sp.logoBase64} alt="logo" style={{ maxWidth: 56, maxHeight: 40, objectFit: "contain" }} />
-              </div>
-            )}
-
-            <div style={{ ...center, fontSize: "22px", fontWeight: 700, lineHeight: "28px", marginBottom: "4px", letterSpacing: "0.3px" }}>
-              {L.shopName}
-            </div>
-            {L.address && <div style={{ ...center, ...bold500, fontSize: "10px", marginTop: 4,  lineHeight: 1.4 }}>{L.address}</div>}
-            {L.phone1  && <div style={{ ...center, ...bold500, fontSize: "10px", marginTop: 2  }}>{L.phone1}</div>}
-            {L.phone2  && <div style={{ ...center, ...bold500, fontSize: "10px", marginTop: 1  }}>{L.phone2}</div>}
-            {L.phone3  && <div style={{ ...center, ...bold500, fontSize: "10px", marginTop: 1  }}>{L.phone3}</div>}
-
-            {/* Bill No / Date */}
-            <table style={{ ...tbl, marginTop: 8 }}>
-              <tbody>
-                <tr>
-                  <td style={tdS("left")}>{L.billNoLbl}: {invoice}</td>
-                  <td style={tdS("right")}>
-                    {L.dateLbl}: {new Date(date).toLocaleDateString(
-                      isUrdu ? "ur-PK" : "en-PK",
-                      { day: "2-digit", month: "short", year: "numeric" }
-                    )}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-
-            <div style={{ fontWeight: 900, fontSize: "11px", marginTop: 2 }}>{L.partyLbl}: {supplier}</div>
-
-            <div style={dash} />
-
-            {/* Items table */}
-            <table className="inv-items" style={{ ...tbl, marginTop: 2 }}>
-              <colgroup>
-                <col style={{ width: COL_SN }} />
-                <col style={{ width: COL_ITEM }} />
-                <col style={{ width: COL_QTY }} />
-                <col style={{ width: COL_PRICE }} />
-                <col style={{ width: COL_AMT }} />
-              </colgroup>
-              <thead>
-                <tr>
-                  <th style={thS(COL_SN,  "center")}>{L.colSN}</th>
-                  <th style={thS(COL_ITEM, "left")}>{L.colItem}</th>
-                  <th style={thS(COL_QTY, "center")}>{L.colQty}</th>
-                  <th style={thS(COL_PRICE, "right")}>{L.colPrice}</th>
-                  <th style={thS(COL_AMT, "right")}>{L.colAmt}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lineItems.map((li, i) => (
-                  <tr key={i}>
-                    <td style={tdS("center")}>{i + 1}</td>
-                    <td style={{ ...tdS("left"), paddingRight: "6px" }}>{li.item}</td>
-                    <td style={{...tdNum("center"), whiteSpace:"normal", wordBreak:"break-word", lineHeight:1.25, fontSize:"10px"}}>{li.qty}</td>
-                    <td style={tdNum("right")}>
-                      {Number.isInteger(Number(li.price)) ? Number(li.price) : Number(li.price).toFixed(1)}
-                    </td>
-                    <td style={tdNum("right")}>
-                      {Number.isInteger(Number(li.amount)) ? Number(li.amount) : Number(li.amount).toFixed(1)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-
-            <div style={dash} />
-
-            {/* Subtotal */}
-            <table style={tbl}>
-              <colgroup>
-                <col style={{ width: "8%" }} /><col style={{ width: "40%" }} />
-                <col style={{ width: "12%" }} /><col style={{ width: "20%" }} />
-                <col style={{ width: "20%" }} />
-              </colgroup>
-              <tbody>
-                <tr>
-                  <td style={{ ...tdS("left"), fontWeight: 600 }} colSpan={2}>{L.subtotalLbl}</td>
-                  <td style={tdNum("center")}>{lineItems.length}</td>
-                  <td style={tdNum("right")} colSpan={2}>{formatPKR(grandTotal)}</td>
-                </tr>
-              </tbody>
-            </table>
-
-            <div style={dash} />
-
-            {/* TOTAL */}
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "15px", fontWeight: 900 }}>
-              <span>{L.totalLbl}</span>
-              <span>{formatPKR(grandTotal)}</span>
-            </div>
-
-            {(paymentMethod || isPartial || Number(remainingAmount) > 0) && (
-              <>
-                <div style={dash} />
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 600 }}>
-                  <span>{L.payLbl}</span>
-                  <span>
-                    {getPaymentLabel(paymentMethod, accountName || bankName, isUrdu)}
-                  </span>
-                </div>
-                {(isPartial || Number(remainingAmount) > 0) && (
-                  <>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 600, marginTop: 4 }}>
-                      <span>{L.paidNowLbl}</span>
-                      <span>{formatPKR(paidAmount)}</span>
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 700, marginTop: 4 }}>
-                      <span>{L.remainingLbl}</span>
-                      <span>{formatPKR(remainingAmount)}</span>
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-
-            <div style={dash} />
-
-            {/* Time */}
-            <table style={tbl}>
-              <tbody>
-                <tr>
-                  <td style={{ ...tdS("left"), padding: "6px 3px" }}>{L.timeLbl}</td>
-                  <td colSpan={4} style={{ ...tdS("right"), padding: "6px 3px", whiteSpace: "nowrap" }}>
-                    {new Date(createdAt || Date.now()).toLocaleTimeString(isUrdu ? "ur-PK" : "en-PK", { hour: "2-digit", minute: "2-digit" })}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-
-            <OkiieeBrandFooter />
-
+          <div id="thermal-invoice" style={slipPage}>
+            <ThermalSlipHeader title={isUrdu ? "خرید رسید" : "PURCHASE RECEIPT"} isUrdu={isUrdu} />
+            <ThermalSlipMeta
+              billNo={invoice}
+              date={date}
+              partyLabel={L.partyLbl}
+              partyName={supplier}
+              cashSaleLabel={cashSaleNo ? `${isUrdu ? "بل" : "BILL"} ${cashSaleNo}` : ""}
+              isUrdu={isUrdu}
+            />
+            <ThermalSlipItemsTable
+              isUrdu={isUrdu}
+              rows={lineItems.map((li) => ({
+                item: li.item, pack: li.pack, qty: li.qty, price: li.price, amount: li.amount,
+              }))}
+            />
+            <ThermalSlipTotals
+              isUrdu={isUrdu}
+              itemCount={lineItems.length}
+              gross={grandTotal}
+              billAmount={grandTotal}
+              cashReceived={paymentMethod === "credit" ? 0 : (Number(paidAmount) || grandTotal)}
+              changeDue={0}
+              paidAmount={paidAmount}
+              remainingAmount={remainingAmount}
+              isPartial={!!isPartial || Number(remainingAmount) > 0}
+              extras={extras}
+            />
+            <ThermalSlipFooter isUrdu={isUrdu} role="admin" />
           </div>
         </div>
       </div>
@@ -476,7 +371,7 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
   const th = useTheme();
   const {
     invoice, date, customer, items = [],
-    grandTotal = 0, paymentMethod = "cash", bankName = "",
+    grandTotal = 0, paymentMethod = "cash", bankName = "", settlement = "",
     isPartial = false, paidAmount = 0, remainingAmount = 0,
     loaderName = "", loaderFee = 0, bindingFee = 0, isPurchase = false,
     discount = 0, cashReceived = 0, changeDue = 0,
@@ -489,7 +384,8 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
   const discountAmt = Number(discount) || 0;
   const cashIn = Number(cashReceived) || 0;
   const changeAmt = Number(changeDue) || 0;
-  const productsSubtotal = Number(grandTotal) - (Number(loaderFee) || 0) - (Number(bindingFee) || 0) + discountAmt;
+  const feeLoad = Number(loaderFee) || 0;
+  const feeBind = Number(bindingFee) || 0;
 
   const L = isUrdu ? {
     shopName:      sp.shopNameUr || sp.shopName,
@@ -553,316 +449,93 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
     (item.rows || []).forEach(row => {
       const line = parseRow(row, item.category, item.productName);
       if ((Number(line.amount) || 0) <= 0.009) return;
-      lineItems.push(line);
+      lineItems.push({ ...line, pack: packLabel(item.category, line.qty) });
     });
   });
 
   const handlePrint = buildPrintHandler("thermal");
   const handlePrintA4 = buildPrintHandler("a4");
   const handlePrintPdf = buildPrintHandler("pdf", `${invoice || "sale"}-${date || "invoice"}`);
-  const { page, center, bold500, dash, tbl, thS, tdS, tdNum } = sharedStyles;
+  const itemsGross = lineItems.reduce((s, li) => s + (Number(li.amount) || 0), 0);
+  const gt = Number(grandTotal) || 0;
+  const expectedWithLoader = Math.round((itemsGross + feeLoad + feeBind - discountAmt) * 100) / 100;
+  const expectedWithout = Math.round((itemsGross + feeBind - discountAmt) * 100) / 100;
+  const loaderInStoredTotal = feeLoad > 0 && itemsGross > 0
+    && Math.abs(gt - expectedWithLoader) + 0.01 < Math.abs(gt - expectedWithout);
+  const productsSubtotal = itemsGross > 0
+    ? itemsGross
+    : Math.max(0, (loaderInStoredTotal ? gt - feeLoad : gt) - feeBind + discountAmt);
+  const netFromItems = Math.max(0, Math.round((productsSubtotal + feeBind - discountAmt) * 100) / 100);
+  const storedNet = loaderInStoredTotal ? Math.max(0, Math.round((gt - feeLoad) * 100) / 100) : gt;
+  const billAmount = itemsGross > 0
+    ? (discountAmt > 0.009 && Math.abs(storedNet - productsSubtotal) < 0.5 ? netFromItems : (storedNet > 0 && Math.abs(storedNet - netFromItems) < 0.5 ? storedNet : netFromItems))
+    : storedNet;
+
+  const creditLike = paymentMethod === "credit"
+    || settlement === "credit"
+    || settlement === "partial"
+    || !!isPartial
+    || remaining > 0.009;
+  const extras = [];
+  if (feeBind > 0) extras.push({ label: L.bindingFeeLbl, value: formatPKR(feeBind) });
+  extras.push({
+    label: L.payLbl,
+    value: creditLike
+      ? (isUrdu ? "ادھار (Credit)" : (paid > 0 ? "Partial Credit" : "Credit"))
+      : getPaymentLabel(paymentMethod, bankName, isUrdu),
+  });
+  const notes = [];
+  if (loaderName || feeLoad > 0) {
+    if (loaderName) notes.push({ label: L.loaderLbl, value: loaderName });
+    if (feeLoad > 0) notes.push({ label: L.loaderFeeLbl, value: formatPKR(feeLoad) });
+  }
 
   return (
     <>
       <style>{thermalPrintStyles}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
-
         <PrintButtonRow onClose={onClose} isUrdu={isUrdu} handlePrint={handlePrint} handlePrintA4={handlePrintA4} handlePrintPdf={handlePrintPdf} th={th} />
-
         <div style={{ background: "#f0f0f0", padding: "14px", borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto" }}>
-          <div id="thermal-invoice" style={page}>
-
-            {/* Logo */}
-            {sp.logoBase64 && (
-              <div style={{ ...center, marginBottom: 6 }}>
-                <img src={sp.logoBase64} alt="logo" style={{ maxWidth: 56, maxHeight: 40, objectFit: "contain" }} />
-              </div>
-            )}
-
-            {/* Shop name */}
-            <div style={{ ...center, fontSize: "22px", fontWeight: 700, lineHeight: "28px", marginBottom: "4px", letterSpacing: "0.3px" }}>
-              {L.shopName}
-            </div>
-            {L.address && <div style={{ ...center, ...bold500, fontSize: "10px", marginTop: 4,  lineHeight: 1.4 }}>{L.address}</div>}
-            {L.phone1  && <div style={{ ...center, ...bold500, fontSize: "10px", marginTop: 2  }}>{L.phone1}</div>}
-            {L.phone2  && <div style={{ ...center, ...bold500, fontSize: "10px", marginTop: 1  }}>{L.phone2}</div>}
-            {L.phone3  && <div style={{ ...center, ...bold500, fontSize: "10px", marginTop: 1  }}>{L.phone3}</div>}
-
-            {/* Bill No / Date */}
-            <table style={{ ...tbl, marginTop: 8 }}>
-              <tbody>
-                <tr>
-                  <td style={tdS("left")}>{L.billNoLbl}: {invoice}</td>
-                  <td style={tdS("right")}>
-                    {L.dateLbl}: {new Date(date).toLocaleDateString(
-                      isUrdu ? "ur-PK" : "en-PK",
-                      { day: "2-digit", month: "short", year: "numeric" }
-                    )}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-
-            {/* Customer */}
-            <div style={{ fontWeight: 900, fontSize: "11px", marginTop: 2 }}>{L.customerLbl}: {customer}</div>
-
-            <div style={dash} />
-
-            {/* Items table — SN / Item / Qty / Price / Amt */}
-            <table className="inv-items" style={{ ...tbl, marginTop: 2 }}>
-              <colgroup>
-                <col style={{ width: COL_SN }} />
-                <col style={{ width: COL_ITEM }} />
-                <col style={{ width: COL_QTY }} />
-                <col style={{ width: COL_PRICE }} />
-                <col style={{ width: COL_AMT }} />
-              </colgroup>
-              <thead>
-                <tr>
-                  <th style={thS(COL_SN,  "center")}>{L.colSN}</th>
-                  <th style={thS(COL_ITEM, "left")}>{L.colItem}</th>
-                  <th style={thS(COL_QTY, "center")}>{L.colQty}</th>
-                  <th style={thS(COL_PRICE, "right")}>{L.colPrice}</th>
-                  <th style={thS(COL_AMT, "right")}>{L.colAmt}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lineItems.map((li, i) => (
-                  <tr key={i}>
-                    <td style={tdS("center")}>{i + 1}</td>
-                    <td style={{ ...tdS("left"), paddingRight: "6px" }}>{li.item}</td>
-                    <td style={{...tdNum("center"), whiteSpace:"normal", wordBreak:"break-word", lineHeight:1.25, fontSize:"10px"}}>{li.qty}</td>
-                    <td style={tdNum("right")}>
-                      {Number.isInteger(Number(li.price)) ? Number(li.price) : Number(li.price).toFixed(1)}
-                    </td>
-                    <td style={tdNum("right")}>
-                      {Number.isInteger(Number(li.amount)) ? Number(li.amount) : Number(li.amount).toFixed(1)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-
-            <div style={dash} />
-
-            {/* Subtotal */}
-            <table style={tbl}>
-              <colgroup>
-                <col style={{ width: "8%" }} /><col style={{ width: "40%" }} />
-                <col style={{ width: "12%" }} /><col style={{ width: "20%" }} />
-                <col style={{ width: "20%" }} />
-              </colgroup>
-              <tbody>
-                <tr>
-                  <td style={{ ...tdS("left"), fontWeight: 600 }} colSpan={2}>{L.subtotalLbl}</td>
-                  <td style={tdNum("center")}>{lineItems.length}</td>
-                  <td style={tdNum("right")} colSpan={2}>{formatPKR(productsSubtotal)}</td>
-                </tr>
-              </tbody>
-            </table>
-
-            <div style={dash} />
-
-            {/* TOTAL */}
-            {discountAmt > 0 && (
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 700, marginBottom: 4 }}>
-                <span>{isUrdu ? "رعایت" : "Discount"}</span>
-                <span>- {formatPKR(discountAmt)}</span>
-              </div>
-            )}
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "15px", fontWeight: 900 }}>
-              <span>{L.totalLbl}</span>
-              <span>{formatPKR(grandTotal)}</span>
-            </div>
-            {cashIn > 0 && (
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 700, marginTop: 4 }}>
-                <span>{isUrdu ? "وصول رقم" : "Cash received"}</span>
-                <span>{formatPKR(cashIn)}</span>
-              </div>
-            )}
-            {changeAmt > 0 && (
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", fontWeight: 900, marginTop: 4 }}>
-                <span>{isUrdu ? "واپسی (چینج)" : "Change"}</span>
-                <span>{formatPKR(changeAmt)}</span>
-              </div>
-            )}
-
-            {/* Partial payment */}
-            {isPartial && paid > 0 && (
-              <>
-                <div style={dash} />
-                <table style={tbl}>
-                  <tbody>
-                    <tr>
-                      <td style={tdS("left")}>{L.paidNowLbl}</td>
-                      <td style={tdS("right")} colSpan={4}>{formatPKR(paid)}</td>
-                    </tr>
-                    <tr>
-                      <td style={tdS("left")}>{L.remainingLbl}</td>
-                      <td style={tdS("right")} colSpan={4}>{formatPKR(remaining)}</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <div style={{ textAlign: "center", marginTop: 4, fontWeight: 900, fontSize: "10px", letterSpacing: "0.4px" }}>
-                  {remaining > 0 ? `⚠ ${L.partialBadge}` : `✓ ${L.fullPaidBadge}`}
-                </div>
-              </>
-            )}
-            {!isPartial && (
-              <div style={{ textAlign: "center", marginTop: 6, fontWeight: 900, fontSize: "10px", letterSpacing: "0.4px" }}>
-                ✓ {L.fullPaidBadge}
-              </div>
-            )}
-
-            <div style={dash} />
-
-            {/* Payment / loader / time */}
-        <table style={{ ...tbl, tableLayout: "fixed" }}>
-
-<colgroup>
-  <col style={{ width: "32%" }} />
-  <col style={{ width: "68%" }} />
-</colgroup>
-
-<tbody>
-
-<tr>
-
-<td
-style={{
-...tdS("left"),
-padding:"5px 3px",
-verticalAlign:"middle",
-whiteSpace:"nowrap"
-}}
->
-{L.payLbl}
-</td>
-
-<td
-style={{
-...tdS("right"),
-padding:"5px 3px",
-verticalAlign:"middle",
-wordBreak:"break-word"
-}}
->
-{getPaymentLabel(paymentMethod, bankName, isUrdu)}
-</td>
-
-</tr>
-
-{loaderName && (
-
-<tr>
-
-<td
-style={{
-...tdS("left"),
-padding:"5px 3px"
-}}
->
-{L.loaderLbl}
-</td>
-
-<td
-style={{
-...tdS("right"),
-padding:"5px 3px"
-}}
->
-{loaderName}
-</td>
-
-</tr>
-)}
-
-{loaderName && Number(loaderFee)>0 && (
-
-<tr>
-
-<td
-style={{
-...tdS("left"),
-padding:"5px 3px"
-}}
->
-{L.loaderFeeLbl}
-</td>
-
-<td
-style={{
-...tdS("right"),
-padding:"5px 3px"
-}}
->
-{formatPKR(Number(loaderFee))}
-</td>
-
-</tr>
-)}
-
-{Number(bindingFee)>0 && (
-
-<tr>
-
-<td
-style={{
-...tdS("left"),
-padding:"5px 3px"
-}}
->
-{L.bindingFeeLbl}
-</td>
-
-<td
-style={{
-...tdS("right"),
-padding:"5px 3px"
-}}
->
-{formatPKR(Number(bindingFee))}
-</td>
-
-</tr>
-)}
-
-<tr>
-
-<td
-style={{
-...tdS("left"),
-padding:"5px 3px"
-}}
->
-{L.timeLbl}
-</td>
-
-<td
-style={{
-...tdS("right"),
-padding:"5px 3px",
-whiteSpace:"nowrap"
-}}
->
-{new Date().toLocaleTimeString(
-isUrdu ? "ur-PK":"en-PK",
-{
-hour:"2-digit",
-minute:"2-digit"
-}
-)}
-</td>
-
-</tr>
-
-</tbody>
-
-</table>
-
-
-            <OkiieeBrandFooter />
-
+          <div id="thermal-invoice" style={slipPage}>
+            <ThermalSlipHeader
+              title={isPurchase
+                ? (isUrdu ? "خرید رسید" : "PURCHASE RECEIPT")
+                : saleReceiptTitle({ isCredit: creditLike, isUrdu })}
+              isUrdu={isUrdu}
+            />
+            <ThermalSlipMeta
+              billNo={invoice}
+              date={date}
+              partyLabel={L.customerLbl}
+              partyName={customer}
+              cashSaleLabel={isPurchase
+                ? `${isUrdu ? "بل" : "BILL"} ${String(invoice || "").replace(/\D/g, "") || ""}`.trim()
+                : saleTypeLabel({
+                  invoice, paymentMethod, settlement, remainingAmount: remaining, isPartial: creditLike, isUrdu,
+                })}
+              isUrdu={isUrdu}
+            />
+            <ThermalSlipItemsTable
+              isUrdu={isUrdu}
+              rows={lineItems.map((li) => ({
+                item: li.item, pack: li.pack, qty: li.qty, price: li.price, amount: li.amount,
+              }))}
+            />
+            <ThermalSlipTotals
+              isUrdu={isUrdu}
+              itemCount={lineItems.length}
+              gross={productsSubtotal}
+              billAmount={billAmount}
+              discount={discountAmt}
+              cashReceived={cashIn > 0 ? cashIn : (creditLike ? 0 : billAmount)}
+              changeDue={changeAmt}
+              paidAmount={paid}
+              remainingAmount={remaining}
+              isPartial={creditLike}
+              extras={extras}
+              notes={notes}
+            />
+            <ThermalSlipFooter isUrdu={isUrdu} role="admin" />
           </div>
         </div>
       </div>

@@ -4,191 +4,92 @@ import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, StatCard, Table, DateFilterBar, EditHistoryModal } from "../components/shared";
 import { api } from "../utils/api";
 import { saveSaleReturn, removeSaleReturn, netSaleAmount, saleReturnedAmount, netSaleItems } from "../utils/returnsStore";
-import { formatPKR, todayStr, loadShopProfile, pxToPageHeightMM, inDateFilter } from "../utils/helpers";
+import { formatPKR, todayStr, printThermalOrA4, inDateFilter } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
 import { BillingNewSaleModal, BillingSaleInvoice, getPaymentBadgeStyle, SaleRecordDetail } from "./BillingPage";
 import { SaleReturnModal, ReturnsTable } from "../components/StockReturns";
 import { reverseTradeFinance } from "../utils/tradeFinance";
+import {
+  thermalPrintStyles,
+  slipPage,
+  ThermalSlipHeader,
+  ThermalSlipMeta,
+  ThermalSlipItemsTable,
+  ThermalSlipTotals,
+  ThermalSlipFooter,
+  packLabel,
+  saleTypeLabel,
+  saleReceiptTitle,
+} from "../components/ThermalSlipTheme";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SALES PAGE — Fixed: th (useTheme) was missing in SaleThermalInvoice
-// causing crash on Print button click → blank page on print.
+// SALES PAGE
 // ═══════════════════════════════════════════════════════════════════════════
-
-const saleThermalPrintStyles = `@media print{body *{visibility:hidden !important;}#sale-thermal-invoice,#sale-thermal-invoice *{visibility:visible !important;font-weight:900 !important;}#sale-thermal-invoice{position:fixed !important;left:50% !important;top:0 !important;transform:translateX(-50%) !important;width:3in !important;max-width:3in !important;margin:0 !important;padding:1mm !important;box-sizing:border-box !important;overflow:hidden !important;}@page{margin:0;}html,body{width:3in !important;max-width:3in !important;margin:0 !important;padding:0 !important;overflow-x:hidden !important;}button{display:none !important;}}`;
 
 function SaleThermalInvoice({ invoiceData, onClose }) {
-  // ✅ FIX: th was missing — Close button used th.border / th.bgCard / th.textMuted
-  // which caused a ReferenceError crash on render, making print go blank.
   const th = useTheme();
-
-  const handlePrint = () => {
-    const existing = document.getElementById("print-portal-overlay");
-    if (existing) document.body.removeChild(existing);
-
-    const portal = document.createElement("div");
-    portal.id = "print-portal-overlay";
-    portal.style.cssText = [
-      "position:fixed","top:0","left:0","width:0","height:0",
-      "overflow:hidden","z-index:-1","pointer-events:none"
-    ].join(";");
-
-    const invoiceEl = document.getElementById("sale-thermal-invoice");
-    // ✅ FIX: guard — if element not found, abort silently instead of crashing
-    if (!invoiceEl) {
-      console.warn("SaleThermalInvoice: #sale-thermal-invoice not found in DOM");
-      return;
-    }
-
-    const clone = invoiceEl.cloneNode(true);
-    clone.id = "sale-thermal-invoice-print";
-    clone.style.cssText = [
-      "width:3in","max-width:3in","font-family:'Courier New',Courier,monospace",
-      "font-size:12px","color:#000","background:#fff",
-      "padding:1mm","box-sizing:border-box",
-      "margin:0","overflow:hidden","font-weight:900"
-    ].join(";");
-    portal.appendChild(clone);
-    document.body.appendChild(portal);
-
-    // Measure the actual rendered receipt height (now that it's in the DOM)
-    // and give the @page rule an explicit height in mm. "65mm auto" is not
-    // valid CSS, so browsers fell back to their default page size and long
-    // invoices (many line items) got cut off after roughly one default page.
-    const pageHeightMM = pxToPageHeightMM(clone);
-
-    const styleEl = document.createElement("style");
-    styleEl.id = "print-portal-style";
-    styleEl.innerHTML = `
-      @page { size: 3in ${pageHeightMM}mm; margin: 0; }
-      @media print {
-        html, body { width:3in !important; max-width:3in !important; margin:0 !important; padding:0 !important; overflow-x:hidden !important; }
-        body * { visibility: hidden !important; }
-        #sale-thermal-invoice-print, #sale-thermal-invoice-print * { visibility: visible !important; }
-        #print-portal-overlay {
-          position: fixed !important; top:0 !important; left:50% !important;
-          transform: translateX(-50%) !important;
-          width:3in !important; max-width:3in !important;
-          height:auto !important; overflow:hidden !important;
-          z-index:99999 !important; margin:0 !important; box-sizing:border-box !important;
-        }
-        #sale-thermal-invoice-print {
-          position:static !important; margin:0 !important;
-          width:3in !important; max-width:3in !important; box-sizing:border-box !important;
-        }
-        #sale-thermal-invoice-print * { box-sizing:border-box !important; font-weight:900 !important; max-width:100% !important; }
-        button { display: none !important; }
-      }
-    `;
-
-    document.body.appendChild(styleEl);
-    window.print();
-
-    setTimeout(() => {
-      const p  = document.getElementById("print-portal-overlay");
-      const st = document.getElementById("print-portal-style");
-      if (p)  document.body.removeChild(p);
-      if (st) document.body.removeChild(st);
-    }, 1000);
-  };
-
-  const { invoice, date, customer, productName, category, qty, rate, total } = invoiceData;
-  const sp = loadShopProfile();
-  const ownerLines = (sp.owners || []).filter(o => o.name || o.nameUr);
-
-  const s = {
-    page:    { width:"3in", maxWidth:"3in", fontFamily:"'Courier New',Courier,monospace", fontSize:"12px", color:"#000", fontWeight:"900", background:"#fff", padding:"1mm", boxSizing:"border-box", overflow:"hidden", margin:"0 auto" },
-    center:  { textAlign:"center", fontWeight:"900" },
-    bold:    { fontWeight:"900" },
-    divider: { borderTop:"1px dashed #000", margin:"4px 0" },
-    total:   { display:"flex", justifyContent:"space-between", fontWeight:"900", fontSize:"14px", padding:"3px 0" },
-    footer:  { fontSize:"11px", color:"#000", textAlign:"center", marginTop:2, fontWeight:"900" },
-  };
+  const {
+    invoice, date, customer, productName, category, qty, rate, total,
+    paymentMethod, settlement, isPartial, paidAmount, remainingAmount,
+    cashReceived, changeDue, discount,
+  } = invoiceData;
+  const rem = Number(remainingAmount) || 0;
+  const creditLike = paymentMethod === "credit"
+    || settlement === "credit"
+    || settlement === "partial"
+    || !!isPartial
+    || rem > 0.009;
+  const cashIn = Number(cashReceived) || 0;
 
   return (
     <>
-      <style>{saleThermalPrintStyles}</style>
-      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:16 }}>
-        <div style={{ display:"flex", gap:10, width:"100%" }}>
-          <button onClick={handlePrint}
-            style={{ flex:1, padding:"10px", borderRadius:10, border:"none", background:"linear-gradient(135deg,#1abc9c,#2980b9)", color:"white", fontWeight:700, fontSize:13, cursor:"pointer" }}>
+      <style>{thermalPrintStyles}</style>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+        <div style={{ display: "flex", gap: 10, width: "100%" }}>
+          <button onClick={() => printThermalOrA4("thermal")}
+            style={{ flex: 1, padding: "10px", borderRadius: 10, border: "none", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "white", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
             🖨️ Print Invoice
           </button>
-          {/* ✅ FIX: was using th.border / th.bgCard / th.textMuted without th defined */}
           <button onClick={onClose}
-            style={{ padding:"10px 18px", borderRadius:10, border:`1px solid ${th.border}`, background:th.bgCard, color:th.textMuted, fontWeight:600, fontSize:13, cursor:"pointer" }}>
+            style={{ padding: "10px 18px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.textMuted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
             ✕ Close
           </button>
         </div>
 
-        <div style={{ background:"#f5f5f5", padding:"3px", borderRadius:12, border:"1px solid #ddd", width:"100%", maxWidth:"320px", overflowX:"hidden", boxSizing:"border-box", display:"flex", justifyContent:"center" }}>
-          <div id="sale-thermal-invoice" style={s.page}>
-            {sp.logoBase64 && (
-              <div style={{...s.center,marginBottom:4}}>
-                <img src={sp.logoBase64} alt="logo" style={{maxWidth:60,maxHeight:45,objectFit:"contain"}}/>
-              </div>
-            )}
-            <div style={{ ...s.center, ...s.bold, fontSize:"17px", letterSpacing:"0.5px", fontWeight:"900" }}>{sp.shopName}</div>
-            {ownerLines[0] && <div style={{ ...s.center, fontSize:"11px", marginTop:4, fontWeight:"900" }}>{ownerLines[0].name}: {ownerLines[0].phone}</div>}
-            {ownerLines[1] && <div style={{ ...s.center, fontSize:"11px", marginTop:2, fontWeight:"900" }}>{ownerLines[1].name}: {ownerLines[1].phone}</div>}
-            {ownerLines[2] && <div style={{ ...s.center, fontSize:"11px", marginTop:2, fontWeight:"900" }}>{ownerLines[2].name}: {ownerLines[2].phone}</div>}
-            <div style={{ ...s.center, fontSize:"10px", marginTop:3, fontWeight:"900" }}>{sp.address}</div>
-            <div style={{ ...s.center, fontSize:"10px", marginTop:2, fontWeight:"900" }}>
-              {new Date(date).toLocaleDateString("en-PK", { day:"2-digit", month:"short", year:"numeric" })}
-            </div>
-            <div style={s.divider}/>
-            <div style={{ ...s.center, ...s.bold, fontSize:"13px", fontWeight:"900" }}>★ SALE INVOICE ★</div>
-            <div style={s.divider}/>
-            <div style={{ display:"flex", justifyContent:"space-between", fontSize:"11px", padding:"2px 0", fontWeight:"900" }}>
-              <span style={{ fontWeight:"900" }}>Invoice#:</span>
-              <span style={{ fontWeight:"900" }}>{invoice}</span>
-            </div>
-            <div style={{ display:"flex", justifyContent:"space-between", fontSize:"11px", padding:"2px 0", fontWeight:"900" }}>
-              <span style={{ fontWeight:"900" }}>Customer:</span>
-              <span style={{ fontWeight:"900", maxWidth:120, textAlign:"right", wordBreak:"break-word" }}>{customer}</span>
-            </div>
-            <div style={s.divider}/>
-            <div style={{ fontWeight:"900", fontSize:"12px", marginBottom:3 }}>
-              {productName}
-              {category && <span style={{ fontWeight:"900", fontSize:"10px", marginLeft:5 }}>[{category}]</span>}
-            </div>
-            <table style={{ width:"100%", borderCollapse:"collapse", tableLayout:"fixed" }}>
-              <colgroup>
-                <col style={{ width:"50%" }}/>
-                <col style={{ width:"50%" }}/>
-              </colgroup>
-              <thead>
-                <tr style={{ borderTop:"1.5px solid #000", borderBottom:"1.5px solid #000" }}>
-                  <th style={{ fontSize:"10px", fontWeight:"900", padding:"2px 0", textAlign:"left" }}>Description</th>
-                  <th style={{ fontSize:"10px", fontWeight:"900", padding:"2px 0", textAlign:"right" }}>Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr style={{ borderBottom:"1px dotted #000" }}>
-                  <td style={{ fontSize:"10px", fontWeight:"900", padding:"2px 0", overflow:"hidden", wordBreak:"break-all" }}>{qty} pc @ {formatPKR(rate)}</td>
-                  <td style={{ fontSize:"10px", fontWeight:"900", padding:"2px 0", textAlign:"right", overflow:"hidden" }}>{formatPKR(total)}</td>
-                </tr>
-              </tbody>
-            </table>
-            <div style={s.divider}/>
-            <div style={{ display:"flex", justifyContent:"space-between", fontSize:"11px", padding:"2px 0", fontWeight:"900" }}>
-              <span style={{ fontWeight:"900" }}>Total Qty:</span>
-              <span style={{ fontWeight:"900" }}>{qty} pc</span>
-            </div>
-            <div style={s.divider}/>
-            <div style={s.total}>
-              <span style={{ fontWeight:"900" }}>TOTAL:</span>
-              <span style={{ fontWeight:"900" }}>{formatPKR(total)}</span>
-            </div>
-            <div style={s.divider}/>
-            <div style={{ ...s.center, fontSize:"11px", fontWeight:"900", marginTop:4 }}>Thank You! Visit Again</div>
-            <div style={{ ...s.center, fontSize:"10px", fontWeight:"900", marginTop:2 }}>
-              {new Date().toLocaleTimeString("en-PK", { hour:"2-digit", minute:"2-digit" })}
-            </div>
-            <div style={s.divider}/>
-            <div style={s.footer}>okiiee Software Company</div>
-            <div style={{ ...s.footer, fontSize:"10px", fontWeight:"900" }}>For software contact:</div>
-            <div style={{ ...s.footer, fontSize:"12px", fontWeight:"900", letterSpacing:"0.3px" }}>03057903867</div>
+        <div style={{ background: "#f5f5f5", padding: "14px", borderRadius: 12, border: "1px solid #ddd", width: "100%", overflowX: "auto", boxSizing: "border-box", display: "flex", justifyContent: "center" }}>
+          <div id="thermal-invoice" style={slipPage}>
+            <ThermalSlipHeader title={saleReceiptTitle({ isCredit: creditLike, isUrdu: false })} isUrdu={false} />
+            <ThermalSlipMeta
+              billNo={invoice}
+              date={date}
+              partyLabel="Customer"
+              partyName={customer}
+              cashSaleLabel={saleTypeLabel({
+                invoice, paymentMethod, settlement, remainingAmount: rem, isPartial: creditLike, isUrdu: false,
+              })}
+              isUrdu={false}
+            />
+            <ThermalSlipItemsTable
+              rows={[{
+                item: productName || "—",
+                pack: packLabel(category, `${qty}`),
+                qty,
+                price: rate,
+                amount: total,
+              }]}
+            />
+            <ThermalSlipTotals
+              itemCount={1}
+              gross={total}
+              billAmount={total}
+              discount={discount}
+              cashReceived={cashIn > 0 ? cashIn : (creditLike ? 0 : total)}
+              changeDue={changeDue || 0}
+              paidAmount={paidAmount}
+              remainingAmount={rem}
+              isPartial={creditLike}
+            />
+            <ThermalSlipFooter role="admin" />
           </div>
         </div>
       </div>
@@ -366,21 +267,35 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
   const handleReprint = (s) => {
     const items      = netSaleItems(s, saleReturns).filter((it) => !it.fullyReturned && (Number(it.subtotal) || 0) > 0.009);
     const fallback   = items.length ? items : buildItemsFromSale(s);
-    const grandTotal = items.length ? items.reduce((sum,i)=>sum+(Number(i.subtotal)||0),0) : (Number(s.grandTotal) || Number(s.total) || 0);
+    const itemsSum   = items.reduce((sum, i) => sum + (Number(i.subtotal) || 0), 0);
+    const disc       = Number(s.discount) || 0;
+    const bind       = Number(s.bindingFee) || 0;
+    const storedGt   = Number(s.grandTotal) || Number(s.total) || 0;
+    const grandTotal = storedGt > 0
+      ? storedGt
+      : Math.max(0, Math.round((itemsSum + bind - disc) * 100) / 100);
+    const rem = Number(s.remainingAmount) || 0;
+    const settle = s.settlement || (s.isPartial || rem > 0.009
+      ? ((Number(s.paidAmount) || 0) === 0 ? "credit" : "partial")
+      : "full");
     setReprintData({
       invoice: s.invoice, date: s.date, customer: s.customer,
       items: fallback, grandTotal,
       paymentMethod: s.paymentMethod || "cash",
       bankName:      s.accountName || s.bankName || "",
+      accountName:   s.accountName || "",
+      settlement:    settle,
       loaderName:    s.loaderName    || "",
       loaderFee:     s.loaderFee     || 0,
       bindingFee:    s.bindingFee    || 0,
       discount:      s.discount      || 0,
       cashReceived:  s.cashReceived  || 0,
       changeDue:     s.changeDue     || 0,
-      isPartial:      s.isPartial      || false,
-      paidAmount:     (s.isPartial || s.settlement === "credit") ? (Number(s.paidAmount)||0) : (Number(s.paidAmount)||grandTotal),
-      remainingAmount:Number(s.remainingAmount)|| 0,
+      isPartial:     !!(s.isPartial || rem > 0.009 || settle === "credit" || settle === "partial"),
+      paidAmount:    (settle === "credit" || settle === "partial" || s.isPartial || rem > 0.009)
+        ? (Number(s.paidAmount) || 0)
+        : (Number(s.paidAmount) || grandTotal),
+      remainingAmount: rem,
     });
   };
 

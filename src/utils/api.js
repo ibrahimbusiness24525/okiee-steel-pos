@@ -78,4 +78,14 @@ export const api = {
   deleteLoader:  (id)    => smartFetch(`${API}/loaders/${id}`,{method:"DELETE",headers:authHeaders()}).then(r=>r.json()),
   getDailyLoaders: (date)=> smartFetch(`${API}/loaders/daily?date=${date}`,{headers:authHeaders()}).then(r=>r.json()),
   translateUrdu: (text) => smartFetch(`${API}/translate/urdu`, {method:"POST",headers:authHeaders(),body:JSON.stringify({text})}).then(r=>r.json()),
+  getShopProfile: () => smartFetch(`${API}/shop-profile`, { headers: authHeaders() }).then(async (r) => {
+    const d = await r.json().catch(() => ({}));
+    return { ...d, success: d.success === true, _status: r.status, message: d.message || (r.ok ? d.message : "Failed to load shop profile") };
+  }),
+  saveShopProfile: (d) => smartFetch(`${API}/shop-profile`, {
+    method: "PUT", headers: authHeaders(), body: JSON.stringify(d),
+  }).then(async (r) => {
+    const b = await r.json().catch(() => ({}));
+    return { ...b, success: b.success === true, _status: r.status, message: b.message || (r.ok ? b.message : "Failed to save shop profile") };
+  }),
 };
