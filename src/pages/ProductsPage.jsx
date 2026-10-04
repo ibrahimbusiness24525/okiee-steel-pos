@@ -7,6 +7,7 @@ import { formatPKR, todayStr } from "../utils/helpers";
 import { CHADER_TYPES, NET_TYPES, NET_CHORUS_GAUGES, ROUND_INCHES, SQUARE_INCHES, PIPE_GAUGES, productDisplayName } from "../utils/constants";
 import HardwareManageModal from "../components/HardwareManageModal";
 import { stockLotsForProduct, makeLotContext } from "../components/InventoryStockTable";
+import { hardwareSalePrice } from "../utils/productPrices";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PRODUCTS PAGE
@@ -196,8 +197,14 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
           const cc=catColor[p.category]||catColor.Custom;
           const isPipe = p.category==="Pipe";
           const lots = stockLotsForProduct(p, { ctx: lotCtx });
-          const cost = Number(lots.latestCost || lots.avgCost || lots.fifoCost) || 0;
-          const sale = Number(lots.sale) || Number(p.price) || 0;
+          const isHw = p.category === "Hardware" || p.category === "Custom";
+          // Hardware catalog cost/sale live on the product; purchase lots can lag after edits.
+          const cost = isHw
+            ? (Number(p.purchasePrice) || Number(lots.latestCost || lots.avgCost || lots.fifoCost) || 0)
+            : (Number(lots.latestCost || lots.avgCost || lots.fifoCost) || 0);
+          const sale = isHw
+            ? (hardwareSalePrice(p, purchases) || Number(p.price) || 0)
+            : (Number(lots.sale) || Number(p.price) || 0);
           const costShown = revealedCost.has(p._id);
           const fmtRs = (n) => {
             const v = Math.round((Number(n) || 0) * 100) / 100;

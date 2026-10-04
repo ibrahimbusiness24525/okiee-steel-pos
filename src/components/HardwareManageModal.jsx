@@ -419,6 +419,37 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
         const adj = await api.adjustStock(editingId, "remove", Math.abs(diff));
         if (!adj.success) alert(adj.message);
       }
+    } else {
+      // Price-only edit: keep latest purchase lot rates in sync with catalog (list + stock detail).
+      const pid = String(editingId);
+      const related = (purchases || []).filter((b) => {
+        const bid = String(b.product?._id || b.product?.id || b.product || "");
+        return bid === pid;
+      });
+      if (related.length) {
+        const newest = related.slice().sort((a, b) => {
+          const tb = Date.parse(b.date || b.createdAt || "") || 0;
+          const ta = Date.parse(a.date || a.createdAt || "") || 0;
+          return tb - ta;
+        })[0];
+        const rate = Number(payload.purchasePrice) || 0;
+        const sale = Number(payload.price) || 0;
+        const qty = Number(newest.qty) || Number(newest.rows?.[0]?.qty) || 0;
+        const rows = (newest.rows && newest.rows.length)
+          ? newest.rows.map((r, i) => (i === 0
+            ? { ...r, purchasePrice: rate, salePrice: sale, qty: Number(r.qty) || qty }
+            : r))
+          : [{ qty, purchasePrice: rate, salePrice: sale, unit: payload.unit || "piece" }];
+        try {
+          await api.updatePurchase(newest._id || newest.id, {
+            rate,
+            productPrice: rate,
+            total: Math.round(rate * qty * 100) / 100,
+            rows,
+            qty,
+          });
+        } catch { /* non-blocking */ }
+      }
     }
     await refresh();
     setOrigStock(nextStock);
