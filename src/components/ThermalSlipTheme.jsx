@@ -4,7 +4,7 @@ import { loadShopProfile } from "../utils/helpers";
 export const THERMAL_MM = 80;
 
 export const thermalPrintStyles = `
-@page { size: ${THERMAL_MM}mm auto; margin: 1.5mm; }
+@page { size: ${THERMAL_MM}mm auto; margin: 0; }
 @media print {
   html, body { margin:0 !important; padding:0 !important; background:#fff !important; }
   body * { visibility:hidden !important; }
@@ -15,6 +15,8 @@ export const thermalPrintStyles = `
     width: ${THERMAL_MM}mm !important;
     max-width: ${THERMAL_MM}mm !important;
     box-sizing: border-box !important;
+    padding: 1mm 1.5mm 1.5mm !important;
+    margin: 0 !important;
   }
   button { display:none !important; }
 }`;
@@ -27,27 +29,38 @@ export const slipPage = {
   fontSize: "12px",
   color: "#000",
   background: "#fff",
-  padding: "3mm 2.5mm 4mm",
+  padding: "1.5mm 2mm 2mm",
   boxSizing: "border-box",
 };
 
 export const slipLine = {
   borderTop: "1px solid #000",
-  margin: "5px 0",
+  margin: "3px 0",
 };
 
 export function shopLabel(isUrdu) {
   const sp = loadShopProfile();
   const owners = (sp.owners || []).filter((o) => o.name || o.nameUr || o.phone);
-  const phones = owners.map((o) => String(o.phone || "").trim()).filter(Boolean);
-  const phoneBar = phones.length
-    ? phones.join(" - ")
+  const contactLines = owners
+    .map((o) => {
+      const name = isUrdu
+        ? (String(o.nameUr || o.name || "").trim())
+        : (String(o.name || o.nameUr || "").trim());
+      const phone = String(o.phone || "").trim();
+      if (!name && !phone) return null;
+      return { name, phone };
+    })
+    .filter(Boolean);
+  // Fallback when profile has no owners
+  const phoneBar = contactLines.length
+    ? contactLines.map((c) => (c.name && c.phone ? `${c.name}: ${c.phone}` : (c.phone || c.name))).join("  ·  ")
     : "03090001316 - 03057903867";
   return {
     sp,
     shopName: isUrdu ? (sp.shopNameUr || sp.shopName || "STEELPOS") : (sp.shopName || "STEELPOS"),
     address: isUrdu ? (sp.addressUr || sp.address || "") : (sp.address || ""),
     phoneBar,
+    contactLines,
     logo: sp.logoBase64 || "",
   };
 }
@@ -102,35 +115,61 @@ export function packLabel(category, qtyStr) {
 
 /** Header: shop name, address, black phone bar, receipt title */
 export function ThermalSlipHeader({ title, isUrdu }) {
-  const { shopName, address, phoneBar, logo } = shopLabel(isUrdu);
+  const { shopName, address, phoneBar, contactLines, logo } = shopLabel(isUrdu);
+  const lines = (contactLines && contactLines.length)
+    ? contactLines
+    : [{ name: "", phone: phoneBar }];
   return (
     <div>
       {logo ? (
-        <div style={{ textAlign: "center", marginBottom: 4 }}>
-          <img src={logo} alt="" style={{ maxWidth: 52, maxHeight: 36, objectFit: "contain" }} />
+        <div style={{ textAlign: "center", marginBottom: 2 }}>
+          <img src={logo} alt="" style={{ maxWidth: 48, maxHeight: 32, objectFit: "contain" }} />
         </div>
       ) : null}
       <div style={{
-        textAlign: "center", fontWeight: 800, fontSize: "18px",
-        letterSpacing: "0.4px", lineHeight: 1.15, textTransform: "uppercase",
+        textAlign: "center", fontWeight: 800, fontSize: "17px",
+        letterSpacing: "0.3px", lineHeight: 1.1, textTransform: "uppercase",
       }}>
         {shopName}
       </div>
       {address ? (
-        <div style={{ textAlign: "center", fontSize: "10px", marginTop: 3, lineHeight: 1.3 }}>
+        <div style={{ textAlign: "center", fontSize: "10px", marginTop: 2, lineHeight: 1.25 }}>
           {address}
         </div>
       ) : null}
       <div style={{
-        marginTop: 6, background: "#000", color: "#fff",
-        textAlign: "center", fontSize: "11px", fontWeight: 700,
-        padding: "4px 4px", letterSpacing: "0.2px",
+        marginTop: 4, background: "#000", color: "#fff",
+        textAlign: "center", padding: "5px 4px 4px",
       }}>
-        {phoneBar}
+        {lines.map((c, i) => (
+          <div key={i} style={{
+            lineHeight: 1.25,
+            marginTop: i > 0 ? 2 : 0,
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "baseline",
+            flexWrap: "wrap",
+            gap: "4px 6px",
+          }}>
+            {c.name ? (
+              <span style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "0.2px" }}>
+                {c.name}:
+              </span>
+            ) : null}
+            {c.phone ? (
+              <span style={{
+                fontSize: "14px", fontWeight: 900, letterSpacing: "0.6px",
+                fontVariantNumeric: "tabular-nums",
+              }}>
+                {c.phone}
+              </span>
+            ) : null}
+          </div>
+        ))}
       </div>
       <div style={{
         textAlign: "center", fontWeight: 800, fontSize: "13px",
-        marginTop: 7, textDecoration: "underline", letterSpacing: "0.6px",
+        marginTop: 5, textDecoration: "underline", letterSpacing: "0.5px",
         textTransform: "uppercase",
       }}>
         {title}
@@ -144,7 +183,7 @@ export function ThermalSlipMeta({
   billNo, date, partyLabel, partyName, cashSaleLabel, isUrdu,
 }) {
   return (
-    <div style={{ marginTop: 8, fontSize: "11px" }}>
+    <div style={{ marginTop: 5, fontSize: "11px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
         <div style={{ fontWeight: 700 }}>
           <div>Bill No {billNo || "—"}</div>
@@ -156,7 +195,7 @@ export function ThermalSlipMeta({
         </div>
       </div>
       {partyName ? (
-        <div style={{ fontWeight: 700, marginTop: 4 }}>
+        <div style={{ fontWeight: 700, marginTop: 3 }}>
           {partyLabel}: {partyName}
         </div>
       ) : null}
@@ -170,15 +209,15 @@ export function ThermalSlipItemsTable({ rows, isUrdu }) {
     ? { item: "آئٹم", pack: "پیک", qty: "مقدار", price: "ریٹ", amt: "رقم" }
     : { item: "Item Name", pack: "Packin", qty: "Qty", price: "Price", amt: "Amount" };
   const th = (align) => ({
-    padding: "4px 2px", fontWeight: 700, fontSize: "10px",
+    padding: "5px 2px", fontWeight: 800, fontSize: "12px",
     textAlign: align, borderBottom: "1px solid #000", borderTop: "1px solid #000",
   });
   const td = (align) => ({
-    padding: "3px 2px", fontSize: "10px", textAlign: align,
+    padding: "4px 2px", fontSize: "12px", fontWeight: 600, textAlign: align,
     verticalAlign: "top", wordBreak: "break-word",
   });
   return (
-    <table className="inv-items" style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed", marginTop: 6 }}>
+    <table className="inv-items" style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed", marginTop: 4 }}>
       <colgroup>
         <col style={{ width: "34%" }} />
         <col style={{ width: "14%" }} />
@@ -210,24 +249,24 @@ export function ThermalSlipItemsTable({ rows, isUrdu }) {
   );
 }
 
-/** Totals: Total Amount → Discount → Bill → Paid Now → Balance → Cash → Return */
+/** Totals: Total Amount → Discount → after discount (if any) → Paid → fees total */
 export function ThermalSlipTotals({
   itemCount, gross, billAmount, cashReceived, changeDue,
   discount, paidAmount, remainingAmount, isPartial, isUrdu, extras = [], notes = [],
+  loaderFee = 0, bindingFee = 0,
 }) {
   const paidNow = Number(paidAmount) || 0;
   const balance = Number(remainingAmount) || 0;
   const disc = Number(discount) || 0;
   const grossAmt = Number(gross) || 0;
-  const passedBill = Number(billAmount) || 0;
-  // Total after discount. If caller passed pre-discount gross, correct it.
-  const afterDisc = Math.max(0, Math.round((grossAmt - disc) * 100) / 100);
-  const displayBill = disc > 0.009 && (
-    Math.abs(passedBill - grossAmt) < 0.5
-    || passedBill > afterDisc + 0.5
-  )
-    ? afterDisc
-    : (passedBill > 0 ? passedBill : afterDisc);
+  const feeLoad = Number(loaderFee) || 0;
+  const feeBind = Number(bindingFee) || 0;
+  // Items only (no binding/loader) — after discount.
+  const afterDiscItems = Math.max(0, Math.round((grossAmt - disc) * 100) / 100);
+  const showAfterDisc = disc > 0.009;
+  // Final total with optional loader + bedding/binding.
+  const showWithFees = feeLoad > 0.009 || feeBind > 0.009;
+  const totalWithFees = Math.max(0, Math.round((afterDiscItems + feeBind + feeLoad) * 100) / 100);
   const creditLike = !!isPartial || balance > 0.009;
   const row = (label, value, opts = {}) => (
     <div style={{
@@ -242,26 +281,30 @@ export function ThermalSlipTotals({
     fontSize: "13px", fontWeight: 800, lineHeight: 1.55, marginTop: 2,
   };
   return (
-    <div style={{ marginTop: 4, fontSize: "12px" }}>
+    <div style={{ marginTop: 2, fontSize: "12px" }}>
       <div style={slipLine} />
       <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: "12px" }}>
         <span>{isUrdu ? `کل آئٹمز ${itemCount}` : `Total Item's ${itemCount}`}</span>
         <span />
       </div>
       {row(isUrdu ? "کل رقم :" : "Total Amount :", fmtNum(grossAmt), { bold: true, big: true })}
-      {disc > 0 && row(isUrdu ? "رعایت :" : "Discount :", `- ${fmtNum(disc)}`)}
-      <div style={{ marginTop: 8, textAlign: "right" }}>
-        <div style={{ fontWeight: 800, marginBottom: 3, fontSize: "13px" }}>
-          {isUrdu ? "رعایت کے بعد کل :" : "Total after discount :"}
-        </div>
-        <div style={{
-          display: "inline-block", border: "2px solid #000",
-          padding: "4px 14px", fontWeight: 900, fontSize: "18px", minWidth: 80, textAlign: "center",
-        }}>
-          {fmtNum(displayBill)}
-        </div>
-      </div>
-      <div style={{ marginTop: 8, textAlign: "right" }}>
+      {showAfterDisc ? (
+        <>
+          {row(isUrdu ? "رعایت :" : "Discount :", `- ${fmtNum(disc)}`)}
+          <div style={{ marginTop: 6, textAlign: "right" }}>
+            <div style={{ fontWeight: 800, marginBottom: 3, fontSize: "13px" }}>
+              {isUrdu ? "رعایت کے بعد کل :" : "Total after discount :"}
+            </div>
+            <div style={{
+              display: "inline-block", border: "2px solid #000",
+              padding: "4px 14px", fontWeight: 900, fontSize: "18px", minWidth: 80, textAlign: "center",
+            }}>
+              {fmtNum(afterDiscItems)}
+            </div>
+          </div>
+        </>
+      ) : null}
+      <div style={{ marginTop: 6, textAlign: "right" }}>
         {creditLike || paidNow > 0 ? (
           <div style={settleLine}>{isUrdu ? "ابھی ادا :" : "Paid Now :"} {fmtNum(paidNow)}</div>
         ) : null}
@@ -272,7 +315,7 @@ export function ThermalSlipTotals({
         <div style={settleLine}>{isUrdu ? "واپسی نقد :" : "Return Cash :"} {Number(changeDue) > 0 ? fmtNum(changeDue) : ""}</div>
       </div>
       {(extras || []).length > 0 && (
-        <div style={{ marginTop: 6 }}>
+        <div style={{ marginTop: 4 }}>
           {(extras || []).map((ex, i) => (
             <div key={i} style={{
               display: "flex", justifyContent: "space-between", marginTop: 2,
@@ -285,7 +328,7 @@ export function ThermalSlipTotals({
         </div>
       )}
       {(notes || []).length > 0 && (
-        <div style={{ marginTop: 6 }}>
+        <div style={{ marginTop: 4 }}>
           <div style={slipLine} />
           {(notes || []).map((ex, i) => (
             <div key={i} style={{ display: "flex", justifyContent: "space-between", marginTop: 2, fontWeight: 700, fontSize: "12px" }}>
@@ -295,6 +338,23 @@ export function ThermalSlipTotals({
           ))}
         </div>
       )}
+      {showWithFees ? (
+        <div style={{ marginTop: 6 }}>
+          <div style={slipLine} />
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            fontWeight: 900, fontSize: "13px", marginTop: 4, gap: 8,
+          }}>
+            <span>{isUrdu ? "لوڈر + بیڈنگ کل :" : "Total with loader + bedding :"}</span>
+            <span style={{
+              display: "inline-block", border: "2px solid #000",
+              padding: "3px 10px", fontSize: "16px", minWidth: 64, textAlign: "center",
+            }}>
+              {fmtNum(totalWithFees)}
+            </span>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -315,12 +375,12 @@ export function saleTypeLabel({ invoice, paymentMethod, settlement, remainingAmo
 /** Brand block (class inv-brand — print pagination reuses this) */
 export function OkiieeBrandFooter() {
   return (
-    <div className="inv-brand" style={{ textAlign: "center", marginTop: 6 }}>
+    <div className="inv-brand" style={{ textAlign: "center", marginTop: 4 }}>
       <div style={slipLine} />
-      <div className="inv-brand-title" style={{ fontSize: "10px", fontWeight: 800, marginTop: 3 }}>
+      <div className="inv-brand-title" style={{ fontSize: "10px", fontWeight: 800, marginTop: 2 }}>
         Powered By okiiee Software Company
       </div>
-      <div className="inv-brand-phone" style={{ fontSize: "10px", fontWeight: 700, marginTop: 2 }}>
+      <div className="inv-brand-phone" style={{ fontSize: "10px", fontWeight: 700, marginTop: 1 }}>
         UAN : 03090001316 - 03057903867
       </div>
     </div>
@@ -331,17 +391,17 @@ export function OkiieeBrandFooter() {
 export function ThermalSlipFooter({ isUrdu, role = "admin" }) {
   return (
     <>
-      <div style={{ marginTop: 8 }}>
-        <div style={{ fontStyle: "italic", fontSize: "10px", marginBottom: 4 }}>{role}</div>
+      <div style={{ marginTop: 4 }}>
+        <div style={{ fontStyle: "italic", fontSize: "10px", marginBottom: 2 }}>{role}</div>
         <div style={slipLine} />
-        <div style={{ fontSize: "9px", lineHeight: 1.35, textAlign: "left" }}>
+        <div style={{ fontSize: "9px", lineHeight: 1.3, textAlign: "left" }}>
           {isUrdu
             ? "معزز گاہک برائے مہربانی بل کے مطابق سامان اور نقدی کاؤنٹر پر چیک کریں۔ کاؤنٹر چھوڑنے کے بعد کوئی کلیم قابل قبول نہیں ہوگا۔"
             : "Dear Customer Please checks and verify your goods and Cash at Counter according to bill, No claim will be acceptable after leaving sale counter."}
         </div>
         <div style={{
           textAlign: "center", fontStyle: "italic", fontWeight: 700,
-          fontSize: "11px", marginTop: 6,
+          fontSize: "11px", marginTop: 4,
         }}>
           {isUrdu ? "دوبارہ تشریف لائیں" : "Hope you will Visit again."}
         </div>

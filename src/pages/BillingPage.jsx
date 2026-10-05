@@ -353,6 +353,8 @@ function BillingSaleInvoice({ invoiceData, onClose, isUrdu }) {
               isPartial={creditLike}
               extras={extras}
               notes={notes}
+              loaderFee={feeLoad}
+              bindingFee={feeBind}
             />
             <ThermalSlipFooter isUrdu={isUrdu} role="admin" />
           </div>

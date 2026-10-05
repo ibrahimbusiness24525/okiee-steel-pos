@@ -242,10 +242,11 @@ function markLastPrintSheet(root) {
 }
 
 function printPageCss({ isA4, pageHeightMM }) {
-  const thermalH = Math.max(80, Math.min(pageHeightMM || 297, 297));
+  // Thermal: tight roll height — avoid blank feed at head/footer.
+  const contentH = Math.max(45, Math.min(Math.ceil(Number(pageHeightMM) || 120), 280));
   const page = isA4
     ? `@page { size: A4 portrait; margin: 8mm 10mm; }`
-    : `@page { size: 80mm ${thermalH}mm; margin: 1.5mm; }`;
+    : `@page { size: 80mm ${contentH}mm; margin: 0; }`;
   return `
     ${page}
     @media print {
@@ -290,10 +291,10 @@ function printPageCss({ isA4, pageHeightMM }) {
         width: 80mm !important;
         max-width: 80mm !important;
         margin: 0 auto !important;
-        padding: 2mm 1.5mm !important;
+        padding: 1mm 1.5mm 1.5mm !important;
         background: #fff !important;
         font-size: 12px !important;
-        line-height: 1.35 !important;
+        line-height: 1.3 !important;
       }
       #thermal-invoice-print * { box-sizing: border-box !important; max-width: 100% !important; }
       .print-sheet { page-break-after: always; break-after: page; }
@@ -301,10 +302,15 @@ function printPageCss({ isA4, pageHeightMM }) {
         page-break-after: auto !important;
         break-after: auto !important;
       }
-      .print-sheet-last .inv-brand { margin-top: 8px !important; }
+      .print-sheet-last .inv-brand { margin-top: 4px !important; }
       #thermal-invoice-print table { page-break-inside: auto; width: 100% !important; }
       #thermal-invoice-print tr { page-break-inside: avoid; break-inside: avoid; }
       #thermal-invoice-print thead { display: table-header-group !important; }
+      #thermal-invoice-print table.inv-items th,
+      #thermal-invoice-print table.inv-items td {
+        font-size: 12px !important;
+        padding: 4px 2px !important;
+      }
       .inv-brand-title { font-size: 10px !important; font-weight: 800 !important; }
       .inv-brand-phone { font-size: 10px !important; font-weight: 700 !important; }
       button { display: none !important; }
@@ -454,14 +460,17 @@ export function printThermalOrA4(mode = "thermal", filename) {
   document.head.appendChild(styleEl);
 
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    paginateInvoiceClone(clone, Math.floor((isA4 ? 270 : 291) * PX_PER_MM));
+    // Thermal: paginate only when content is truly long (~180mm), not A4-tall pages.
+    paginateInvoiceClone(clone, Math.floor((isA4 ? 270 : 180) * PX_PER_MM));
     markLastPrintSheet(clone);
     const sheets = [...clone.querySelectorAll(".print-sheet")];
+    const targets = sheets.length ? sheets : [clone];
     const hPx = Math.max(
       1,
-      ...((sheets.length ? sheets : [clone]).map((s) => s.scrollHeight || s.offsetHeight || 0))
+      ...targets.map((s) => s.scrollHeight || s.offsetHeight || 0)
     );
-    const pageHeightMM = isA4 ? 297 : Math.max(80, Math.min(Math.ceil(hPx / PX_PER_MM) + 6, 297));
+    // Tight page height = content + small buffer (stops blank paper at ends).
+    const pageHeightMM = isA4 ? 297 : Math.max(45, Math.min(Math.ceil(hPx / PX_PER_MM) + 2, 280));
     styleEl.innerHTML = printPageCss({ isA4, pageHeightMM });
     portal.style.position = "relative";
     portal.style.left = "0";
