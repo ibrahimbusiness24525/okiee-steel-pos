@@ -317,7 +317,7 @@ function BillingSaleInvoice({ invoiceData, onClose, isUrdu }) {
           </button>
         </div>
 
-        <div style={{ background: "#f0f0f0", padding: "14px", borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto" }}>
+        <div style={{ background: "#f0f0f0", padding: "8px", borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto", display: "flex", justifyContent: "center", alignItems: "flex-start" }}>
           <div id="thermal-invoice" style={slipPage}>
             <ThermalSlipHeader title={saleReceiptTitle({ isCredit: creditLike, isUrdu })} isUrdu={isUrdu} />
             <ThermalSlipMeta

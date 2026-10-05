@@ -242,16 +242,16 @@ function markLastPrintSheet(root) {
 }
 
 function printPageCss({ isA4, pageHeightMM }) {
-  // Thermal: tight roll height — avoid blank feed at head/footer.
-  const contentH = Math.max(45, Math.min(Math.ceil(Number(pageHeightMM) || 120), 280));
+  const thermalH = Math.max(60, Math.ceil(Number(pageHeightMM) || 200));
   const page = isA4
     ? `@page { size: A4 portrait; margin: 8mm 10mm; }`
-    : `@page { size: 80mm ${contentH}mm; margin: 0; }`;
+    // One tall page matching content — never shorter than the slip (that caused mid-gap).
+    : `@page { size: 80mm ${thermalH}mm; margin: 0 !important; }`;
   return `
     ${page}
     @media print {
       html, body {
-        width: auto !important;
+        width: ${isA4 ? "auto" : "80mm"} !important;
         margin: 0 !important;
         padding: 0 !important;
         background: #fff !important;
@@ -270,11 +270,11 @@ function printPageCss({ isA4, pageHeightMM }) {
       }
       #print-portal-overlay {
         display: block !important;
-        position: relative !important;
+        position: static !important;
         left: 0 !important;
         top: 0 !important;
-        width: 100% !important;
-        max-width: 100% !important;
+        width: ${isA4 ? "100%" : "80mm"} !important;
+        max-width: ${isA4 ? "100%" : "80mm"} !important;
         height: auto !important;
         margin: 0 !important;
         padding: 0 !important;
@@ -285,31 +285,47 @@ function printPageCss({ isA4, pageHeightMM }) {
       }
       #thermal-invoice-print {
         display: block !important;
-        position: relative !important;
+        position: static !important;
         left: 0 !important;
         top: 0 !important;
         width: 80mm !important;
         max-width: 80mm !important;
-        margin: 0 auto !important;
-        padding: 1mm 1.5mm 1.5mm !important;
+        margin: 0 !important;
+        padding: 0 1.5mm !important;
         background: #fff !important;
         font-size: 12px !important;
-        line-height: 1.3 !important;
+        line-height: 1.25 !important;
+        height: auto !important;
+        min-height: 0 !important;
       }
       #thermal-invoice-print * { box-sizing: border-box !important; max-width: 100% !important; }
+      ${isA4 ? `
       .print-sheet { page-break-after: always; break-after: page; }
       .print-sheet-last {
         page-break-after: auto !important;
         break-after: auto !important;
       }
+      ` : `
+      .print-sheet,
+      .print-sheet-last,
+      #thermal-invoice-print,
+      #thermal-invoice-print * {
+        page-break-after: auto !important;
+        break-after: auto !important;
+        page-break-before: auto !important;
+        break-before: auto !important;
+        page-break-inside: auto !important;
+        break-inside: auto !important;
+      }
+      `}
       .print-sheet-last .inv-brand { margin-top: 4px !important; }
-      #thermal-invoice-print table { page-break-inside: auto; width: 100% !important; }
-      #thermal-invoice-print tr { page-break-inside: avoid; break-inside: avoid; }
+      #thermal-invoice-print table { width: 100% !important; }
       #thermal-invoice-print thead { display: table-header-group !important; }
       #thermal-invoice-print table.inv-items th,
       #thermal-invoice-print table.inv-items td {
-        font-size: 12px !important;
-        padding: 4px 2px !important;
+        font-size: 13px !important;
+        font-weight: 700 !important;
+        padding: 5px 2px !important;
       }
       .inv-brand-title { font-size: 10px !important; font-weight: 800 !important; }
       .inv-brand-phone { font-size: 10px !important; font-weight: 700 !important; }
@@ -447,6 +463,9 @@ export function printThermalOrA4(mode = "thermal", filename) {
   clone.style.width = isA4 ? "190mm" : "80mm";
   clone.style.maxWidth = isA4 ? "190mm" : "80mm";
   clone.style.margin = "0";
+  clone.style.padding = isA4 ? "" : "0 1.5mm";
+  clone.style.height = "auto";
+  clone.style.minHeight = "0";
   clone.style.boxSizing = "border-box";
   clone.style.color = "#000";
   clone.style.background = "#fff";
@@ -460,18 +479,16 @@ export function printThermalOrA4(mode = "thermal", filename) {
   document.head.appendChild(styleEl);
 
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    // Thermal: paginate only when content is truly long (~180mm), not A4-tall pages.
-    paginateInvoiceClone(clone, Math.floor((isA4 ? 270 : 180) * PX_PER_MM));
-    markLastPrintSheet(clone);
-    const sheets = [...clone.querySelectorAll(".print-sheet")];
-    const targets = sheets.length ? sheets : [clone];
-    const hPx = Math.max(
-      1,
-      ...targets.map((s) => s.scrollHeight || s.offsetHeight || 0)
-    );
-    // Tight page height = content + small buffer (stops blank paper at ends).
-    const pageHeightMM = isA4 ? 297 : Math.max(45, Math.min(Math.ceil(hPx / PX_PER_MM) + 2, 280));
-    styleEl.innerHTML = printPageCss({ isA4, pageHeightMM });
+    if (isA4) {
+      paginateInvoiceClone(clone, Math.floor(270 * PX_PER_MM));
+      markLastPrintSheet(clone);
+      styleEl.innerHTML = printPageCss({ isA4, pageHeightMM: 297 });
+    } else {
+      // Exact content height — no extra blank strip at head/footer.
+      const hPx = Math.max(clone.scrollHeight || 0, clone.offsetHeight || 0, 1);
+      const pageHeightMM = Math.max(40, Math.ceil(hPx / PX_PER_MM) + 1);
+      styleEl.innerHTML = printPageCss({ isA4: false, pageHeightMM });
+    }
     portal.style.position = "relative";
     portal.style.left = "0";
     portal.style.top = "0";

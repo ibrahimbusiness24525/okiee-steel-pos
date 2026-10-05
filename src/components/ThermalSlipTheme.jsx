@@ -4,9 +4,9 @@ import { loadShopProfile } from "../utils/helpers";
 export const THERMAL_MM = 80;
 
 export const thermalPrintStyles = `
-@page { size: ${THERMAL_MM}mm auto; margin: 0; }
+@page { size: ${THERMAL_MM}mm auto; margin: 0 !important; }
 @media print {
-  html, body { margin:0 !important; padding:0 !important; background:#fff !important; }
+  html, body { margin:0 !important; padding:0 !important; background:#fff !important; width: ${THERMAL_MM}mm !important; height:auto !important; }
   body * { visibility:hidden !important; }
   #print-portal-overlay, #print-portal-overlay *,
   #thermal-invoice-print, #thermal-invoice-print *,
@@ -15,8 +15,10 @@ export const thermalPrintStyles = `
     width: ${THERMAL_MM}mm !important;
     max-width: ${THERMAL_MM}mm !important;
     box-sizing: border-box !important;
-    padding: 1mm 1.5mm 1.5mm !important;
+    padding: 0 1.5mm !important;
     margin: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
   }
   button { display:none !important; }
 }`;
@@ -29,13 +31,15 @@ export const slipPage = {
   fontSize: "12px",
   color: "#000",
   background: "#fff",
-  padding: "1.5mm 2mm 2mm",
+  padding: "0 1.5mm",
   boxSizing: "border-box",
+  height: "fit-content",
+  minHeight: 0,
 };
 
 export const slipLine = {
   borderTop: "1px solid #000",
-  margin: "3px 0",
+  margin: "2px 0",
 };
 
 export function shopLabel(isUrdu) {
@@ -120,7 +124,7 @@ export function ThermalSlipHeader({ title, isUrdu }) {
     ? contactLines
     : [{ name: "", phone: phoneBar }];
   return (
-    <div>
+    <div style={{ margin: 0, padding: 0 }}>
       {logo ? (
         <div style={{ textAlign: "center", marginBottom: 2 }}>
           <img src={logo} alt="" style={{ maxWidth: 48, maxHeight: 32, objectFit: "contain" }} />
@@ -133,32 +137,32 @@ export function ThermalSlipHeader({ title, isUrdu }) {
         {shopName}
       </div>
       {address ? (
-        <div style={{ textAlign: "center", fontSize: "10px", marginTop: 2, lineHeight: 1.25 }}>
+        <div style={{ textAlign: "center", fontSize: "10px", marginTop: 2, lineHeight: 1.2 }}>
           {address}
         </div>
       ) : null}
       <div style={{
-        marginTop: 4, background: "#000", color: "#fff",
-        textAlign: "center", padding: "5px 4px 4px",
+        marginTop: 3, background: "#000", color: "#fff",
+        textAlign: "center", padding: "4px 3px",
       }}>
         {lines.map((c, i) => (
           <div key={i} style={{
-            lineHeight: 1.25,
-            marginTop: i > 0 ? 2 : 0,
+            lineHeight: 1.2,
+            marginTop: i > 0 ? 1 : 0,
             display: "flex",
             justifyContent: "center",
             alignItems: "baseline",
             flexWrap: "wrap",
-            gap: "4px 6px",
+            gap: "2px 6px",
           }}>
             {c.name ? (
-              <span style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "0.2px" }}>
+              <span style={{ fontSize: "11px", fontWeight: 700 }}>
                 {c.name}:
               </span>
             ) : null}
             {c.phone ? (
               <span style={{
-                fontSize: "14px", fontWeight: 900, letterSpacing: "0.6px",
+                fontSize: "14px", fontWeight: 900, letterSpacing: "0.5px",
                 fontVariantNumeric: "tabular-nums",
               }}>
                 {c.phone}
@@ -169,7 +173,7 @@ export function ThermalSlipHeader({ title, isUrdu }) {
       </div>
       <div style={{
         textAlign: "center", fontWeight: 800, fontSize: "13px",
-        marginTop: 5, textDecoration: "underline", letterSpacing: "0.5px",
+        marginTop: 4, marginBottom: 0, textDecoration: "underline", letterSpacing: "0.5px",
         textTransform: "uppercase",
       }}>
         {title}
@@ -183,7 +187,7 @@ export function ThermalSlipMeta({
   billNo, date, partyLabel, partyName, cashSaleLabel, isUrdu,
 }) {
   return (
-    <div style={{ marginTop: 5, fontSize: "11px" }}>
+    <div style={{ marginTop: 4, fontSize: "11px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
         <div style={{ fontWeight: 700 }}>
           <div>Bill No {billNo || "—"}</div>
@@ -209,11 +213,11 @@ export function ThermalSlipItemsTable({ rows, isUrdu }) {
     ? { item: "آئٹم", pack: "پیک", qty: "مقدار", price: "ریٹ", amt: "رقم" }
     : { item: "Item Name", pack: "Packin", qty: "Qty", price: "Price", amt: "Amount" };
   const th = (align) => ({
-    padding: "5px 2px", fontWeight: 800, fontSize: "12px",
+    padding: "5px 2px", fontWeight: 800, fontSize: "13px",
     textAlign: align, borderBottom: "1px solid #000", borderTop: "1px solid #000",
   });
   const td = (align) => ({
-    padding: "4px 2px", fontSize: "12px", fontWeight: 600, textAlign: align,
+    padding: "5px 2px", fontSize: "13px", fontWeight: 700, textAlign: align,
     verticalAlign: "top", wordBreak: "break-word",
   });
   return (
@@ -375,12 +379,12 @@ export function saleTypeLabel({ invoice, paymentMethod, settlement, remainingAmo
 /** Brand block (class inv-brand — print pagination reuses this) */
 export function OkiieeBrandFooter() {
   return (
-    <div className="inv-brand" style={{ textAlign: "center", marginTop: 4 }}>
+    <div className="inv-brand" style={{ textAlign: "center", marginTop: 2, marginBottom: 0, paddingBottom: 0 }}>
       <div style={slipLine} />
-      <div className="inv-brand-title" style={{ fontSize: "10px", fontWeight: 800, marginTop: 2 }}>
+      <div className="inv-brand-title" style={{ fontSize: "10px", fontWeight: 800, marginTop: 1, marginBottom: 0 }}>
         Powered By okiiee Software Company
       </div>
-      <div className="inv-brand-phone" style={{ fontSize: "10px", fontWeight: 700, marginTop: 1 }}>
+      <div className="inv-brand-phone" style={{ fontSize: "10px", fontWeight: 700, marginTop: 1, marginBottom: 0, paddingBottom: 0 }}>
         UAN : 03090001316 - 03057903867
       </div>
     </div>
@@ -391,17 +395,17 @@ export function OkiieeBrandFooter() {
 export function ThermalSlipFooter({ isUrdu, role = "admin" }) {
   return (
     <>
-      <div style={{ marginTop: 4 }}>
-        <div style={{ fontStyle: "italic", fontSize: "10px", marginBottom: 2 }}>{role}</div>
+      <div style={{ marginTop: 2, marginBottom: 0, paddingBottom: 0 }}>
+        <div style={{ fontStyle: "italic", fontSize: "10px", marginBottom: 1 }}>{role}</div>
         <div style={slipLine} />
-        <div style={{ fontSize: "9px", lineHeight: 1.3, textAlign: "left" }}>
+        <div style={{ fontSize: "9px", lineHeight: 1.25, textAlign: "left" }}>
           {isUrdu
             ? "معزز گاہک برائے مہربانی بل کے مطابق سامان اور نقدی کاؤنٹر پر چیک کریں۔ کاؤنٹر چھوڑنے کے بعد کوئی کلیم قابل قبول نہیں ہوگا۔"
             : "Dear Customer Please checks and verify your goods and Cash at Counter according to bill, No claim will be acceptable after leaving sale counter."}
         </div>
         <div style={{
           textAlign: "center", fontStyle: "italic", fontWeight: 700,
-          fontSize: "11px", marginTop: 4,
+          fontSize: "11px", marginTop: 3, marginBottom: 0,
         }}>
           {isUrdu ? "دوبارہ تشریف لائیں" : "Hope you will Visit again."}
         </div>

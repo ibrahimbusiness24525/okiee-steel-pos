@@ -324,7 +324,7 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
       <style>{thermalPrintStyles}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
         <PrintButtonRow onClose={onClose} isUrdu={isUrdu} handlePrint={handlePrint} handlePrintA4={handlePrintA4} handlePrintPdf={handlePrintPdf} th={th} />
-        <div style={{ background: "#f0f0f0", padding: "14px", borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto" }}>
+        <div style={{ background: "#f0f0f0", padding: "8px", borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto", display: "flex", justifyContent: "center", alignItems: "flex-start" }}>
           <div id="thermal-invoice" style={slipPage}>
             <ThermalSlipHeader title={isUrdu ? "خرید رسید" : "PURCHASE RECEIPT"} isUrdu={isUrdu} />
             <ThermalSlipMeta
@@ -495,7 +495,7 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
       <style>{thermalPrintStyles}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
         <PrintButtonRow onClose={onClose} isUrdu={isUrdu} handlePrint={handlePrint} handlePrintA4={handlePrintA4} handlePrintPdf={handlePrintPdf} th={th} />
-        <div style={{ background: "#f0f0f0", padding: "14px", borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto" }}>
+        <div style={{ background: "#f0f0f0", padding: "8px", borderRadius: 12, border: "1px solid #ccc", width: "100%", overflowX: "auto", display: "flex", justifyContent: "center", alignItems: "flex-start" }}>
           <div id="thermal-invoice" style={slipPage}>
             <ThermalSlipHeader
               title={isPurchase
