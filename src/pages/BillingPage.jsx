@@ -1237,6 +1237,31 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
   const handleSave = async () => {
     if (!canSave) return;
     setSaving(true);
+    // On edit: keep the original invoice unit cost (FIFO after stock deduct would change 100 → 80).
+    const lockedCosts = prefill?.isEdit
+      ? (prefill.items || []).map((it) => {
+          const oq = Number(it.qty) || 0;
+          const ot = Number(it.costTotal) || 0;
+          const ou = Number(it.costPrice) || (oq > 0 && ot > 0 ? ot / oq : 0);
+          return {
+            productId: String(it.productId || it.product || ""),
+            name: String(it.productName || "").trim().toLowerCase(),
+            costPrice: ou,
+            used: false,
+          };
+        })
+      : [];
+    const takeLockedCost = (productId, productName) => {
+      const id = String(productId || "");
+      const name = String(productName || "").trim().toLowerCase();
+      const hit = lockedCosts.find((o) => !o.used && o.costPrice > 0.009 && (
+        (id && o.productId && o.productId === id)
+        || (name && o.name && o.name === name)
+      ));
+      if (!hit) return null;
+      hit.used = true;
+      return hit.costPrice;
+    };
     const items = blocks.map(block => {
       const prod = products.find(p => (p._id||p.id) === block.productId);
       const cat  = prod?.category || "";
@@ -1279,12 +1304,22 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
         const stockQty = (Number(prod?.stock) || 0) + extra;
         if (itemQty > stockQty && itemQty <= stockQty + 0.1) itemQty = stockQty;
       }
-      const costTotal = prod ? fifoCostForQty(prod, itemQty, lotOpts, extra) : 0;
-      const costRate = itemQty > 0 ? costTotal / itemQty : (prod ? (Number(stockLotsForProduct(prod, lotOpts).fifoCost) || pp) : pp);
+      const pname = productDisplayName(prod);
+      const pid = block.productId || (prod?._id || prod?.id || "");
+      const lockedUnit = takeLockedCost(pid, pname);
+      let costTotal;
+      let costRate;
+      if (lockedUnit != null && lockedUnit > 0.009) {
+        costRate = lockedUnit;
+        costTotal = Math.round(lockedUnit * itemQty * 100) / 100;
+      } else {
+        costTotal = prod ? fifoCostForQty(prod, itemQty, lotOpts, extra) : 0;
+        costRate = itemQty > 0 ? costTotal / itemQty : (prod ? (Number(stockLotsForProduct(prod, lotOpts).fifoCost) || pp) : pp);
+      }
       const subtotal = rows.reduce((s,r) => s + r.amount, 0);
       return {
-        productName: productDisplayName(prod), category: cat, rows, subtotal, costPrice: costRate, costTotal,
-        productId: block.productId || (prod?._id || prod?.id || ""),
+        productName: pname, category: cat, rows, subtotal, costPrice: costRate, costTotal,
+        productId: pid,
         qty: itemQty,
         form: {
           pipeRows: block.pipeRows,
@@ -1603,7 +1638,9 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       ].filter(Boolean).join(" ").toLowerCase().includes(q);
     })
     .sort((a, b) => saleRecency(b) - saleRecency(a));
-  const periodRevenue = recentSales.reduce((s,x) => s + netSaleAmount(x, saleReturns), 0);
+  const periodRevenue = recentSales.reduce((s, x) => s + netSaleAmount(x, saleReturns), 0);
+  const periodLoaders = recentSales.reduce((s, x) => s + (Number(x.loaderFee) || 0), 0);
+  const periodRevenueWithLoaders = periodRevenue + periodLoaders;
   const filterLabel = dateFilter === "today" ? (isUrdu ? "آج" : "Today")
     : dateFilter === "yesterday" ? (isUrdu ? "کل" : "Yesterday")
     : dateFilter === "week" ? (isUrdu ? "ایک ہفتہ" : "1 Week")
@@ -1795,6 +1832,13 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
       {/* Stat cards */}
       <div style={{ display:"grid", gridTemplateColumns:isMobile?"1fr 1fr":"repeat(auto-fit,minmax(160px,1fr))", gap:12 }}>
         <StatCard label={filterRevenueLabel}    value={formatPKR(periodRevenue)} icon={ICONS.trend_up} color="#1abc9c" sub={`${recentSales.length} ${isUrdu ? "فروخت" : "sales"}`}/>
+        <StatCard
+          label={isUrdu ? `${filterRevenueLabel} + لوڈر` : `${filterRevenueLabel} + Loaders`}
+          value={formatPKR(periodRevenueWithLoaders)}
+          icon={ICONS.trend_up}
+          color="#8b5cf6"
+          sub={periodLoaders > 0 ? `${isUrdu ? "لوڈر" : "Loaders"} ${formatPKR(periodLoaders)}` : (isUrdu ? "لوڈر نہیں" : "no loaders")}
+        />
         <StatCard label={t.productsInStock} value={products.filter(p=>p.stock>0).length} icon={ICONS.box} color="#9b59b6"/>
       </div>
 

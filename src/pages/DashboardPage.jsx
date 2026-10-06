@@ -6,7 +6,7 @@ import { useResponsive, Icon, ICONS, Modal, Table } from "../components/shared";
 import { formatPKR, formatDateTime, printThermalOrA4, downloadInvoicePdf, sharePdfOnWhatsApp, loadShopProfile, inDateFilter } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
 import InventoryStockTable, { inventoryStats } from "../components/InventoryStockTable";
-import { netSaleAmount, saleReturnedAmount, netSaleItems } from "../utils/returnsStore";
+import { netSaleAmount, saleReturnedAmount, netSaleItems, netPurchaseLine, purchaseInvoiceNet, saleInvoiceNet } from "../utils/returnsStore";
 import {
   slipPage, slipLine, ThermalSlipHeader, ThermalSlipFooter,
 } from "../components/ThermalSlipTheme";
@@ -84,44 +84,87 @@ function findProduct(products, id, name) {
   );
 }
 
+/** Line cost for P/L: unit cost × remaining qty when saved on the invoice. */
+function itemCostForProfit(item, products) {
+  const qty = Number(item.qty) || 0;
+  const sub = Number(item.subtotal) || 0;
+  const unit = Number(item.costPrice) || 0;
+  let total = Number(item.costTotal) || 0;
+  if (unit > 0 && qty > 0) {
+    const byUnit = +(unit * qty).toFixed(2);
+    if (byUnit > total + 0.02 || total <= 0.009) total = byUnit;
+  } else if (total <= 0.009 && products?.length && qty > 0) {
+    const prod = findProduct(products, item.productId || item.product, item.productName);
+    if (prod) {
+      const pp = item.category === "Pipe"
+        ? (Number(prod.price) || Number(prod.purchasePrice) || 0)
+        : (Number(prod.purchasePrice) || Number(prod.price) || 0);
+      if (pp > 0) total = +(pp * qty).toFixed(2);
+    }
+  }
+  if (item.category === "Pipe" && total > 0) {
+    const absProfit = Math.abs(sub - total);
+    return Math.max(0, sub - absProfit);
+  }
+  return total;
+}
+
 /** Same profit math on dashboard KPI and analytics. Sale returns shrink sale + cost per item.
- *  Loader fee is never profit — only item sale amounts count. */
-function calcInvoiceProfit(sale, saleReturns) {
-  const items = netSaleItems(sale, saleReturns);
+ *  Loader fee is never profit — only item sale amounts count.
+ *  Invoice discount reduces sale revenue (and thus profit). */
+function calcInvoiceProfit(sale, saleReturns, products) {
+  const items = netSaleItems(sale, saleReturns).map((item) => ({
+    ...item,
+    costTotal: itemCostForProfit(item, products),
+  }));
   const billTotal = Number(sale?.grandTotal) || Number(sale?.total) || 0;
   const bindingFee = Number(sale?.bindingFee) || 0;
   const loaderFee = Number(sale?.loaderFee) || 0;
+  const discount = Number(sale?.discount) || 0;
   let costAmt = 0;
   let costedSaleAmt = 0;
   let hasCost = false;
   let itemsSaleAmt = 0;
+  let anyOpen = false;
   items.forEach((item) => {
     if (item.fullyReturned) return;
+    anyOpen = true;
     itemsSaleAmt += Number(item.subtotal) || 0;
-    if (item.costTotal !== undefined && item.costTotal !== null && Number(item.costTotal) > 0) {
+    const itemCost = itemCostForProfit(item, products);
+    if (itemCost > 0.009) {
       const sub = Number(item.subtotal) || 0;
-      let itemCost = Number(item.costTotal) || 0;
-      if (item.category === "Pipe") {
-        const absProfit = Math.abs(sub - itemCost);
-        itemCost = sub - absProfit;
-      }
       costAmt += itemCost;
       costedSaleAmt += sub;
       hasCost = true;
     }
   });
+  // Fully returned invoice — no remaining sale/profit.
+  if (!anyOpen || (itemsSaleAmt <= 0.009 && saleReturnedAmount(sale, saleReturns) > 0.009)) {
+    const fullyGone = netSaleAmount(sale, saleReturns) <= 0.009;
+    if (fullyGone || !anyOpen) {
+      return { saleAmt: 0, costAmt: 0, profit: 0, hasCost: false, items, discount: 0 };
+    }
+  }
   // Prefer item subtotals (excludes loader). Fallback strips binding + loader from old totals.
-  const saleAmt = hasCost
+  let saleAmt = hasCost
     ? costedSaleAmt
     : Math.max(0, (itemsSaleAmt > 0
       ? itemsSaleAmt
       : (billTotal - bindingFee - loaderFee)) - (itemsSaleAmt > 0 ? 0 : saleReturnedAmount(sale, saleReturns)));
-  return { saleAmt, costAmt, profit: saleAmt - costAmt, hasCost, items };
+  // Apply invoice discount (prorate when part of the sale was returned).
+  if (discount > 0.009 && saleAmt > 0.009) {
+    const origItems = (sale?.items || []).reduce((a, it) => a + (Number(it.subtotal) || 0), 0)
+      || Math.max(saleAmt, (billTotal - bindingFee - loaderFee) + discount);
+    const scale = origItems > 0.009 ? Math.min(1, saleAmt / origItems) : 1;
+    saleAmt = Math.max(0, Math.round((saleAmt - discount * scale) * 100) / 100);
+  }
+  return { saleAmt, costAmt, profit: saleAmt - costAmt, hasCost, items, discount };
 }
 
-function periodProfit(sales, saleReturns) {
+function periodProfit(sales, saleReturns, products) {
   return (sales || []).reduce((sum, s) => {
-    const r = calcInvoiceProfit(s, saleReturns);
+    if (netSaleAmount(s, saleReturns) <= 0.009) return sum;
+    const r = calcInvoiceProfit(s, saleReturns, products);
     return r.hasCost ? sum + r.profit : sum;
   }, 0);
 }
@@ -622,12 +665,11 @@ function DailyAnalyticsModal({
   const modalFilteredPurchaseReturns = (purchaseReturns || []).filter(inRange);
 
   // Recalculate totals based on filtered data (returns reduce the original sale)
-  const modalTotalSales = modalFilteredSales.reduce((s, p) => s + netSaleAmount(p, saleReturns), 0);
-  const modalTotalPurchases = modalFilteredPurchases.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0)
-    - modalFilteredPurchaseReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
+  const modalTotalSales = groupByInvoice(modalFilteredSales).reduce((s, g) => s + saleInvoiceNet(g.items, saleReturns), 0);
+  const modalTotalPurchases = groupByInvoice(modalFilteredPurchases).reduce((s, g) => s + purchaseInvoiceNet(g.items, purchaseReturns), 0);
   
-  const modalProfit = periodProfit(modalFilteredSales, saleReturns);
-  const modalHasCost = modalFilteredSales.some((s) => calcInvoiceProfit(s, saleReturns).hasCost);
+  const modalProfit = periodProfit(modalFilteredSales, saleReturns, products);
+  const modalHasCost = modalFilteredSales.some((s) => calcInvoiceProfit(s, saleReturns, products).hasCost);
 
   const purLines = flattenPurchases(modalFilteredPurchases, products);
   const saleLines = applySaleReturnsToLines(flattenSales(modalFilteredSales, products), saleReturns);
@@ -1151,10 +1193,10 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   const filteredPurchaseReturns = (purchaseReturns || []).filter((r) => inRange(r));
   const filteredExpenses = (expenses || []).filter((e) => inRange(e));
 
-  const totalSalesCount    = filteredSales.filter((s) => netSaleAmount(s, saleReturns) > 0.009).length;
-  const totalSalesAmount   = filteredSales.reduce((s, p) => s + netSaleAmount(p, saleReturns), 0);
-  const totalPurchaseCount = filteredPurchases.length;
-  const totalPurchaseAmt   = filteredPurchases.reduce((s, p) => s + (Number(p.total) || Number(p.grandTotal) || 0), 0);
+  const totalSalesCount    = saleGroups.filter((g) => saleInvoiceNet(g.items, saleReturns) > 0.009).length;
+  const totalSalesAmount   = saleGroups.reduce((s, g) => s + saleInvoiceNet(g.items, saleReturns), 0);
+  const totalPurchaseCount = purchaseGroups.filter((g) => purchaseInvoiceNet(g.items, purchaseReturns) > 0.009).length;
+  const totalPurchaseAmt   = purchaseGroups.reduce((s, g) => s + purchaseInvoiceNet(g.items, purchaseReturns), 0);
   const saleReturnAmt = filteredSaleReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
   const purchaseReturnAmt = filteredPurchaseReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
   const returnStamp = (r) => String(r?.createdAt || r?.date || "");
@@ -1164,34 +1206,37 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   const returnTotalOf = (r) => Number(r.total) || (r.items || []).reduce((s, it) => s + (Number(it.amount) || ((Number(it.qty) || 0) * (Number(it.rate) || 0))), 0);
 
   // ─── PROFIT / LOSS — per invoice, real margin ────────────────────────────────
-  const invoiceProfitRows = filteredSales.map((s) => {
-    const { saleAmt, costAmt, profit, hasCost, items } = calcInvoiceProfit(s, saleReturns);
-    return {
-      invoice:  s.invoice || s.invoiceNum || "—",
-      customer: s.customer || "—",
-      date:     s.date || "—",
-      saleAmt,
-      costAmt,
-      profit,
-      hasCost,
-      items: items || [],
-    };
-  });
+  const invoiceProfitRows = filteredSales
+    .filter((s) => netSaleAmount(s, saleReturns) > 0.009)
+    .map((s) => {
+      const { saleAmt, costAmt, profit, hasCost, items, discount } = calcInvoiceProfit(s, saleReturns, products);
+      return {
+        invoice:  s.invoice || s.invoiceNum || "—",
+        customer: s.customer || "—",
+        date:     s.date || "—",
+        saleAmt,
+        costAmt,
+        profit,
+        hasCost,
+        discount: discount || Number(s.discount) || 0,
+        items: items || [],
+      };
+    });
 
   const costedRows          = invoiceProfitRows.filter((r) => r.hasCost);
   const totalSaleForProfit  = costedRows.reduce((a, r) => a + r.saleAmt, 0);
   const totalCostForProfit  = costedRows.reduce((a, r) => a + r.costAmt, 0);
-  const overallProfit       = periodProfit(filteredSales, saleReturns);
+  const overallProfit       = periodProfit(filteredSales, saleReturns, products);
   const hasAnyCostData      = invoiceProfitRows.some((r) => r.hasCost);
 
   // ─── Supplier grouping ────────────────────────────────────────────────────────
   const supplierMap = {};
-  filteredPurchases.forEach((p) => {
-    const key = p.supplier || p.supplierName || "Unknown";
+  purchaseGroups.forEach((g) => {
+    const key = g.head.supplier || g.head.supplierName || "Unknown";
     if (!supplierMap[key]) supplierMap[key] = { name: key, total: 0, count: 0, purchases: [] };
-    supplierMap[key].total += p.total || 0;
+    supplierMap[key].total += purchaseInvoiceNet(g.items, purchaseReturns);
     supplierMap[key].count += 1;
-    supplierMap[key].purchases.push(p);
+    supplierMap[key].purchases.push(...g.items);
   });
   const filteredSuppliers = Object.values(supplierMap)
     .sort((a, b) => b.total - a.total)
@@ -1265,7 +1310,9 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
 
   const purchasesToInvoiceData = (purchaseList, invoiceTitle, supplierName) => {
     const itemMap = {};
-    purchaseList.forEach((p) => {
+    const nets = (purchaseList || []).map((p) => netPurchaseLine(p, purchaseReturns)).filter((p) => !p.fullyReturned);
+    const head = purchaseList[0] || {};
+    nets.forEach((p) => {
       const productId      = typeof p.product === "object" ? p.product?._id : p.product;
       const matchedProduct = products.find(pr => pr._id === productId);
       const purchasePrice  = Number(p.productPrice) || Number(matchedProduct?.price) || (typeof p.product === "object" ? Number(p.product?.price) : 0) || 0;
@@ -1287,7 +1334,13 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
       }
     });
     const items      = Object.values(itemMap);
-    const grandTotal = items.reduce((a, i) => a + i.subtotal, 0);
+    const grandTotal = purchaseInvoiceNet(purchaseList, purchaseReturns);
+    const origGross = (purchaseList || []).reduce((s, p) => s + (Number(p.total) || 0), 0);
+    const remainGross = items.reduce((a, i) => a + i.subtotal, 0);
+    const scale = origGross > 0.009 ? remainGross / origGross : 1;
+    const discount = Math.round((Number(head.discount) || 0) * scale * 100) / 100;
+    const rem = Number(head.remainingAmount) || 0;
+    const paid = Number(head.paidAmount);
     return {
       invoice:         invoiceTitle,
       date:            toDateStr(today),
@@ -1296,12 +1349,17 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
       grandTotal,
       paymentMethod:   purchaseList.find(p => p.paymentMethod)?.paymentMethod || "cash",
       bankName:        purchaseList.find(p => p.bankName)?.bankName || "",
-      isPartial:       false,
-      paidAmount:      grandTotal,
-      remainingAmount: 0,
+      accountName:     head.accountName || "",
+      settlement:      head.settlement || "",
+      isPartial:       !!head.isPartial || rem > 0.009,
+      paidAmount:      Number.isFinite(paid) ? paid : grandTotal,
+      remainingAmount: rem,
       loaderName:      "",
       loaderFee:       0,
       bindingFee:      0,
+      discount,
+      cashReceived:    Number(head.cashReceived) || 0,
+      changeDue:       Number(head.changeDue) || 0,
       isPurchase:      true,
     };
   };
@@ -1341,32 +1399,58 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
         }
       });
     });
-    const items      = Object.values(itemMap);
-    const grandTotal = items.reduce((a,i) => a+i.subtotal, 0);
-    const firstSale  = salesList.find(s => s.paymentMethod) || salesList[0] || {};
-    const loaderName = salesList.find(s => s.loaderName)?.loaderName || "";
-    const loaderFee  = salesList.reduce((a,s) => a+(Number(s.loaderFee)||0), 0);
-    const bindingFee = salesList.reduce((a,s) => a+(Number(s.bindingFee)||0), 0);
-    const totalPaid      = salesList.reduce((a,s) => a+(Number(s.paidAmount)||Number(s.total)||0), 0);
-    const totalRemaining = salesList.reduce((a,s) => a+(Number(s.remainingAmount)||0), 0);
-    const isPartial      = totalRemaining > 0;
-    const settlement = firstSale.settlement
-      || (isPartial ? ((totalPaid === 0 ? "credit" : "partial")) : "full");
+    const items = Object.values(itemMap);
+    const itemsTotal = items.reduce((a, i) => a + i.subtotal, 0);
+    const head = salesList[0] || {};
+    const single = salesList.length === 1;
+    const discount = single
+      ? (Number(head.discount) || 0)
+      : salesList.reduce((a, s) => a + (Number(s.discount) || 0), 0);
+    const bindingFee = single
+      ? (Number(head.bindingFee) || 0)
+      : salesList.reduce((a, s) => a + (Number(s.bindingFee) || 0), 0);
+    const loaderFee = single
+      ? (Number(head.loaderFee) || 0)
+      : salesList.reduce((a, s) => a + (Number(s.loaderFee) || 0), 0);
+    const storedGt = single
+      ? (Number(head.grandTotal) || Number(head.total) || 0)
+      : salesList.reduce((a, s) => a + (Number(s.grandTotal) || Number(s.total) || 0), 0);
+    // Prefer stored net total (already after discount). Fallback: items − discount + binding.
+    const grandTotal = storedGt > 0
+      ? storedGt
+      : Math.max(0, Math.round((itemsTotal + bindingFee - discount) * 100) / 100);
+    const remaining = single
+      ? (Number(head.remainingAmount) || 0)
+      : salesList.reduce((a, s) => a + (Number(s.remainingAmount) || 0), 0);
+    const paidRaw = single
+      ? Number(head.paidAmount)
+      : salesList.reduce((a, s) => a + (Number(s.paidAmount) || 0), 0);
+    const creditLike = head.isPartial || head.settlement === "credit" || head.settlement === "partial" || remaining > 0.009;
+    const paidAmount = Number.isFinite(paidRaw) && creditLike
+      ? (paidRaw || 0)
+      : (Number.isFinite(paidRaw) && paidRaw > 0 ? paidRaw : Math.max(0, grandTotal - remaining));
+    const isPartial = remaining > 0.009 || head.isPartial || head.settlement === "credit" || head.settlement === "partial";
+    const settlement = head.settlement
+      || (isPartial ? ((paidAmount === 0 ? "credit" : "partial")) : "full");
+    const firstSale = salesList.find((s) => s.paymentMethod) || head;
     return {
-      invoice:         invoiceTitle,
-      date:            toDateStr(today),
-      customer:        customerName,
+      invoice: invoiceTitle,
+      date: head.date || toDateStr(today),
+      customer: customerName,
       items,
       grandTotal,
-      paymentMethod:   firstSale.paymentMethod || "cash",
-      bankName:        firstSale.bankName || "",
+      paymentMethod: firstSale.paymentMethod || "cash",
+      bankName: firstSale.accountName || firstSale.bankName || "",
       settlement,
       isPartial,
-      paidAmount:      totalPaid,
-      remainingAmount: totalRemaining,
-      loaderName,
+      paidAmount,
+      remainingAmount: remaining,
+      loaderName: salesList.find((s) => s.loaderName)?.loaderName || "",
       loaderFee,
       bindingFee,
+      discount,
+      cashReceived: single ? (Number(head.cashReceived) || 0) : 0,
+      changeDue: single ? (Number(head.changeDue) || 0) : 0,
     };
   };
 
@@ -1473,7 +1557,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   const ProfitDetailModal = () => {
     const isLossOverall = overallProfit < 0;
     const overallColor  = isLossOverall ? "#ef4444" : "#10b981";
-    const profitRows    = invoiceProfitRows.filter(r => r.hasCost && r.profit > 0);
+    const profitRows    = invoiceProfitRows.filter(r => r.hasCost && r.profit >= 0);
     const lossRows      = invoiceProfitRows.filter(r => r.hasCost && r.profit < 0);
     const noCostRows    = invoiceProfitRows.filter(r => !r.hasCost);
     const totalProfit   = profitRows.reduce((s,r) => s + r.profit, 0);
@@ -1485,6 +1569,9 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
       const profitColor = isLoss ? "#ef4444" : "#10b981";
       const rowBg       = isLoss ? "rgba(239,68,68,0.07)" : isProfit ? "rgba(16,185,129,0.04)" : "transparent";
       const borderLeft  = isLoss ? "3px solid #ef4444" : isProfit ? "3px solid #10b981" : "3px solid transparent";
+      const disc = Number(row.discount) || 0;
+      const openItems = (row.items || []).filter((it) => !it.fullyReturned && (Number(it.subtotal) || 0) > 0.009);
+      const openGross = openItems.reduce((a, it) => a + (Number(it.subtotal) || 0), 0);
 
       return (
         <div style={{ borderBottom:`1px solid ${th.border}`, background:rowBg, borderLeft, paddingLeft:12 }}>
@@ -1507,22 +1594,25 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
               )}
             </div>
           </div>
-          {/* Items */}
+          {/* Items — sale amounts after prorated invoice discount */}
           <div style={{ paddingBottom:8, paddingRight:14 }}>
-            {row.items.length > 0 ? row.items.map((item, j) => {
+            {openItems.length > 0 ? openItems.map((item, j) => {
               const isPipe = item.category === "Pipe";
-              const sub = Number(item.subtotal) || 0;
+              const grossSub = Number(item.subtotal) || 0;
+              const share = openGross > 0.009 ? grossSub / openGross : 0;
+              const discShare = disc > 0.009 ? disc * share : 0;
+              const sub = Math.max(0, Math.round((grossSub - discShare) * 100) / 100);
               const cost = Number(item.costTotal) || 0;
               const itemProfit = isPipe
                 ? (cost > 0 ? Math.abs(sub - cost) : null)
                 : (cost > 0 ? (sub - cost) : null);
               return (
-                <div key={j} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12, marginBottom:3, gap:8, opacity: item.fullyReturned ? 0.72 : 1 }}>
+                <div key={j} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12, marginBottom:3, gap:8, opacity: item.returned ? 0.85 : 1 }}>
                   <span style={{ color:th.text, fontWeight:600, flex:1, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
                     {item.productName || "—"}
                     {item.returned && (
                       <span style={{ fontSize:10, padding:"1px 7px", borderRadius:20, background:"rgba(239,68,68,0.16)", color:"#ef4444", fontWeight:800, letterSpacing:"0.04em" }}>
-                        {isUrdu ? "واپسی" : "RETURN"}
+                        {isUrdu ? "جزوی واپسی" : "PARTIAL RETURN"}
                       </span>
                     )}
                   </span>
@@ -1534,7 +1624,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
                       {isUrdu ? "لاگت:" : "Cost:"} <span style={{ color:"#f87171", fontWeight:600 }}>{formatPKR(cost)}</span>
                     </span>
                   )}
-                  {itemProfit !== null && !item.fullyReturned && (
+                  {itemProfit !== null && (
                     <span style={{ fontWeight:700, fontSize:12, color: isPipe ? "#10b981" : (itemProfit < 0 ? "#ef4444" : "#10b981"), minWidth:70, textAlign:"right" }}>
                       {isPipe ? "+" + formatPKR(itemProfit) : (itemProfit >= 0 ? "+" : "") + formatPKR(itemProfit)}
                     </span>
@@ -1544,9 +1634,14 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
             }) : (
               <span style={{ fontSize:11, color:th.textDim }}>{isUrdu ? "تفصیل نہیں" : "no detail"}</span>
             )}
-            {/* Sale vs Cost totals */}
+            {/* Sale vs Cost totals (sale already after discount) */}
             {row.hasCost && (
-              <div style={{ display:"flex", gap:12, marginTop:5, paddingTop:5, borderTop:`1px dashed ${th.border}`, justifyContent:"flex-end" }}>
+              <div style={{ display:"flex", gap:12, marginTop:5, paddingTop:5, borderTop:`1px dashed ${th.border}`, justifyContent:"flex-end", flexWrap:"wrap" }}>
+                {disc > 0.009 && (
+                  <span style={{ fontSize:11, color:th.textDim }}>
+                    {isUrdu ? "رعایت:" : "Discount:"} <span style={{ color:"#f87171", fontWeight:700 }}>-{formatPKR(disc)}</span>
+                  </span>
+                )}
                 <span style={{ fontSize:11, color:th.textDim }}>
                   {isUrdu ? "فروخت:" : "Sale:"} <span style={{ color:"#60a5fa", fontWeight:700 }}>{formatPKR(row.saleAmt)}</span>
                 </span>
@@ -1648,8 +1743,8 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
       <KpiCard
         label={label}
         amount={valueStr}
-        sub={`${filteredSales.length} ${isUrdu ? "فروخت" : "sales"}`}
-        onClick={() => filteredSales.length > 0 && setShowProfitModal(true)}
+        sub={`${invoiceProfitRows.length} ${isUrdu ? "فروخت" : "sales"}`}
+        onClick={() => invoiceProfitRows.length > 0 && setShowProfitModal(true)}
         color={color === th.text ? "#64748b" : color}
       />
     );
@@ -1713,8 +1808,8 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
             const isSale = dashDetail.kind === "sale";
             const lines = isSale ? saleItemLines(g) : purchaseItemLines(g);
             const total = isSale
-              ? (g.items.length === 1 ? (Number(h.grandTotal) || Number(h.total) || 0) : lines.reduce((s, l) => s + l.amount, 0))
-              : lines.reduce((s, l) => s + l.amount, 0);
+              ? saleInvoiceNet(g.items, saleReturns)
+              : purchaseInvoiceNet(g.items, purchaseReturns);
             const party = isSale ? (h.customer || "—") : (h.supplier || h.supplierName || "—");
             return (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1861,9 +1956,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
             ? <p style={{ textAlign:"center", padding:"28px 16px", color:th.textDim, fontSize:13, margin:0 }}>{t.noSalesYet}</p>
             : saleGroups.slice(0, 5).map((g, i) => {
               const names = saleItemLines(g).map((l) => l.name).filter(Boolean);
-              const total = g.items.length === 1
-                ? (Number(g.head.grandTotal) || Number(g.head.total) || 0)
-                : names.length ? saleItemLines(g).reduce((s, l) => s + l.amount, 0) : g.items.reduce((s, r) => s + (Number(r.total) || 0), 0);
+              const total = saleInvoiceNet(g.items, saleReturns);
               const label = names.length > 1 ? `${names[0]} +${names.length - 1}` : (names[0] || "—");
               const inv = g.head.invoice || g.head.invoiceNum || "—";
               return (
@@ -1903,7 +1996,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
             ? <p style={{ textAlign:"center", padding:"28px 16px", color:th.textDim, fontSize:13, margin:0 }}>{t.noPurchasesYet||"No purchases found"}</p>
             : purchaseGroups.slice(0, 5).map((g, i) => {
               const names = purchaseItemLines(g).map((l) => l.name).filter(Boolean);
-              const total = purchaseItemLines(g).reduce((s, l) => s + l.amount, 0);
+              const total = purchaseInvoiceNet(g.items, purchaseReturns);
               const label = names.length > 1 ? `${names[0]} +${names.length - 1}` : (names[0] || "—");
               const inv = g.head.invoice || g.head.invoiceNum || "—";
               return (

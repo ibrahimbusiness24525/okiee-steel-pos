@@ -137,6 +137,8 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
     })
     .sort((a, b) => saleRecency(b) - saleRecency(a));
   const periodRevenue = recentSales.reduce((s, x) => s + netSaleAmount(x, saleReturns), 0);
+  const periodLoaders = recentSales.reduce((s, x) => s + (Number(x.loaderFee) || 0), 0);
+  const periodRevenueWithLoaders = periodRevenue + periodLoaders;
   const periodBinding = recentSales.reduce((s, p) => s + (Number(p.bindingFee) || 0), 0);
   const filterRevenueLabel = dateFilter === "today" ? (isUrdu ? "آج کی آمدنی" : (t.todayRevenue || "Today Revenue"))
     : dateFilter === "yesterday" ? (isUrdu ? "کل کی آمدنی" : "Yesterday Revenue")
@@ -329,6 +331,13 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
       {/* Stat cards */}
       <div style={{ display:"grid", gridTemplateColumns:isMobile?"1fr 1fr":"repeat(auto-fit,minmax(180px,1fr))", gap:12 }}>
         <StatCard label={filterRevenueLabel} value={formatPKR(periodRevenue)} icon={ICONS.trend_up} color="#1abc9c" sub={`${recentSales.length} ${isUrdu?"فروخت":"sales"}`}/>
+        <StatCard
+          label={isUrdu ? `${filterRevenueLabel} + لوڈر` : `${filterRevenueLabel} + Loaders`}
+          value={formatPKR(periodRevenueWithLoaders)}
+          icon={ICONS.trend_up}
+          color="#8b5cf6"
+          sub={periodLoaders > 0 ? `${isUrdu ? "لوڈر" : "Loaders"} ${formatPKR(periodLoaders)}` : (isUrdu ? "لوڈر نہیں" : "no loaders")}
+        />
         <StatCard label={isUrdu?"دستیاب اشیاء":t.productsInStock||"In Stock"} value={products.filter(p=>p.stock>0).length} icon={ICONS.box} color="#9b59b6"/>
         <StatCard label={isUrdu?"بائنڈنگ مزدوری":"Binding Fee"} value={formatPKR(periodBinding)} icon={ICONS.invoice} color="#fbbf24" sub={`${recentSales.filter(p=>Number(p.bindingFee)>0).length} ${isUrdu?"invoices":"invoices"}`}/>
         <StatCard

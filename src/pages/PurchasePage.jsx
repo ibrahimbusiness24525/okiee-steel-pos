@@ -3,7 +3,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, StatCard, Table, WeightKgGInput, useTypeaheadNav, DateFilterBar, EditHistoryModal } from "../components/shared";
 import { api } from "../utils/api";
-import { savePurchaseReturn, removePurchaseReturn } from "../utils/returnsStore";
+import { savePurchaseReturn, removePurchaseReturn, netPurchaseLine, purchaseInvoiceNet, purchasesNetTotal } from "../utils/returnsStore";
 import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, inDateFilter, formatDateTime, printThermalOrA4 } from "../utils/helpers";
 import { convertQuantity, convertPrice, getUnitLabel, canConvert, unitOptions, productUnitOf } from "../utils/unitConversion";
 import { safeProductName, productDisplayName } from "../utils/constants";
@@ -507,6 +507,9 @@ function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchas
         discountPct: discountMode === "pct" ? (Number(discount) || 0) : 0,
         cashReceived: tendered,
         changeDue,
+        grandTotal: itemsTotal > 0
+          ? Math.max(0, Math.round((total - discountAmt * (total / itemsTotal)) * 100) / 100)
+          : Math.max(0, total - discountAmt),
       });
       if (!res || !res.success) { allOk = false; break; }
       invoiceProducts.push({ productName: product?.name || "", category, rows: block.rows, total, qty, productPrice: purchasePricePerUnit });
@@ -549,8 +552,10 @@ function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchas
       setInvoiceData({
         invoice: invoiceNum, date, supplier, products: invoiceProducts,
         paymentMethod: pay.paymentMethod, bankName: pay.bankName, accountName: pay.accountName,
+        settlement: pay.settlement,
         isPartial: pay.isPartial, paidAmount: pay.paidAmount, remainingAmount: pay.remainingAmount,
         discount: discountAmt, cashReceived: tendered, changeDue,
+        grandTotal,
       });
       setShowInvoice(true);
     }
@@ -775,6 +780,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
       discountPct: Number(payload.discountPct) || 0,
       cashReceived: Number(payload.cashReceived) || 0,
       changeDue: Number(payload.changeDue) || 0,
+      grandTotal: Number(payload.grandTotal) || Math.max(0, (Number(payload.total) || 0) - (Number(payload.discount) || 0)),
       unit: payload.unit || rows?.[0]?.unit || matchedProd?.unit || "",
     };
     const res = payload.purchaseId
@@ -816,8 +822,10 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
       date: head.date || todayStr(),
       paidAmount: paid,
       accountId: head.accountId || "",
-      discountMode: head.discountType || "pkr",
-      discount: head.discountPct || head.discount || "",
+      discountMode: head.discountType === "pct" ? "pct" : "pkr",
+      discount: head.discountType === "pct"
+        ? String(head.discountPct ?? "")
+        : String(head.discount || ""),
       cashPaid: head.cashReceived || "",
       payForm: {
         settlement,
@@ -900,16 +908,15 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
         head,
         names,
         cats,
-        total: items.reduce((s, p) => s + (Number(p.total) || 0), 0),
+        total: purchaseInvoiceNet(items, purchaseReturns),
         due: Number(head.remainingAmount) || 0,
         paid: Number(head.paidAmount) || 0,
       };
     });
   })();
   const filteredReturns = (purchaseReturns || []).filter((r) => inDateFilter(r.date, dateFilter, customFrom, customTo, r.createdAt));
-  const periodPurchaseAmt = filteredPurchases.reduce((s, p) => s + (Number(p.total) || 0), 0);
   const periodReturnAmt = filteredReturns.reduce((s, r) => s + (Number(r.total) || 0), 0);
-  const periodNet = periodPurchaseAmt - periodReturnAmt;
+  const periodNet = purchaseGroups.reduce((s, g) => s + (Number(g.total) || 0), 0);
 
   const filterLabel = dateFilter === "today" ? (isUrdu ? "آج" : "Today")
     : dateFilter === "yesterday" ? (isUrdu ? "کل" : "Yesterday")
@@ -919,18 +926,21 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
     : (isUrdu ? "تاریخ" : "Date");
 
   const toInvoiceProducts = (list) => list.map((p) => {
-    const productId      = typeof p.product === "object" ? p.product?._id : p.product;
+    const net = netPurchaseLine(p, purchaseReturns);
+    if (net.fullyReturned) return null;
+    const productId      = typeof net.product === "object" ? net.product?._id : net.product;
     const matchedProduct = products.find((pr) => pr._id === productId);
-    const resolvedPrice  = Number(p.productPrice) || Number(matchedProduct?.price) || (typeof p.product === "object" ? Number(p.product?.price) : 0) || 0;
+    const resolvedPrice  = Number(net.productPrice) || Number(matchedProduct?.price) || (typeof net.product === "object" ? Number(net.product?.price) : 0) || 0;
     return {
-      productName:  p.productName || safeProductName(p.product),
-      category:     p.category || "",
-      rows:         p.rows || [],
-      total:        p.total || 0,
-      qty:          p.qty || 0,
+      productName:  net.productName || safeProductName(net.product),
+      category:     net.category || "",
+      rows:         net.rows || [],
+      total:        net.total || 0,
+      qty:          net.qty || 0,
       productPrice: resolvedPrice,
+      fullyReturned: !!net.fullyReturned,
     };
-  });
+  }).filter(Boolean);
 
   const supplierGroups = {};
   filteredPurchases.forEach((p) => {
@@ -940,9 +950,43 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
   });
   const supplierNames = Object.keys(supplierGroups);
 
+  const buildPurchaseSlip = (list, meta = {}) => {
+    const nets = (list || []).map((p) => netPurchaseLine(p, purchaseReturns)).filter((p) => !p.fullyReturned);
+    const head = list[0] || {};
+    const gross = nets.reduce((s, p) => s + (Number(p.total) || 0), 0);
+    // Discount is stored per purchase line (same invoice discount on each save) — take once from head, then scale if returns.
+    const origGross = (list || []).reduce((s, p) => s + (Number(p.total) || 0), 0);
+    const headDisc = Number(head.discount) || 0;
+    const scale = origGross > 0.009 ? Math.min(1, gross / origGross) : 1;
+    const discount = Math.round(headDisc * scale * 100) / 100;
+    const grandTotal = Math.max(0, Math.round((gross - discount) * 100) / 100);
+    return {
+      invoice: meta.invoice || head.invoice || head.invoiceNum || "PO",
+      date: meta.date || head.date || todayStr(),
+      supplier: meta.supplier || head.supplier || "—",
+      products: toInvoiceProducts(list),
+      createdAt: head.createdAt,
+      paymentMethod: head.paymentMethod,
+      bankName: head.bankName,
+      accountName: head.accountName,
+      settlement: head.settlement,
+      isPartial: head.isPartial,
+      paidAmount: Number(head.paidAmount) || 0,
+      remainingAmount: Number(head.remainingAmount) || 0,
+      discount,
+      cashReceived: Number(head.cashReceived) || 0,
+      changeDue: Number(head.changeDue) || 0,
+      grandTotal,
+    };
+  };
+
   const handleSupplierInvoice = (supplierName) => {
     const supplierPurchases = supplierGroups[supplierName] || [];
-    setPrintData({ invoice: isUrdu ? "کل خریداری" : "ALL PURCHASES", date: todayStr(), supplier: supplierName, products: toInvoiceProducts(supplierPurchases) });
+    setPrintData(buildPurchaseSlip(supplierPurchases, {
+      invoice: isUrdu ? "کل خریداری" : "ALL PURCHASES",
+      date: todayStr(),
+      supplier: supplierName,
+    }));
     setShowSupplierList(false);
   };
 
@@ -950,22 +994,20 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
     const list = g.items || [g];
     const p = g.head || g;
     const inv = p.invoice || p.invoiceNum || "";
-    setPrintData({
-      invoice: inv || "PO", date: p.date || todayStr(), supplier: p.supplier || "—",
-      products: toInvoiceProducts(list), createdAt: p.createdAt,
-      paymentMethod: p.paymentMethod, bankName: p.bankName, accountName: p.accountName,
-      isPartial: p.isPartial, paidAmount: p.paidAmount, remainingAmount: p.remainingAmount,
-    });
+    setPrintData(buildPurchaseSlip(list, {
+      invoice: inv || "PO",
+      date: p.date || todayStr(),
+      supplier: p.supplier || "—",
+    }));
   };
 
   const printFiltered = () => {
     if (!filteredPurchases.length) return;
-    setPrintData({
+    setPrintData(buildPurchaseSlip(filteredPurchases, {
       invoice: isUrdu ? `خریداری · ${filterLabel}` : `Purchases — ${filterLabel}`,
       date: todayStr(),
       supplier: isUrdu ? "تمام سپلائرز" : "All suppliers",
-      products: toInvoiceProducts(filteredPurchases),
-    });
+    }));
   };
 
   const catBadge = (cat) => (
@@ -1177,6 +1219,11 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
               <div style={{ textAlign: "right" }}>
                 <div style={{ color: th.textMuted, fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>{isUrdu ? "کل رقم" : "Invoice total"}</div>
                 <div style={{ color: "#60a5fa", fontWeight: 900, fontSize: 16 }}>{formatPKR(viewGroup.total)}</div>
+                {Number(viewGroup.head.discount) > 0.009 && (
+                  <div style={{ color: "#f87171", fontSize: 11, fontWeight: 700, marginTop: 2 }}>
+                    {isUrdu ? "رعایت" : "Discount"} −{formatPKR(Number(viewGroup.head.discount) || 0)}
+                  </div>
+                )}
               </div>
             </div>
             {(viewGroup.due > 0 || viewGroup.paid > 0) && (
@@ -1278,7 +1325,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
             </p>
             {supplierNames.map(name => {
               const items    = supplierGroups[name];
-              const supTotal = items.reduce((s, p) => s + (p.total || 0), 0);
+              const supTotal = purchasesNetTotal(items, purchaseReturns);
               return (
                 <div
                   key={name}

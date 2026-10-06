@@ -114,6 +114,122 @@ export function netSaleAmount(sale, returns) {
   return Math.max(0, +(gross - saleReturnedAmount(sale, returns)).toFixed(2));
 }
 
+export function returnsForPurchase(purchase, returns) {
+  if (!purchase) return [];
+  const pid0 = pid(purchase._id || purchase.id);
+  const inv = String(purchase.invoice || purchase.invoiceNum || "").trim();
+  return (returns || []).filter((r) => {
+    const items = r.items || [];
+    if (pid0 && items.some((it) => pid(it.purchase || it.purchaseId) === pid0)) return true;
+    if (inv) {
+      const rinv = String(r.invoice || r.invoiceNum || "").trim();
+      if (rinv && rinv === inv) return true;
+    }
+    return false;
+  });
+}
+
+export function purchaseReturnedAmount(purchase, returns) {
+  const pid0 = pid(purchase?._id || purchase?.id);
+  let sum = 0;
+  returnsForPurchase(purchase, returns).forEach((r) => {
+    const items = r.items || [];
+    if (!items.length) {
+      sum += Number(r.total) || 0;
+      return;
+    }
+    items.forEach((it) => {
+      const ip = pid(it.purchase || it.purchaseId);
+      if (pid0 && ip && ip !== pid0) return;
+      sum += Number(it.amount) || ((Number(it.qty) || 0) * (Number(it.rate) || 0));
+    });
+  });
+  return Math.round(sum * 100) / 100;
+}
+
+export function netPurchaseAmount(purchase, returns) {
+  const gross = Number(purchase?.total) || 0;
+  const disc = Number(purchase?.discount) || 0;
+  const netBill = Math.max(0, gross - disc);
+  return Math.max(0, +(netBill - purchaseReturnedAmount(purchase, returns)).toFixed(2));
+}
+
+/** Invoice-level purchase net: remaining item gross − discount (once per bill, scaled after returns). */
+export function purchaseInvoiceNet(items, returns) {
+  const list = (items || []).filter(Boolean);
+  if (!list.length) return 0;
+  const origGross = list.reduce((s, p) => s + (Number(p.total) || 0), 0);
+  const remainGross = list.reduce((s, p) => s + (Number(netPurchaseLine(p, returns).total) || 0), 0);
+  const disc = Number(list[0]?.discount) || 0;
+  const scale = origGross > 0.009 ? remainGross / origGross : 1;
+  return Math.max(0, Math.round((remainGross - disc * scale) * 100) / 100);
+}
+
+export function saleInvoiceNet(saleOrItems, returns) {
+  const list = Array.isArray(saleOrItems) ? saleOrItems : [saleOrItems];
+  return list.reduce((s, sale) => s + netSaleAmount(sale, returns), 0);
+}
+
+export function purchasesNetTotal(list, returns) {
+  const map = new Map();
+  (list || []).forEach((p) => {
+    const key = `${p.invoice || p.invoiceNum || p._id}|${p.date || ""}`;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(p);
+  });
+  return [...map.values()].reduce((s, items) => s + purchaseInvoiceNet(items, returns), 0);
+}
+
+/** Remaining purchase qty/amount after returns (for slips / list totals). */
+export function netPurchaseLine(purchase, returns) {
+  const qty = Number(purchase?.qty) || 0;
+  const total = Number(purchase?.total) || 0;
+  const leftover = [];
+  returnsForPurchase(purchase, returns).forEach((r) => {
+    (r.items || []).forEach((it) => {
+      const ip = pid(it.purchase || it.purchaseId);
+      const pid0 = pid(purchase?._id || purchase?.id);
+      if (ip && pid0 && ip !== pid0) return;
+      leftover.push({
+        qty: Number(it.qty) || 0,
+        amount: Number(it.amount) || ((Number(it.qty) || 0) * (Number(it.rate) || 0)),
+      });
+    });
+  });
+  let takeQty = 0;
+  let takeAmt = 0;
+  leftover.forEach((r) => {
+    takeQty += r.qty;
+    takeAmt += r.amount;
+  });
+  const remainQty = Math.max(0, qty - takeQty);
+  const remainAmt = Math.max(0, +(total - takeAmt).toFixed(2));
+  const keep = qty > 0.009 ? remainQty / qty : (total > 0.009 ? remainAmt / total : 1);
+  const rows = (purchase?.rows || []).map((row) => {
+    const next = { ...row };
+    if (row.qty != null) next.qty = +(Number(row.qty || 0) * keep).toFixed(4);
+    if (row.quantity != null) next.quantity = +(Number(row.quantity || 0) * keep).toFixed(4);
+    if (row.weight != null) next.weight = +(Number(row.weight || 0) * keep).toFixed(4);
+    if (row.feet != null) next.feet = +(Number(row.feet || 0) * keep).toFixed(4);
+    if (row.amount != null) next.amount = +(Number(row.amount || 0) * keep).toFixed(2);
+    if (row.desc != null && row.amount != null) {
+      next.amount = +(Number(row.amount || 0) * keep).toFixed(2);
+    }
+    return next;
+  });
+  const disc = Number(purchase?.discount) || 0;
+  const discKeep = total > 0.009 ? remainAmt / total : keep;
+  return {
+    ...purchase,
+    qty: remainQty,
+    total: remainAmt,
+    rows,
+    discount: Math.round(disc * discKeep * 100) / 100,
+    returned: takeQty > 0.009 || takeAmt > 0.009,
+    fullyReturned: remainAmt <= 0.009 && remainQty <= 0.009,
+  };
+}
+
 /** Per-item remaining qty/amount after sale returns, for invoices and profit. */
 export function netSaleItems(sale, returns) {
   const leftover = [];
@@ -153,16 +269,27 @@ export function netSaleItems(sale, returns) {
       const remainAmt = Math.max(0, +(sub - takeAmt).toFixed(2));
       const remainQty = Math.max(0, qty - takeQty);
       const keep = sub > 0 ? remainAmt / sub : (takeAmt > 0 ? 0 : 1);
+      // COGS follows qty returned, not return amount alone (avoids 500→400 when qty still 5).
+      const keepCost = qty > 0.009 ? remainQty / qty : keep;
       const rows = (item.rows || []).map((row) => ({
         ...row,
         amount: +(Number(row.amount || 0) * keep).toFixed(2),
       }));
+      const baseCost = Number(item.costTotal) || 0;
+      const unitCost = Number(item.costPrice) || 0;
+      let costTotal = baseCost > 0
+        ? +(baseCost * keepCost).toFixed(2)
+        : (unitCost > 0 && remainQty > 0 ? +(unitCost * remainQty).toFixed(2) : 0);
+      if (unitCost > 0 && remainQty > 0) {
+        const byUnit = +(unitCost * remainQty).toFixed(2);
+        if (byUnit > costTotal + 0.02) costTotal = byUnit;
+      }
       return {
         ...item,
         rows,
         qty: remainQty,
         subtotal: remainAmt,
-        costTotal: +(Number(item.costTotal || 0) * keep).toFixed(2),
+        costTotal,
         origSubtotal: sub,
         returnAmt: takeAmt,
         returned: takeAmt > 0.009 || takeQty > 0.009,
@@ -175,13 +302,22 @@ export function netSaleItems(sale, returns) {
   const qty = Number(sale?.qty) || 0;
   const { takeQty, takeAmt } = take(name, qty, sub);
   const remainAmt = Math.max(0, +(sub - takeAmt).toFixed(2));
+  const remainQty = Math.max(0, qty - takeQty);
   const keep = sub > 0 ? remainAmt / sub : 1;
+  const keepCost = qty > 0.009 ? remainQty / qty : keep;
+  const baseCost = Number(sale?.costTotal) || 0;
+  const unitCost = Number(sale?.costPrice) || Number(sale?.costRate) || 0;
+  let costTotal = baseCost > 0 ? +(baseCost * keepCost).toFixed(2) : 0;
+  if (unitCost > 0 && remainQty > 0) {
+    const byUnit = +(unitCost * remainQty).toFixed(2);
+    if (byUnit > costTotal + 0.02) costTotal = byUnit;
+  }
   return [{
     productName: name,
     category: sale?.category || "",
-    qty: Math.max(0, qty - takeQty),
+    qty: remainQty,
     subtotal: remainAmt,
-    costTotal: +(Number(sale?.costTotal || 0) * keep).toFixed(2),
+    costTotal,
     origSubtotal: sub,
     returnAmt: takeAmt,
     returned: takeAmt > 0.009,

@@ -211,13 +211,20 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
     invoice, date,
     supplier: supplierRaw, customer,
     products: productsRaw, items,
-    paymentMethod, bankName, accountName,
+    paymentMethod, bankName, accountName, settlement,
     isPartial, paidAmount, remainingAmount, createdAt,
+    discount = 0, cashReceived = 0, changeDue = 0,
+    grandTotal: storedGrandTotal,
   } = invoiceData;
   const supplier = supplierRaw || customer || "";
   const products = productsRaw || items || [];
   const sp         = loadShopProfile();
   const ownerLines = (sp.owners || []).filter(o => o.name || o.nameUr);
+  const discountAmt = Number(discount) || 0;
+  const cashIn = Number(cashReceived) || 0;
+  const changeAmt = Number(changeDue) || 0;
+  const paid = Number(paidAmount) || 0;
+  const remaining = Number(remainingAmount) || 0;
 
   const L = isUrdu ? {
     shopName:     sp.shopNameUr || sp.shopName,
@@ -296,21 +303,33 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
 
   const lineItems = [];
   (products || []).forEach(prod => {
+    if (prod.fullyReturned) return;
     const rows = (prod.rows && prod.rows.length)
       ? prod.rows
       : [{
           qty: Number(prod.qty) || 0,
           purchasePrice: Number(prod.productPrice) || 0,
-          amount: Number(prod.total) || 0,
+          amount: Number(prod.total) || Number(prod.subtotal) || 0,
           desc: `${Number(prod.qty) || 0}pc × Rs${Number(prod.productPrice) || 0}/pc`,
         }];
     rows.forEach(row => {
       const li = parseRow(row, prod.category, prod.productName, prod.productPrice || 0);
+      if ((Number(li.amount) || 0) <= 0.009) return;
       lineItems.push({ ...li, pack: packLabel(prod.category, li.qty) });
     });
   });
 
-  const grandTotal  = lineItems.reduce((s, li) => s + li.amount, 0);
+  const itemsGross = lineItems.reduce((s, li) => s + (Number(li.amount) || 0), 0);
+  const storedNet = Number(storedGrandTotal);
+  const netFromItems = Math.max(0, Math.round((itemsGross - discountAmt) * 100) / 100);
+  const billAmount = Number.isFinite(storedNet) && storedNet > 0
+    ? storedNet
+    : netFromItems;
+  const creditLike = paymentMethod === "credit"
+    || settlement === "credit"
+    || settlement === "partial"
+    || !!isPartial
+    || remaining > 0.009;
   const cashSaleNo = String(invoice || "").replace(/\D/g, "") || "";
   const handlePrint = buildPrintHandler("thermal");
   const handlePrintA4 = buildPrintHandler("a4");
@@ -344,13 +363,14 @@ function CombinedThermalInvoice({ invoiceData, onClose, isUrdu }) {
             <ThermalSlipTotals
               isUrdu={isUrdu}
               itemCount={lineItems.length}
-              gross={grandTotal}
-              billAmount={grandTotal}
-              cashReceived={paymentMethod === "credit" ? 0 : (Number(paidAmount) || grandTotal)}
-              changeDue={0}
-              paidAmount={paidAmount}
-              remainingAmount={remainingAmount}
-              isPartial={!!isPartial || Number(remainingAmount) > 0}
+              gross={itemsGross}
+              billAmount={billAmount}
+              discount={discountAmt}
+              cashReceived={cashIn > 0 ? cashIn : (creditLike ? 0 : billAmount)}
+              changeDue={changeAmt}
+              paidAmount={paid}
+              remainingAmount={remaining}
+              isPartial={creditLike}
               extras={extras}
             />
             <ThermalSlipFooter isUrdu={isUrdu} role="admin" />
