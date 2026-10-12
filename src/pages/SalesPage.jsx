@@ -382,10 +382,11 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
       {/* Sales table — wrapped for horizontal scroll to prevent page stretch */}
       <div style={{ width:"100%", overflowX:"auto" }}>
         <Table
-          cols={[t.invoiceNum, t.date, t.customer, t.products, t.totalLabel, "💳", "💰", isUrdu?"بائنڈنگ":"Binding", isUrdu?"کس نے فروخت کی":"Sold By", "🖨️"]}
+          cols={[t.invoiceNum, t.date, t.customer, t.products, t.totalLabel, isUrdu ? "کل + لوڈر" : "Total + Loader", "💳", "💰", isUrdu?"بائنڈنگ":"Binding", isUrdu?"کس نے فروخت کی":"Sold By", "🖨️"]}
           rows={recentSales.map(s=>{
             const net = netSaleAmount(s, saleReturns);
             const retAmt = saleReturnedAmount(s, saleReturns);
+            const withLoader = net + (Number(s.loaderFee) || 0);
             return {
             data:s,
             cells:[
@@ -409,6 +410,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
                   </div>
                 )}
               </div>,
+              <span style={{fontWeight:800,color:"#7c3aed",whiteSpace:"nowrap"}}>{formatPKR(withLoader)}</span>,
               <span style={{ fontSize:12, padding:"2px 8px", borderRadius:20, fontWeight:600, whiteSpace:"nowrap", ...getPaymentBadgeStyle(s.paymentMethod) }}>
                 {s.paymentMethod==="credit"?(isUrdu?"ادھار":"Credit"):s.paymentMethod==="bank"?`🏦 ${s.accountName||s.bankName||"Bank"}`:s.paymentMethod==="jazzcash"?"🎵 JazzCash":s.paymentMethod==="easypaisa"?"📱 Easypaisa":s.paymentMethod==="wallet"?`📱 ${s.accountName||s.bankName||"Wallet"}`:(s.accountName?`💵 ${s.accountName}`:"💵 Cash")}
               </span>,

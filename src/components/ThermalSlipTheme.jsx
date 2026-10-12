@@ -6,7 +6,7 @@ export const THERMAL_MM = 80;
 export const thermalPrintStyles = `
 @page { size: ${THERMAL_MM}mm auto; margin: 0 !important; }
 @media print {
-  html, body { margin:0 !important; padding:0 !important; background:#fff !important; width: ${THERMAL_MM}mm !important; height:auto !important; }
+  html, body { margin:0 !important; padding:0 !important; background:#fff !important; width: ${THERMAL_MM}mm !important; height:auto !important; min-height:0 !important; overflow:hidden !important; }
   body * { visibility:hidden !important; }
   #print-portal-overlay, #print-portal-overlay *,
   #thermal-invoice-print, #thermal-invoice-print *,
@@ -15,7 +15,7 @@ export const thermalPrintStyles = `
     width: ${THERMAL_MM}mm !important;
     max-width: ${THERMAL_MM}mm !important;
     box-sizing: border-box !important;
-    padding: 0 1.5mm !important;
+    padding: 0 1.5mm 0.4mm !important;
     margin: 0 !important;
     height: auto !important;
     min-height: 0 !important;
@@ -25,6 +25,7 @@ export const thermalPrintStyles = `
 
 export const slipPage = {
   width: `${THERMAL_MM}mm`,
+  minWidth: `${THERMAL_MM}mm`,
   maxWidth: `${THERMAL_MM}mm`,
   margin: "0 auto",
   fontFamily: "Arial, Helvetica, sans-serif",
@@ -379,7 +380,7 @@ export function saleTypeLabel({ invoice, paymentMethod, settlement, remainingAmo
 /** Brand block (class inv-brand — print pagination reuses this) */
 export function OkiieeBrandFooter() {
   return (
-    <div className="inv-brand" style={{ textAlign: "center", marginTop: 2, marginBottom: 0, paddingBottom: 0 }}>
+    <div className="inv-brand" style={{ textAlign: "center", marginTop: 2, marginBottom: 0, paddingBottom: 0, lineHeight: 1.2 }}>
       <div style={slipLine} />
       <div className="inv-brand-title" style={{ fontSize: "10px", fontWeight: 800, marginTop: 1, marginBottom: 0 }}>
         Powered By okiiee Software Company

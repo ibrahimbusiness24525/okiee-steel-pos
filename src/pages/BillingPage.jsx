@@ -1880,10 +1880,11 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
 
       {/* Sales table */}
       <Table
-        cols={[t.invoiceNum, t.date, t.customer, t.products, t.totalLabel, "💳", "💰", "🖨️"]}
+        cols={[t.invoiceNum, t.date, t.customer, t.products, t.totalLabel, isUrdu ? "کل + لوڈر" : "Total + Loader", "💳", "💰", "🖨️"]}
         rows={recentSales.map(s=>{
           const net = netSaleAmount(s, saleReturns);
           const retAmt = saleReturnedAmount(s, saleReturns);
+          const withLoader = net + (Number(s.loaderFee) || 0);
           return {
           data:s,
           cells:[
@@ -1900,6 +1901,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
                 </div>
               )}
             </div>,
+            <span style={{fontWeight:800,color:"#7c3aed",whiteSpace:"nowrap"}}>{formatPKR(withLoader)}</span>,
             <span style={{ fontSize:12, padding:"2px 8px", borderRadius:20, fontWeight:600, ...getPaymentBadgeStyle(s.paymentMethod) }}>
               {s.paymentMethod==="credit"?(isUrdu?"ادھار":"Credit"):s.paymentMethod==="bank"?`🏦 ${s.accountName||s.bankName||"Bank"}`:s.paymentMethod==="jazzcash"?"🎵 JazzCash":s.paymentMethod==="easypaisa"?"📱 Easypaisa":s.paymentMethod==="wallet"?`📱 ${s.accountName||s.bankName||"Wallet"}`:(s.accountName?`💵 ${s.accountName}`:"💵 Cash")}
             </span>,

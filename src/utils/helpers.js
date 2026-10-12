@@ -81,8 +81,8 @@ const nodeH = (n) => {
 };
 
 export const pxToPageHeightMM = (el) => {
-  const heightPx = (el && (el.scrollHeight || el.offsetHeight)) || 300;
-  return Math.ceil(heightPx / PX_PER_MM) + 10;
+  const heightPx = (el && (el.scrollHeight || el.offsetHeight)) || 1;
+  return Math.max(18, Math.ceil((heightPx / PX_PER_MM) * 10) / 10 + 0.6);
 };
 
 function findItemsTable(root) {
@@ -241,12 +241,57 @@ function markLastPrintSheet(root) {
   root.appendChild(wrap);
 }
 
+/** Isolated iframe CSS: page is exactly the slip height; no extra paper. */
+function thermalRollCss(pageHeightMM) {
+  const h = Number(pageHeightMM) || 0;
+  const page = h > 0
+    ? `@page { size: 80mm ${h}mm; margin: 0 !important; }`
+    : `@page { size: 80mm auto; margin: 0 !important; }`;
+  return `
+    ${page}
+    html, body {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 80mm !important;
+      max-width: 80mm !important;
+      height: auto !important;
+      min-height: 0 !important;
+      background: #fff !important;
+      color: #000 !important;
+      overflow: hidden !important;
+    }
+    #thermal-invoice-print {
+      display: block !important;
+      width: 80mm !important;
+      min-width: 80mm !important;
+      max-width: 80mm !important;
+      margin: 0 !important;
+      padding: 0 1.2mm 0.3mm !important;
+      height: auto !important;
+      min-height: 0 !important;
+      background: #fff !important;
+      box-sizing: border-box !important;
+    }
+    #thermal-invoice-print, #thermal-invoice-print * {
+      page-break-after: auto !important;
+      break-after: auto !important;
+      page-break-before: auto !important;
+      break-before: auto !important;
+      page-break-inside: auto !important;
+      break-inside: auto !important;
+    }
+    table { width: 100% !important; max-width: 80mm !important; table-layout: fixed !important; }
+    button { display: none !important; }
+  `;
+}
+
 function printPageCss({ isA4, pageHeightMM }) {
-  const thermalH = Math.max(60, Math.ceil(Number(pageHeightMM) || 200));
+  const thermalH = Math.max(20, Math.ceil((Number(pageHeightMM) || 0) * 10) / 10);
   const page = isA4
     ? `@page { size: A4 portrait; margin: 8mm 10mm; }`
-    // One tall page matching content — never shorter than the slip (that caused mid-gap).
-    : `@page { size: 80mm ${thermalH}mm; margin: 0 !important; }`;
+    : Number(pageHeightMM) > 0
+      ? `@page { size: 80mm ${thermalH}mm; margin: 0 !important; }`
+      : `@page { size: 80mm auto; margin: 0 !important; }`;
   return `
     ${page}
     @media print {
@@ -257,7 +302,8 @@ function printPageCss({ isA4, pageHeightMM }) {
         background: #fff !important;
         color: #000 !important;
         height: auto !important;
-        overflow: visible !important;
+        min-height: 0 !important;
+        overflow: hidden !important;
       }
       body > *:not(#print-portal-overlay) { display: none !important; }
       body * { visibility: hidden !important; }
@@ -451,52 +497,84 @@ export function printThermalOrA4(mode = "thermal", filename) {
   if (!inv) return;
 
   const isA4 = mode === "a4";
-  const portal = document.createElement("div");
-  portal.id = "print-portal-overlay";
-  portal.style.position = "absolute";
-  portal.style.left = "-9999px";
-  portal.style.top = "0";
-  portal.style.width = isA4 ? "210mm" : "80mm";
-
   const clone = inv.cloneNode(true);
   clone.id = "thermal-invoice-print";
   clone.style.width = isA4 ? "190mm" : "80mm";
+  clone.style.minWidth = isA4 ? "" : "80mm";
   clone.style.maxWidth = isA4 ? "190mm" : "80mm";
   clone.style.margin = "0";
-  clone.style.padding = isA4 ? "" : "0 1.5mm";
+  clone.style.padding = isA4 ? "" : "0 1.5mm 0.4mm";
   clone.style.height = "auto";
   clone.style.minHeight = "0";
   clone.style.boxSizing = "border-box";
   clone.style.color = "#000";
   clone.style.background = "#fff";
   if (isA4) clone.style.fontSize = "14px";
-  portal.appendChild(clone);
-  document.body.appendChild(portal);
 
-  const styleEl = document.createElement("style");
-  styleEl.id = "print-portal-style";
-  styleEl.innerHTML = printPageCss({ isA4 });
-  document.head.appendChild(styleEl);
-
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    if (isA4) {
+  if (isA4) {
+    const portal = document.createElement("div");
+    portal.id = "print-portal-overlay";
+    portal.style.position = "absolute";
+    portal.style.left = "-9999px";
+    portal.style.top = "0";
+    portal.style.width = "210mm";
+    portal.appendChild(clone);
+    document.body.appendChild(portal);
+    const styleEl = document.createElement("style");
+    styleEl.id = "print-portal-style";
+    styleEl.innerHTML = printPageCss({ isA4 });
+    document.head.appendChild(styleEl);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
       paginateInvoiceClone(clone, Math.floor(270 * PX_PER_MM));
       markLastPrintSheet(clone);
       styleEl.innerHTML = printPageCss({ isA4, pageHeightMM: 297 });
-    } else {
-      // Exact content height — no extra blank strip at head/footer.
-      const hPx = Math.max(clone.scrollHeight || 0, clone.offsetHeight || 0, 1);
-      const pageHeightMM = Math.max(40, Math.ceil(hPx / PX_PER_MM) + 1);
-      styleEl.innerHTML = printPageCss({ isA4: false, pageHeightMM });
-    }
-    portal.style.position = "relative";
-    portal.style.left = "0";
-    portal.style.top = "0";
-    requestAnimationFrame(() => {
-      window.print();
-      setTimeout(() => { portal.remove(); styleEl.remove(); }, 1500);
-    });
-  }));
+      portal.style.position = "relative";
+      portal.style.left = "0";
+      portal.style.top = "0";
+      requestAnimationFrame(() => {
+        window.print();
+        setTimeout(() => { portal.remove(); styleEl.remove(); }, 1500);
+      });
+    }));
+    return;
+  }
+
+  // Thermal roll: print from a blank iframe so Chrome does not add the website
+  // URL / date / 1-2, and page height matches the slip (short bill = short paper).
+  const iframe = document.createElement("iframe");
+  iframe.id = "print-portal-overlay";
+  iframe.setAttribute("aria-hidden", "true");
+  iframe.style.cssText = "position:fixed;left:0;top:0;width:80mm;min-width:80mm;max-width:80mm;height:20mm;border:0;opacity:0;pointer-events:none;";
+  document.body.appendChild(iframe);
+  const idoc = iframe.contentDocument;
+  idoc.open();
+  idoc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title></title>
+    <style id="print-portal-style">${thermalRollCss(0)}</style>
+  </head><body></body></html>`);
+  idoc.close();
+  idoc.body.style.cssText = "margin:0;padding:0;width:80mm;max-width:80mm;background:#fff;";
+  idoc.body.appendChild(idoc.importNode(clone, true));
+
+  const finish = () => {
+    const slip = idoc.getElementById("thermal-invoice-print") || idoc.body.firstElementChild || idoc.body;
+    const hPx = Math.max(slip.scrollHeight || 0, slip.offsetHeight || 0, slip.getBoundingClientRect().height || 0, 1);
+    const pageHeightMM = Math.max(18, Math.ceil((hPx / PX_PER_MM) * 10) / 10 + 0.5);
+    const st = idoc.getElementById("print-portal-style");
+    if (st) st.textContent = thermalRollCss(pageHeightMM);
+    iframe.style.height = `${pageHeightMM}mm`;
+    const cleanup = () => { try { iframe.remove(); } catch { /* ignore */ } };
+    iframe.contentWindow.onafterprint = cleanup;
+    setTimeout(() => {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+      setTimeout(cleanup, 2500);
+    }, 50);
+  };
+
+  const imgs = [...idoc.images];
+  const go = () => requestAnimationFrame(() => requestAnimationFrame(finish));
+  if (!imgs.length) go();
+  else Promise.all(imgs.map((img) => img.complete ? Promise.resolve() : new Promise((res) => { img.onload = img.onerror = res; }))).then(go);
 }
 
 // ─── Chader/weight helpers (kg + grams) ────────────────────────────────────
