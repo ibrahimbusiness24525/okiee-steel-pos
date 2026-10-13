@@ -143,28 +143,30 @@ export function ThermalSlipHeader({ title, isUrdu }) {
         </div>
       ) : null}
       <div style={{
-        marginTop: 3, background: "#000", color: "#fff",
-        textAlign: "center", padding: "4px 3px",
+        marginTop: 3, background: "#fff", color: "#000",
+        textAlign: "center", padding: "2px 0 3px",
+        borderTop: "2px solid #000", borderBottom: "2px solid #000",
       }}>
         {lines.map((c, i) => (
           <div key={i} style={{
-            lineHeight: 1.2,
+            lineHeight: 1.15,
             marginTop: i > 0 ? 1 : 0,
             display: "flex",
             justifyContent: "center",
             alignItems: "baseline",
             flexWrap: "wrap",
-            gap: "2px 6px",
+            gap: "1px 6px",
+            color: "#000",
           }}>
             {c.name ? (
-              <span style={{ fontSize: "11px", fontWeight: 700 }}>
+              <span style={{ fontSize: "13px", fontWeight: 800, color: "#000" }}>
                 {c.name}:
               </span>
             ) : null}
             {c.phone ? (
               <span style={{
-                fontSize: "14px", fontWeight: 900, letterSpacing: "0.5px",
-                fontVariantNumeric: "tabular-nums",
+                fontSize: "18px", fontWeight: 900, letterSpacing: "0.4px",
+                fontVariantNumeric: "tabular-nums", color: "#000",
               }}>
                 {c.phone}
               </span>

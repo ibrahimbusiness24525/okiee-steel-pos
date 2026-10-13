@@ -262,17 +262,22 @@ function thermalRollCss(pageHeightMM) {
     }
     #thermal-invoice-print {
       display: block !important;
+      position: absolute !important;
+      top: 0 !important;
+      left: 0 !important;
       width: 80mm !important;
       min-width: 80mm !important;
       max-width: 80mm !important;
       margin: 0 !important;
-      padding: 0 1.2mm 0.3mm !important;
+      padding: 0 1.2mm 0 !important;
       height: auto !important;
       min-height: 0 !important;
       background: #fff !important;
       box-sizing: border-box !important;
+      color: #000 !important;
     }
     #thermal-invoice-print, #thermal-invoice-print * {
+      color: #000 !important;
       page-break-after: auto !important;
       break-after: auto !important;
       page-break-before: auto !important;
@@ -558,7 +563,7 @@ export function printThermalOrA4(mode = "thermal", filename) {
   const finish = () => {
     const slip = idoc.getElementById("thermal-invoice-print") || idoc.body.firstElementChild || idoc.body;
     const hPx = Math.max(slip.scrollHeight || 0, slip.offsetHeight || 0, slip.getBoundingClientRect().height || 0, 1);
-    const pageHeightMM = Math.max(18, Math.ceil((hPx / PX_PER_MM) * 10) / 10 + 0.5);
+    const pageHeightMM = Math.max(18, Math.ceil((hPx / PX_PER_MM) * 10) / 10);
     const st = idoc.getElementById("print-portal-style");
     if (st) st.textContent = thermalRollCss(pageHeightMM);
     iframe.style.height = `${pageHeightMM}mm`;
