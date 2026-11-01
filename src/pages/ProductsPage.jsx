@@ -14,7 +14,7 @@ import { hardwareSalePrice } from "../utils/productPrices";
 // ═══════════════════════════════════════════════════════════════════════════
 const EMPTY_FORM = { category:"", name:"", pipeType:"", pipeSubType:"", pipeInch:"", gauge:"", length:"", weight:"", basePrice:"", percentage:"", price:"", purchasePrice:"", subType:"", stock:"", unit:"piece", width:"" };
 
-function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = [], saleReturns = [], loadProducts, loadPurchases }) {
+function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = [], saleReturns = [], loadProducts, loadPurchases, loadPurchaseReturns }) {
   const th = useTheme(); const {t,lang} = useLang(); const { isMobile } = useResponsive();
   const isUrdu = lang === "ur";
   const [showModal,setShowModal]=useState(false); const [form,setForm]=useState(EMPTY_FORM);
@@ -272,6 +272,7 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
           purchases={purchases}
           loadProducts={loadProducts}
           loadPurchases={loadPurchases}
+          loadPurchaseReturns={loadPurchaseReturns}
           seed={hwSeed}
           onClose={()=>{setShowHwModal(false);setHwSeed(null);}}
         />

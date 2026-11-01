@@ -412,7 +412,7 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
 }
 
 // ─── Purchase Form Modal ──────────────────────────────────────────────────────
-function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchases, onSave, onClose, extraNames=[], prefill = null, onRemoveLines }) {
+function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchases, loadPurchaseReturns, onSave, onClose, extraNames=[], prefill = null, onRemoveLines }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const isUrdu = lang === "ur";
@@ -498,7 +498,7 @@ function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchas
         : null;
       const res  = await onSave({
         purchaseId: block.purchaseId || "",
-        supplier, invoice: invoiceNum, date, productId: block.productId, rows: block.rows, total, qty, rate, category, productPrice: purchasePricePerUnit,
+        supplier, invoice: invoiceNum, date, productId: block.productId, productName: product?.name || "", rows: block.rows, total, qty, rate, category, productPrice: purchasePricePerUnit,
         paymentMethod: pay.paymentMethod, bankName: pay.bankName, accountId: pay.accountId, accountName: pay.accountName,
         settlement: pay.settlement, isPartial: pay.isPartial, paidAmount: pay.paidAmount, remainingAmount: pay.remainingAmount,
         unit: purchaseUnit,
@@ -728,6 +728,7 @@ function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchas
           purchases={purchases}
           loadProducts={loadProducts}
           loadPurchases={loadPurchases}
+          loadPurchaseReturns={loadPurchaseReturns}
           seed={null}
           onClose={() => setQuickHardware(false)}
           overlayZ={260}
@@ -762,11 +763,16 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
 
   const handleSave = async (payload) => {
     const { supplier, invoice, date, productId, rows, total, qty, rate, category, productPrice } = payload;
-    const matchedProd   = products.find(p => p._id === productId);
+    const matchedProd   = products.find(p => String(p._id) === String(productId));
     const resolvedPrice = Number(productPrice) || Number(matchedProd?.price) || 0;
+    const productName   = matchedProd?.name || payload.productName || "";
+    if (!productId || !productName) {
+      alert(isUrdu ? "پروڈکٹ منتخب کریں — اسٹاک اپڈیٹ نہیں ہو سکے گی" : "Select a product so stock can update.");
+      return { success: false, message: "Product required" };
+    }
       const data = {
       supplier, invoice, date, product: productId, rows, total, qty, rate, category,
-      productName: matchedProd?.name || "", productPrice: resolvedPrice,
+      productName, productPrice: resolvedPrice,
       paymentMethod: payload.paymentMethod || "cash",
       bankName: payload.bankName || "",
       accountId: payload.accountId || "",
@@ -922,6 +928,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
     : dateFilter === "yesterday" ? (isUrdu ? "کل" : "Yesterday")
     : dateFilter === "week" ? (isUrdu ? "ایک ہفتہ" : "1 Week")
     : dateFilter === "month" ? (isUrdu ? "ایک مہینہ" : "1 Month")
+    : dateFilter === "all" ? (isUrdu ? "سب" : "All")
     : (customFrom || customTo) ? `${customFrom || "…"} → ${customTo || "…"}`
     : (isUrdu ? "تاریخ" : "Date");
 
@@ -1304,6 +1311,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
             purchases={purchases}
             loadProducts={loadProducts}
             loadPurchases={loadPurchases}
+            loadPurchaseReturns={loadPurchaseReturns}
             extraNames={[
               ...purchases.map((p) => p.supplier || p.supplierName),
               ...products.flatMap((p) => (Array.isArray(p.suppliers) ? p.suppliers.map((s) => s?.name) : [])),

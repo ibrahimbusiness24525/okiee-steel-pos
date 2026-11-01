@@ -3,6 +3,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn } from "../components/shared";
 import { formatPKR, todayStr, printThermalOrA4, downloadInvoicePdf } from "../utils/helpers";
+import { api } from "../utils/api";
 import { ledgerApi, signedOpeningBalance, openingKindOf } from "../utils/ledgerStore";
 import { ensureParty, liveBalance } from "../utils/tradeFinance";
 import { adjustAccountBalance } from "../utils/accountBalance";
@@ -12,7 +13,7 @@ import PartyLedgerSheet, { buildPartyLedger } from "../components/PartyLedgerShe
 const EMPTY_PARTY = { name: "", phone: "", partyType: "", address: "", notes: "", openingBalance: "", openingKind: "lana" };
 const EMPTY_TX = { role: "", partyId: "", amount: "", note: "", accountId: "" };
 
-function LedgerPage({ purchases = [], sales = [] }) {
+function LedgerPage({ purchases = [], sales = [], user = null }) {
   const th = useTheme();
   const { isUrdu } = useLang();
   const { isMobile } = useResponsive();
@@ -41,6 +42,11 @@ function LedgerPage({ purchases = [], sales = [] }) {
   const [ledgerFrom, setLedgerFrom] = useState("");
   const [ledgerTo, setLedgerTo] = useState("");
   const [pendingPrint, setPendingPrint] = useState(null);
+  const [printFull, setPrintFull] = useState(false);
+  const [deletePhase, setDeletePhase] = useState("");
+  const [deletePass, setDeletePass] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   const L = isUrdu ? {
     createSupplier: "سپلائر بنائیں", createCustomer: "گاہک بنائیں",
@@ -63,6 +69,8 @@ function LedgerPage({ purchases = [], sales = [] }) {
     giveHint: "رقم منتخب بینک / والٹ سے نکلے گی",
     youOwe: "میں دوں گا", theyOwe: "میں لوں گا", settled: "حساب صاف",
     edit: "ترمیم", del: "حذف", delParty: "کیا یہ کھاتہ حذف کریں؟",
+    delHint: "پہلے پورا ریکارڈ PDF میں محفوظ ہو گیا۔ حذف کے لیے اپنا لاگ اِن پاس ورڈ لکھیں۔",
+    password: "پاس ورڈ", needPassword: "پاس ورڈ لکھیں", wrongPassword: "پاس ورڈ غلط ہے",
     delTx: "کیا یہ اندراج حذف کریں؟",
     loading: "لوڈ ہو رہا ہے...", importBtn: "خریداری/فروخت سے درآمد",
     history: "اندراجات",
@@ -91,6 +99,8 @@ function LedgerPage({ purchases = [], sales = [] }) {
     giveHint: "Money will go OUT of this bank or wallet",
     youOwe: "I will give", theyOwe: "I will get", settled: "Settled",
     edit: "Edit", del: "Delete", delParty: "Delete this account?",
+    delHint: "The full record was saved as a PDF. Type your login password to delete this account.",
+    password: "Password", needPassword: "Type your password", wrongPassword: "Wrong password",
     delTx: "Delete this entry?",
     loading: "Loading...", importBtn: "Import from Purchases / Sales",
     history: "Entries",
@@ -349,6 +359,55 @@ function LedgerPage({ purchases = [], sales = [] }) {
     }, 80);
     return () => clearTimeout(t);
   }, [pendingPrint]);
+
+  useEffect(() => {
+    if (deletePhase !== "pdf" || !detail) return;
+    let cancel = false;
+    const timer = setTimeout(async () => {
+      const file = `ledger-${String(detail.name || "party").replace(/\s+/g, "-")}`;
+      try { await downloadInvoicePdf(file); } catch { /* still ask for the password */ }
+      if (!cancel) setDeletePhase("password");
+    }, 160);
+    return () => { cancel = true; clearTimeout(timer); };
+  }, [deletePhase, detail]);
+
+  const startDelete = () => {
+    if (!detail || deletePhase) return;
+    setDeletePass("");
+    setDeleteError("");
+    setPrintFull(true);
+    setDeletePhase("pdf");
+  };
+  const cancelDelete = () => {
+    if (deleting) return;
+    setDeletePhase("");
+    setPrintFull(false);
+    setDeletePass("");
+    setDeleteError("");
+  };
+  const confirmDelete = async () => {
+    const password = deletePass.trim();
+    if (!password) { setDeleteError(L.needPassword); return; }
+    if (!user?.email) { setDeleteError(L.wrongPassword); return; }
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await api.login(user.email, password);
+    } catch {
+      setDeleting(false);
+      setDeleteError(L.wrongPassword);
+      return;
+    }
+    const res = await ledgerApi.remove(detail._id);
+    setDeleting(false);
+    if (res && res.success === false) { setDeleteError(res.message || "Error"); return; }
+    setDeletePhase("");
+    setPrintFull(false);
+    setDeletePass("");
+    setDetail(null);
+    setEntries([]);
+    await load();
+  };
 
   if (loading) {
     return <div style={{ textAlign: "center", padding: 60, color: th.textDim }}>⏳ {L.loading}</div>;
@@ -610,7 +669,7 @@ function LedgerPage({ purchases = [], sales = [] }) {
       {detail && (
         <Modal
           title={detail.name}
-          onClose={() => { setDetail(null); setEntries([]); setPendingPrint(null); }}
+          onClose={() => { setDetail(null); setEntries([]); setPendingPrint(null); cancelDelete(); }}
           xl
           headerRight={
             <>
@@ -637,11 +696,36 @@ function LedgerPage({ purchases = [], sales = [] }) {
             <div style={{ color: toneColor(tone(netOf(detail))), fontWeight: 700, fontSize: 13 }}>{toneLabel(netOf(detail))}</div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <button onClick={() => openEdit(detail)} style={{ padding: "8px 14px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.text, cursor: "pointer", fontWeight: 700, fontSize: 12 }}>{L.edit}</button>
+              <button type="button" onClick={startDelete} disabled={!!deletePhase} style={{ padding: "8px 14px", borderRadius: 10, border: "1px solid rgba(220,38,38,0.35)", background: "rgba(220,38,38,0.08)", color: "#dc2626", cursor: deletePhase ? "wait" : "pointer", fontWeight: 700, fontSize: 12 }}>{L.del}</button>
               <label style={{ color: th.textMuted, fontSize: 12, fontWeight: 700 }}>{L.from}</label>
               <input type="date" value={ledgerFrom} onChange={(e) => setLedgerFrom(e.target.value)} style={{ ...inpS, width: "auto", padding: "6px 10px" }} />
               <label style={{ color: th.textMuted, fontSize: 12, fontWeight: 700 }}>{L.to}</label>
               <input type="date" value={ledgerTo} onChange={(e) => setLedgerTo(e.target.value)} style={{ ...inpS, width: "auto", padding: "6px 10px" }} />
             </div>
+            {deletePhase === "pdf" && (
+              <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(124,58,237,0.08)", color: "#6d28d9", fontWeight: 700, fontSize: 13 }}>
+                {isUrdu ? "پورا ریکارڈ PDF میں محفوظ ہو رہا ہے..." : "Saving the full record as PDF..."}
+              </div>
+            )}
+            {deletePhase === "password" && (
+              <div style={{ padding: 12, borderRadius: 12, border: "1px solid rgba(220,38,38,0.35)", background: "rgba(220,38,38,0.06)", display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ color: th.text, fontSize: 13, fontWeight: 700 }}>{L.delHint}</div>
+                <input
+                  type="password"
+                  autoFocus
+                  value={deletePass}
+                  placeholder={L.password}
+                  onChange={(e) => { setDeletePass(e.target.value); setDeleteError(""); }}
+                  onKeyDown={(e) => { if (e.key === "Enter") confirmDelete(); }}
+                  style={inpS}
+                />
+                {deleteError ? <div style={{ color: "#dc2626", fontSize: 12, fontWeight: 700 }}>{deleteError}</div> : null}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="button" onClick={confirmDelete} disabled={deleting} style={{ padding: "8px 14px", borderRadius: 10, border: "none", background: "#dc2626", color: "#fff", fontWeight: 800, cursor: "pointer" }}>{deleting ? "..." : L.del}</button>
+                  <button type="button" onClick={cancelDelete} disabled={deleting} style={{ padding: "8px 14px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.text, fontWeight: 700, cursor: "pointer" }}>{isUrdu ? "منسوخ" : "Cancel"}</button>
+                </div>
+              </div>
+            )}
             {(() => {
               const pack = buildPartyLedger({ party: detail, entries, from: ledgerFrom, to: ledgerTo, isUrdu });
               const thS = { textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 800, color: th.textMuted, borderBottom: `1px solid ${th.border}`, whiteSpace: "nowrap" };
@@ -696,8 +780,8 @@ function LedgerPage({ purchases = [], sales = [] }) {
               <PartyLedgerSheet
                 party={detail}
                 entries={entries}
-                from={ledgerFrom}
-                to={ledgerTo}
+                from={printFull ? "" : ledgerFrom}
+                to={printFull ? "" : ledgerTo}
                 isUrdu={isUrdu}
                 compact={pendingPrint === "thermal"}
               />

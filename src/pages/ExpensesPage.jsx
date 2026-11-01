@@ -295,23 +295,12 @@ export default function ExpensesPage({ loadExpenses: reloadExpensesInApp, loadPa
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", padding: "12px 14px", borderRadius: 14, border: `1px solid ${th.border}`, background: th.bgCard }}>
         <DateFilterBar
-          filter={dateFilter === "all" ? "" : dateFilter}
+          filter={dateFilter}
           setFilter={setDateFilter}
           customFrom={customFrom}
           setCustomFrom={setCustomFrom}
           customTo={customTo}
           setCustomTo={setCustomTo}
-          extra={
-            <button
-              type="button"
-              onClick={() => setDateFilter("all")}
-              style={{
-                padding: "7px 12px", borderRadius: 10, border: "none", cursor: "pointer", fontWeight: 700, fontSize: 12,
-                background: dateFilter === "all" ? "linear-gradient(135deg,#1abc9c,#2980b9)" : th.thHead,
-                color: dateFilter === "all" ? "#fff" : th.textMuted,
-              }}
-            >{L.all}</button>
-          }
         />
       </div>
 

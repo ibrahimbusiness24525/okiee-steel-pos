@@ -3,7 +3,7 @@
   publish = "dist"
 
 [build.environment]
-  VITE_API_URL = "https://pos-steel-backend-production.up.railway.app/api"
+  VITE_API_URL = "https://okiee-steel-shop.netlify.app/api"
   NODE_VERSION = "20"
 
 [[redirects]]

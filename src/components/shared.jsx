@@ -436,6 +436,7 @@ export function DateFilterBar({ filter, setFilter, customFrom, setCustomFrom, cu
     yesterday: isUrdu ? "کل" : "Yesterday",
     week: isUrdu ? "ایک ہفتہ" : "1 Week",
     month: isUrdu ? "ایک مہینہ" : "1 Month",
+    all: isUrdu ? "سب" : "All",
     custom: isUrdu ? "تاریخ" : "Date",
   };
   const btn = (active) => ({
@@ -446,7 +447,7 @@ export function DateFilterBar({ filter, setFilter, customFrom, setCustomFrom, cu
   });
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", width: "100%" }}>
-      {["today", "yesterday", "week", "month", "custom"].map((f) => (
+      {["today", "yesterday", "week", "month", "all", "custom"].map((f) => (
         <button key={f} type="button" style={btn(filter === f)} onClick={() => setFilter(f)}>{labels[f]}</button>
       ))}
       {filter === "custom" && (

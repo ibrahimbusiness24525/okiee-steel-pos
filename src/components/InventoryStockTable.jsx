@@ -36,10 +36,16 @@ const getUrduItemLabel = (cat) => {
 };
 
 export function inventoryStats(products = [], lotOpts) {
-  const stockOf = (p) => Number(p.stock) || 0;
   const thresholdOf = (p) => {
     const n = Number(p.lowStockThreshold);
     return Number.isFinite(n) && n > 0 ? n : 10;
+  };
+  const ctx = lotOpts ? (lotOpts.ctx || makeLotContext(lotOpts)) : null;
+  // Purchases can exist while product.stock is still 0 (missed stock link).
+  // Count what the lots actually hold so those items stay on the stock list.
+  const stockOf = (p) => {
+    if (!ctx) return Number(p.stock) || 0;
+    return Number(lotsFromContext(p, ctx).stock) || 0;
   };
   const inStock = products.filter((p) => stockOf(p) > 0);
   const demandZero = products.filter((p) => stockOf(p) <= 0);
@@ -47,7 +53,6 @@ export function inventoryStats(products = [], lotOpts) {
     const s = stockOf(p);
     return s > 0 && s <= thresholdOf(p);
   });
-  const ctx = lotOpts ? (lotOpts.ctx || makeLotContext(lotOpts)) : null;
   const inventoryAmount = inStock.reduce((s, p) => {
     if (ctx) return s + (Number(lotsFromContext(p, ctx).costValue) || 0);
     const { cost } = costAndSale(p);
@@ -75,9 +80,17 @@ function costAndSale(product) {
 }
 
 function purchaseQty(p) {
-  const q = Number(p.qty);
+  const q = Number(p?.qty);
   if (q > 0) return q;
-  return (p.rows || []).reduce((s, r) => s + (Number(r.qty) || Number(r.quantity) || Number(r.weight) || Number(r.feet) || 0), 0);
+  const fromRows = (p?.rows || []).reduce(
+    (s, r) => s + (Number(r.qty) || Number(r.quantity) || Number(r.pieces) || Number(r.weight) || Number(r.feet) || 0),
+    0
+  );
+  if (fromRows > 0) return fromRows;
+  const rate = Number(p?.rate) || Number(p?.productPrice) || Number(p?.rows?.[0]?.purchasePrice) || 0;
+  const total = Number(p?.total) || Number(p?.totalAmount) || 0;
+  if (rate > 0 && total > 0) return Math.round((total / rate) * 1000) / 1000;
+  return 0;
 }
 
 function purchaseUnitCost(p, product) {
@@ -147,12 +160,34 @@ function cashCreditShares(info) {
   return { cash: 0, credit: 1 };
 }
 
-function qtyFromMaps(byId, byName, product) {
+function normName(s) {
+  return String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Bill name "ANTOL TRIMMER" → product "ANTOL TRIMMER 600W" when that product is the only match. */
+function aliasNamesFor(product, ctx) {
+  const name = normName(product?.name);
+  if (!name || !ctx) return [];
+  const catalog = (ctx.products || []).map((p) => normName(p?.name)).filter(Boolean);
+  const candidates = new Set();
+  [ctx.purchByName, ctx.soldByName, ctx.saleRetByName, ctx.purchRetByName].forEach((m) => {
+    Object.keys(m || {}).forEach((k) => candidates.add(normName(k)));
+  });
+  const keys = [];
+  candidates.forEach((k) => {
+    if (!k || k === name) return;
+    const hits = catalog.filter((n) => n === k || n.includes(k) || k.includes(n));
+    if (hits.length === 1 && hits[0] === name) keys.push(k);
+  });
+  return keys;
+}
+
+function qtyFromMaps(byId, byName, product, ctx) {
   const id = pidOf(product?._id || product?.id);
-  const name = String(product?.name || "").trim().toLowerCase();
+  const name = normName(product?.name);
   if (id && byId[id]) return byId[id];
   if (name && byName[name]) return byName[name];
-  return 0;
+  return aliasNamesFor(product, ctx).reduce((s, k) => s + (Number(byName[k]) || 0), 0);
 }
 
 function addQtyMaps(returns, byId, byName) {
@@ -247,7 +282,7 @@ export function makeLotContext({ purchases = [], sales = [], purchaseReturns = [
         const lot = makeLot(e.quantity || e.qty, e.productPrice || e.rate || e.purchasePrice);
         if (!lot) return;
         const id = pidOf(e.product || e.productId);
-        const name = String(e.productName || e.name || "").trim().toLowerCase();
+        const name = normName(e.productName || e.name || p.productName || "");
         pushLot(purchById, id, lot);
         pushLot(purchByName, name, lot);
       });
@@ -255,7 +290,7 @@ export function makeLotContext({ purchases = [], sales = [], purchaseReturns = [
       const lot = makeLot(purchaseQty(p), purchaseUnitCost(p, null));
       if (!lot) return;
       const id = pidOf(p.product || p.productId);
-      const name = String(p.productName || p.name || "").trim().toLowerCase();
+      const name = normName(p.productName || p.name || "");
       pushLot(purchById, id, lot);
       pushLot(purchByName, name, lot);
     }
@@ -282,6 +317,7 @@ export function makeLotContext({ purchases = [], sales = [], purchaseReturns = [
   addQtyMaps(purchaseReturns, purchRetById, purchRetByName);
 
   return {
+    products: products || [],
     purchById,
     purchByName,
     soldById,
@@ -308,9 +344,11 @@ function lotDedupeKey(l) {
  *  productId is missing/wrong on one invoice but productName still matches. */
 function rawLotsForProduct(product, ctx) {
   const id = pidOf(product?._id || product?.id);
-  const name = String(product?.name || "").trim().toLowerCase();
+  const name = normName(product?.name);
   const byId = (id && ctx.purchById[id]) ? ctx.purchById[id] : [];
-  const byName = (name && ctx.purchByName[name]) ? ctx.purchByName[name] : [];
+  const exactName = (name && ctx.purchByName[name]) ? ctx.purchByName[name] : [];
+  const nameKeys = exactName.length || byId.length ? [] : aliasNamesFor(product, ctx);
+  const byName = exactName.length ? exactName : nameKeys.flatMap((k) => ctx.purchByName[k] || []);
   if (!byId.length) return byName.slice();
   if (!byName.length) return byId.slice();
   const seen = new Set();
@@ -336,9 +374,9 @@ function lotsFromContext(product, ctx) {
 
   lots.sort((a, b) => stampOf(a).localeCompare(stampOf(b)));
 
-  const sold = qtyFromMaps(ctx.soldById, ctx.soldByName, product);
-  const saleRet = qtyFromMaps(ctx.saleRetById, ctx.saleRetByName, product);
-  const purchRet = qtyFromMaps(ctx.purchRetById, ctx.purchRetByName, product);
+  const sold = qtyFromMaps(ctx.soldById, ctx.soldByName, product, ctx);
+  const saleRet = qtyFromMaps(ctx.saleRetById, ctx.saleRetByName, product, ctx);
+  const purchRet = qtyFromMaps(ctx.purchRetById, ctx.purchRetByName, product, ctx);
   let consume = Math.max(0, sold - saleRet) + purchRet;
 
   for (const lot of lots) {
@@ -630,7 +668,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
   const lotsOf = (p) => lotsByKey.get(String(p._id || p.id || p.name || "")) || lotsFromContext(p, lotCtx);
   const payMap = useMemo(() => purchasePayMap(purchases), [purchases]);
 
-  const stockOf = (p) => Number(p.stock) || 0;
+  const stockOf = (p) => Number(lotsOf(p).stock) || 0;
   const thresholdOf = (p) => {
     const n = Number(p.lowStockThreshold);
     return Number.isFinite(n) && n > 0 ? n : 10;
@@ -736,8 +774,8 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
   };
 
   const printRows = inventory.map((p) => {
-    const stock = Number(p.stock) || 0;
     const lots = lotsOf(p);
+    const stock = Number(lots.stock) || 0;
     const zero = stock <= 0;
     const cat = itemCatOf(p) || (isUrdu ? (p.category ? getUrduItemLabel(p.category) : "") : (p.category || ""));
     const status = isDemand ? (zero ? (isUrdu ? "زیرو" : "Zero") : (isUrdu ? "کم" : "Low")) : "";

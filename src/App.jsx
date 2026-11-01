@@ -6,6 +6,7 @@ import { Sidebar, Topbar, BottomNav } from "./components/Layout";
 import { api, API, authHeaders } from "./utils/api";
 import { listPurchaseReturns, listSaleReturns } from "./utils/returnsStore";
 import { applyHardwareSalePrices } from "./utils/productPrices";
+import { makeLotContext, stockLotsForProduct } from "./components/InventoryStockTable";
 import { expenseApi } from "./utils/expenseStore";
 import { ledgerApi } from "./utils/ledgerStore";
 import {
@@ -147,26 +148,41 @@ function AppInner() {
   const loadLoaders   = async () => { try { const r = await api.getLoaders();   if (r.success) setLoaders(r.loaders || []); } catch (e) {} };
   const loadProducts  = async (opts = {}) => {
     try {
+      const r = await api.getProducts();
+      if (r.success) setProducts(Array.isArray(r.products) ? r.products : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []);
       if (opts.reconcile) {
-        const rr = await api.reconcileStock(opts.productIds || []);
-        if (rr?.success && Array.isArray(rr.products)) {
-          setProducts(rr.products);
-          return rr;
-        }
+        api.reconcileStock(opts.productIds || []).then((rr) => {
+          if (rr?.success && Array.isArray(rr.products) && rr.products.length) setProducts(rr.products);
+        }).catch(() => {});
       }
-    } catch { /* fall through to normal load */ }
-    const r = await api.getProducts();
-    if (r.success) setProducts(Array.isArray(r.products) ? r.products : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []);
-    return r;
+      return r;
+    } catch (err) {
+      console.error("Failed to load products:", err);
+      return { success: false, message: err.message };
+    }
   };
-  const loadPurchases = async () => { const r = await api.getPurchases(); if (r.success) setPurchases(Array.isArray(r.purchases) ? r.purchases : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
-  const loadSales     = async () => { const r = await api.getSales();     if (r.success) setSales(Array.isArray(r.sales) ? r.sales : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
+  const loadPurchases = async () => { try { const r = await api.getPurchases(); if (r.success) setPurchases(Array.isArray(r.purchases) ? r.purchases : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); } catch (err) { console.error("Failed to load purchases:", err); } };
+  const loadSales     = async () => { try { const r = await api.getSales();     if (r.success) setSales(Array.isArray(r.sales) ? r.sales : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); } catch (err) { console.error("Failed to load sales:", err); } };
   const loadSaleReturns = async () => { try { const r = await listSaleReturns(); if (r.success) setSaleReturns(r.returns || []); } catch (e) {} };
   const loadPurchaseReturns = async () => { try { const r = await listPurchaseReturns(); if (r.success) setPurchaseReturns(r.returns || []); } catch (e) {} };
   const loadStaff     = async () => { const r = await api.getStaff();     if (r.success) setStaff(Array.isArray(r.staff) ? r.staff : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
   const loadParties   = async () => { try { const r = await ledgerApi.list(); if (r.success) setParties(r.parties || []); } catch (e) { console.error("Failed to load parties:", e); } };
   const loadExpenses  = async () => { try { const r = await expenseApi.list(); if (r.success) setExpenses(r.expenses || []); } catch (e) { console.error("Failed to load expenses:", e); } };
-  const productsView = useMemo(() => applyHardwareSalePrices(products, purchases), [products, purchases]);
+  const shopLots = useMemo(() => {
+    const priced = applyHardwareSalePrices(products, purchases);
+    const ctx = makeLotContext({ purchases, sales, purchaseReturns, saleReturns, products: priced });
+    const view = priced.map((p) => {
+      const lots = stockLotsForProduct(p, { ctx });
+      const held = Number(lots.stock) || 0;
+      const latestCost = Number(lots.latestCost) || Number(lots.fifoCost) || 0;
+      const prev = Number(p.stock) || 0;
+      if (Math.abs(held - prev) < 0.0001 && Math.abs((Number(p.latestCost) || 0) - latestCost) < 0.009 && p.latestCost != null) return p;
+      return { ...p, stock: held, dbStock: prev, latestCost };
+    });
+    return { products: view, ctx };
+  }, [products, purchases, sales, purchaseReturns, saleReturns]);
+  const productsView = shopLots.products;
+  const lotCtx = shopLots.ctx;
 
   useEffect(() => {
     const token = localStorage.getItem("steelpos_token");
@@ -190,8 +206,7 @@ function AppInner() {
 
   useEffect(() => {
     if (user && user.role !== "superadmin") {
-      // Fix any stock that was doubled by old purchase-edit bugs.
-      loadProducts({ reconcile: true });
+      loadProducts();
       loadSales();
       loadLoaders();
       loadSaleReturns();
@@ -257,12 +272,12 @@ function AppInner() {
       {user.role === "admin" && (
         <>
           {active === "dashboard"    && <Dashboard products={productsView} purchases={purchases} sales={sales} staff={staff} loaders={loaders} saleReturns={saleReturns} purchaseReturns={purchaseReturns} parties={parties} expenses={expenses} loadParties={loadParties} loadExpenses={loadExpenses} />}
-          {active === "products"     && <ProductsPage products={productsView} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} loadProducts={loadProducts} loadPurchases={loadPurchases} />}
+          {active === "products"     && <ProductsPage products={productsView} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} loadProducts={loadProducts} loadPurchases={loadPurchases} loadPurchaseReturns={loadPurchaseReturns} />}
           {active === "purchase"     && <PurchasePage purchases={purchases} products={productsView} loadPurchases={loadPurchases} loadProducts={loadProducts} purchaseReturns={purchaseReturns} loadPurchaseReturns={loadPurchaseReturns} sales={sales} saleReturns={saleReturns} />}
-          {active === "sales"        && <SalesPage sales={sales} products={productsView} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} saleReturns={saleReturns} loadSaleReturns={loadSaleReturns} purchases={purchases} purchaseReturns={purchaseReturns} />}
+          {active === "sales"        && <SalesPage sales={sales} products={productsView} lotCtx={lotCtx} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} saleReturns={saleReturns} loadSaleReturns={loadSaleReturns} purchases={purchases} purchaseReturns={purchaseReturns} />}
           {active === "accounts"     && <AccountsPage />}
           {active === "expenses"     && <ExpensesPage loadExpenses={loadExpenses} loadParties={loadParties} />}
-          {active === "ledger"       && <LedgerPage purchases={purchases} sales={sales} />}
+          {active === "ledger"       && <LedgerPage purchases={purchases} sales={sales} user={user} />}
           {active === "records"      && <RecordsPage products={productsView} purchases={purchases} sales={sales} />}
           {active === "staff"        && <StaffPage staff={staff} loadStaff={loadStaff} />}
           {active === "loaders"      && <LoadersPage loaders={loaders} loadLoaders={loadLoaders} />}
@@ -272,7 +287,7 @@ function AppInner() {
       )}
       {user.role === "staff" && (
         <>
-          {active === "billing" && <BillingPage sales={sales} products={productsView} loadSales={loadSales} loadProducts={loadProducts} currentUser={user} loaders={loaders} purchases={purchases} purchaseReturns={purchaseReturns} saleReturns={saleReturns} />}
+          {active === "billing" && <BillingPage sales={sales} products={productsView} lotCtx={lotCtx} loadSales={loadSales} loadProducts={loadProducts} currentUser={user} loaders={loaders} purchases={purchases} purchaseReturns={purchaseReturns} saleReturns={saleReturns} />}
           {active === "loaders" && <LoadersPage loaders={loaders} loadLoaders={loadLoaders} />}
         </>
       )}

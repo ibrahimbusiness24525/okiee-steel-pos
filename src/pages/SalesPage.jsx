@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, StatCard, Table, DateFilterBar, EditHistoryModal } from "../components/shared";
@@ -97,7 +97,7 @@ function SaleThermalInvoice({ invoiceData, onClose }) {
   );
 }
 
-function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleReturns=[], loadSaleReturns, purchases=[], purchaseReturns=[] }) {
+function SalesPage({ sales, products, lotCtx=null, loadSales, loadProducts, loaders=[], saleReturns=[], loadSaleReturns, purchases=[], purchaseReturns=[] }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
@@ -114,6 +114,16 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
   const [customFrom,    setCustomFrom]    = useState("");
   const [customTo,      setCustomTo]      = useState("");
   const [saleSearch,    setSaleSearch]    = useState("");
+  const customerNames = useMemo(() => {
+    const map = new Map();
+    for (const s of sales || []) {
+      const t = String(s?.customer || "").trim();
+      if (!t || t === "—" || t === "-") continue;
+      const key = t.toLowerCase();
+      if (!map.has(key)) map.set(key, t);
+    }
+    return [...map.values()];
+  }, [sales]);
 
   const saleRecency = (s) => {
     const t = Date.parse(s?.createdAt || s?.updatedAt || "");
@@ -144,6 +154,7 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
     : dateFilter === "yesterday" ? (isUrdu ? "کل کی آمدنی" : "Yesterday Revenue")
     : dateFilter === "week" ? (isUrdu ? "ہفتہ کی آمدنی" : "Week Revenue")
     : dateFilter === "month" ? (isUrdu ? "مہینہ کی آمدنی" : "Month Revenue")
+    : dateFilter === "all" ? (isUrdu ? "کل آمدنی" : "All Revenue")
     : (isUrdu ? "آمدنی" : "Revenue");
 
   const buildItemsFromSale = (s) => {
@@ -461,11 +472,12 @@ function SalesPage({ sales, products, loadSales, loadProducts, loaders=[], saleR
             isUrdu={isUrdu}
             prefill={editData ? buildEditPayload(editData) : null}
             loaders={loaders}
-            extraNames={sales.map(s => s.customer)}
+            extraNames={customerNames}
             purchases={purchases}
             sales={sales}
             purchaseReturns={purchaseReturns}
             saleReturns={saleReturns}
+            lotCtx={lotCtx}
           />
         </Modal>
       )}

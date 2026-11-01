@@ -123,7 +123,7 @@ function fromProduct(p, purchases = []) {
   };
 }
 
-export default function HardwareManageModal({ products, purchases = [], loadProducts, loadPurchases, seed, onClose, overlayZ = 80 }) {
+export default function HardwareManageModal({ products, purchases = [], loadProducts, loadPurchases, loadPurchaseReturns, seed, onClose, overlayZ = 80 }) {
   const th = useTheme();
   const { lang } = useLang();
   const { isMobile, width } = useResponsive();
@@ -324,6 +324,7 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
   const refresh = async () => {
     await loadProducts();
     if (loadPurchases) await loadPurchases();
+    if (loadPurchaseReturns) await loadPurchaseReturns();
   };
 
   const openingPurchase = async (productId, qty, payload, supplier) => {
@@ -367,6 +368,38 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
     }
     return res;
   };
+
+  // The list shows stock from purchases minus returns, not the raw product field.
+  // Raising stock adds a purchase. Lowering stock adds a return. Both stay after refresh.
+  const applyStockChange = async (productId, fromQty, toQty, payload, supplier) => {
+    const diff = toQty - fromQty;
+    if (Math.abs(diff) < 0.0001) return { success: true };
+    if (diff > 0) {
+      const pur = await openingPurchase(productId, diff, payload, supplier);
+      return pur && pur.success === false ? pur : { success: true };
+    }
+    const need = Math.abs(diff);
+    const row = (products || []).find((p) => String(p._id) === String(productId));
+    let db = row && row.dbStock != null ? Number(row.dbStock) : fromQty;
+    if (!Number.isFinite(db)) db = fromQty;
+    if (db + 0.0001 < need) {
+      const bump = await api.adjustStock(productId, "add", Math.round((need - db) * 1000) / 1000);
+      if (!bump?.success) return bump || { success: false, message: "Stock was not updated" };
+    }
+    const ret = await api.addPurchaseReturn({
+      date: todayStr(),
+      supplier: supplier || "Stock edit",
+      notes: "Stock edit",
+      items: [{ productId, qty: need, rate: Number(payload.purchasePrice) || 0 }],
+    });
+    if (!ret?.success) {
+      try { await api.reconcileStock([productId]); } catch { /* show the return error */ }
+      return ret || { success: false, message: "Stock was not updated" };
+    }
+    try { await api.reconcileStock([productId]); } catch { /* the return still reduces the list */ }
+    return { success: true };
+  };
+
   const saveNew = async () => {
     if (!form.name.trim()) { alert(L.needName); return; }
     if (form.purchasePrice === "") { alert(L.needCost); return; }
@@ -401,23 +434,22 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
     if (form.purchasePrice === "") { alert(L.needCost); return; }
     if (form.price === "") { alert(L.needSale); return; }
     setSaving(true);
+    try {
     const payload = buildPayload();
     let res = await api.updateProduct(editingId, payload);
     if (!res?.success && /unit/i.test(String(res?.message || "")) && /enum/i.test(String(res?.message || ""))) {
       res = await api.updateProduct(editingId, { ...payload, unit: "piece", stockUnit: payload.unit || "piece" });
     }
-    if (!res.success) { alert(res.message); setSaving(false); return; }
+    if (!res.success) { alert(res.message); return; }
     const nextStock = Number(form.stock) || 0;
-    if (nextStock !== origStock) {
-      const diff = nextStock - origStock;
-      if (diff > 0) {
-        const typedSup = (supplierName || "").trim();
-        const supplier = (payload.suppliers?.find(s => s.isMain) || payload.suppliers?.[0])?.name || typedSup || "Opening Stock";
-        const pur = await openingPurchase(editingId, diff, payload, supplier);
-        if (pur && pur.success === false) alert(pur.message);
-      } else {
-        const adj = await api.adjustStock(editingId, "remove", Math.abs(diff));
-        if (!adj.success) alert(adj.message);
+    let stockOk = true;
+    if (Math.abs(nextStock - origStock) > 0.0001) {
+      const typedSup = (supplierName || "").trim();
+      const supplier = (payload.suppliers?.find(s => s.isMain) || payload.suppliers?.[0])?.name || typedSup || "Opening Stock";
+      const stockRes = await applyStockChange(editingId, origStock, nextStock, payload, supplier);
+      if (stockRes && stockRes.success === false) {
+        stockOk = false;
+        alert(stockRes.message || "Stock was not updated");
       }
     } else {
       // Price-only edit: keep latest purchase lot rates in sync with catalog (list + stock detail).
@@ -452,8 +484,12 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
       }
     }
     await refresh();
-    setOrigStock(nextStock);
-    setSaving(false);
+    if (stockOk) setOrigStock(nextStock);
+    } catch (err) {
+      alert(err?.message || "Update failed");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const delCurrent = async () => {
@@ -722,7 +758,7 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
 
               <div style={{ display: "flex", justifyContent: "center", gap: 10, flexWrap: "wrap", padding: "4px 0 2px" }}>
                 <ActionBtn isMobile={isMobile} label={L.save} icon="💾" color="#2563eb" onClick={saveNew} disabled={saving || !canSave() || !!editingId} save />
-                <ActionBtn isMobile={isMobile} label={L.update} icon="🔄" color="#16a34a" onClick={updateExisting} disabled={saving || !editingId || !canSave()} save />
+                <ActionBtn isMobile={isMobile} label={L.update} icon="🔄" color="#16a34a" onClick={updateExisting} disabled={saving || !editingId || !(form.name || "").trim()} save />
                 <ActionBtn isMobile={isMobile} label={L.del} icon="✖" color="#dc2626" onClick={delCurrent} disabled={saving || !editingId} />
                 <ActionBtn isMobile={isMobile} label={L.clearFields} icon="🧹" color="#0d9488" onClick={clearFields} disabled={saving} />
               </div>

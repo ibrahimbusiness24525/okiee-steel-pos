@@ -23,7 +23,7 @@ import { productDisplayName } from "../utils/constants";
 import PaymentTerms, { useAccounts, derivePayment, isPayValid, calcDiscount, DiscountCashFields } from "../components/PaymentTerms";
 import { recordTradeFinance, reverseTradeFinance } from "../utils/tradeFinance";
 import PartyNamePicker from "../components/PartyNamePicker";
-import { stockLotsForProduct, makeLotContext, fifoCostForQty } from "../components/InventoryStockTable";
+import { stockLotsForProduct, fifoCostForQty } from "../components/InventoryStockTable";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BILLING PAGE — COMPLETE UPDATE
@@ -699,7 +699,7 @@ function HwBillingRows({ rows, onChange, purchasePrice, avgCost = 0, purchaseUni
 }
 
 // ─── BILLING PRODUCT BLOCK ────────────────────────────────────────────────────
-function BillingProductBlock({ index, products, block, onChange, onRemove, canRemove, isUrdu, lotOpts = {}, extraStock = 0 }) {
+function BillingProductBlock({ index, products, block, onChange, onRemove, canRemove, isUrdu, extraStock = 0 }) {
   const th = useTheme();
   const wrapRef = useRef(null);
   const keepInViewRef = useRef(false);
@@ -710,10 +710,10 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
     return found ? productDisplayName(found) : "";
   });
   const selectedProduct = products.find(p => (p._id || p.id) === block.productId);
-  const lotInfo = selectedProduct ? stockLotsForProduct(selectedProduct, lotOpts) : null;
-  const displayCost = lotInfo ? (Number(lotInfo.latestCost) || Number(lotInfo.fifoCost) || 0) : 0;
+  const shownStock = (p) => Number(p.stock) || 0;
+  const displayCost = Number(selectedProduct?.latestCost) || 0;
   const category   = selectedProduct?.category || "";
-  const availStock = Number(selectedProduct?.stock) || 0;
+  const availStock = selectedProduct ? shownStock(selectedProduct) : 0;
   const catColors  = { Pipe:"#60a5fa", Chader:"#34d399", Net:"#f472b6", Hardware:"#fbbf24", Custom:"#a78bfa" };
   const catBgs     = { Pipe:"rgba(96,165,250,0.1)", Chader:"rgba(26,188,156,0.1)", Net:"rgba(244,114,182,0.1)", Hardware:"rgba(251,191,36,0.1)", Custom:"rgba(167,139,250,0.1)" };
   const filtered   = products.filter(p => productDisplayName(p).toLowerCase().includes(search.toLowerCase()) || (p.category||"").toLowerCase().includes(search.toLowerCase()));
@@ -781,11 +781,13 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
                           const displayPrice = (p.category==="Pipe" || p.category==="Hardware") ? (Number(p.price)||Number(p.purchasePrice)||0) : (Number(p.purchasePrice)||Number(p.price)||0);
                           const displayUnit  = stockUnitLabel(p.category, p);
                           return (
-                          <div key={p._id||p.id} data-nav-i={i} onMouseDown={(e)=>{ e.preventDefault(); e.stopPropagation(); handleSelectProduct(p); }} onMouseEnter={()=>setHi(i)}
+                          <div key={p._id||p.id} data-nav-i={i} onMouseDown={(e)=>{ e.preventDefault(); e.stopPropagation(); handleSelectProduct(p); }}
+                            onMouseEnter={(e)=>{ e.currentTarget.style.background="rgba(26,188,156,0.16)"; }}
+                            onMouseLeave={(e)=>{ e.currentTarget.style.background=i===hi?"rgba(26,188,156,0.16)":"transparent"; }}
                             style={{padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${th.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:14,color:th.text,background:i===hi?"rgba(26,188,156,0.16)":"transparent"}}>
                             <span>{productDisplayName(p)}</span>
                             <div style={{display:"flex",alignItems:"center",gap:6}}>
-                              <span style={{fontSize:11,color:Number(p.stock)===0?"#f87171":Number(p.stock)<10?"#fbbf24":"#34d399",fontWeight:700}}>Stock: {fmtQtyNice(p.stock||0)}</span>
+                              <span style={{fontSize:11,color:shownStock(p)===0?"#f87171":shownStock(p)<10?"#fbbf24":"#34d399",fontWeight:700}}>Stock: {fmtQtyNice(shownStock(p))}</span>
                               <span style={{fontSize:12,color:displayPrice>0?"#34d399":"#f87171",fontWeight:600}}>
                                 {displayPrice>0 ? `Rs ${fmtAvgCost(displayPrice)}/${displayUnit}` : "⚠️ price 0"}
                               </span>
@@ -1149,7 +1151,7 @@ function blockFromSaleItem(item, products) {
   return b;
 }
 
-function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loaders=[], extraNames=[], purchases=[], sales=[], purchaseReturns=[], saleReturns=[] }) {
+function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loaders=[], extraNames=[], purchases=[], sales=[], purchaseReturns=[], saleReturns=[], lotCtx=null }) {
   const th = useTheme();
   const accounts = useAccounts();
   const [customer,      setCustomer]      = useState(prefill?.customer || "");
@@ -1184,11 +1186,9 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
     return prefill?.discount != null && prefill.discount !== "" ? String(prefill.discount) : "";
   });
   const [cashReceived, setCashReceived] = useState(() => prefill?.cashReceived != null && prefill.cashReceived !== "" ? String(prefill.cashReceived) : "");
-  const lotOpts = useMemo(() => {
-    const o = { purchases, sales, purchaseReturns, saleReturns, products };
-    o.ctx = makeLotContext(o);
-    return o;
-  }, [purchases, sales, purchaseReturns, saleReturns, products]);
+  const lotOpts = useMemo(() => ({
+    purchases, sales, purchaseReturns, saleReturns, products, ctx: lotCtx || undefined,
+  }), [purchases, sales, purchaseReturns, saleReturns, products, lotCtx]);
 
   const newBlock = () => emptySaleBlock();
   const [blocks, setBlocks] = useState(() => {
@@ -1413,8 +1413,7 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
           onRemove={()=>setBlocks(bs=>bs.filter((_,i)=>i!==idx))}
           canRemove={blocks.length>1}
           isUrdu={isUrdu}
-          extraStock={extraStockOf(block.productId)}
-          lotOpts={lotOpts}/>
+          extraStock={extraStockOf(block.productId)}/>
       ))}
 
       {/* Stock error banner */}
@@ -1601,7 +1600,7 @@ function SaleRecordDetail({ sale, saleReturns = [], isUrdu }) {
 }
 
 // ─── MAIN BILLING PAGE ────────────────────────────────────────────────────────
-function BillingPage({ sales, products, loadSales, loadProducts, currentUser, loaders=[], purchases=[], purchaseReturns=[], saleReturns=[] }) {
+function BillingPage({ sales, products, loadSales, loadProducts, currentUser, loaders=[], purchases=[], purchaseReturns=[], saleReturns=[], lotCtx=null }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
@@ -1618,6 +1617,16 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
   const [saleSearch,    setSaleSearch]    = useState("");
 
   const shopSales = sales || [];
+  const customerNames = useMemo(() => {
+    const map = new Map();
+    for (const s of shopSales) {
+      const t = String(s?.customer || "").trim();
+      if (!t || t === "—" || t === "-") continue;
+      const k = t.toLowerCase();
+      if (!map.has(k)) map.set(k, t);
+    }
+    return [...map.values()];
+  }, [shopSales]);
   const saleRecency = (s) => {
     const t = Date.parse(s?.createdAt || s?.updatedAt || "");
     if (Number.isFinite(t)) return t;
@@ -1645,12 +1654,14 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
     : dateFilter === "yesterday" ? (isUrdu ? "کل" : "Yesterday")
     : dateFilter === "week" ? (isUrdu ? "ایک ہفتہ" : "1 Week")
     : dateFilter === "month" ? (isUrdu ? "ایک مہینہ" : "1 Month")
+    : dateFilter === "all" ? (isUrdu ? "سب" : "All")
     : (customFrom || customTo) ? `${customFrom || "…"} → ${customTo || "…"}`
     : (isUrdu ? "تاریخ" : "Date");
   const filterRevenueLabel = dateFilter === "today" ? t.todayRevenue
     : dateFilter === "yesterday" ? (isUrdu ? "کل کی آمدنی" : "Yesterday Revenue")
     : dateFilter === "week" ? (isUrdu ? "ہفتہ کی آمدنی" : "Week Revenue")
     : dateFilter === "month" ? (isUrdu ? "مہینہ کی آمدنی" : "Month Revenue")
+    : dateFilter === "all" ? (isUrdu ? "کل آمدنی" : "All Revenue")
     : (isUrdu ? "آمدنی" : "Revenue");
 
   const handleSave = async (payload) => {
@@ -1926,7 +1937,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
           onClose={closeModal}
           wide
         >
-          <BillingNewSaleModal products={products} onSave={handleSave} onClose={closeModal} isUrdu={isUrdu} loaders={loaders} extraNames={sales.map(s=>s.customer)} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} prefill={editData ? buildEditPayload(editData) : null}/>
+          <BillingNewSaleModal products={products} onSave={handleSave} onClose={closeModal} isUrdu={isUrdu} loaders={loaders} extraNames={customerNames} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} lotCtx={lotCtx} prefill={editData ? buildEditPayload(editData) : null}/>
         </Modal>
       )}
 
