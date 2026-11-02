@@ -1,8 +1,11 @@
 // ─── API Configuration ────────────────────────────────────────────────────────
+const RAILWAY_API = "https://pos-steel-backend-production.up.railway.app/api";
 const getBaseURL = () => {
   const saved = localStorage.getItem("steelpos_api_url");
-  if (saved) return saved;
-  return import.meta.env.VITE_API_URL || "https://okiee-steel-shop.netlify.app/api";
+  if (saved && !/netlify\.app/i.test(saved)) return saved;
+  const fromEnv = import.meta.env.VITE_API_URL;
+  if (fromEnv && !/netlify\.app/i.test(fromEnv)) return fromEnv;
+  return RAILWAY_API;
 };
 export const API = getBaseURL();
 
@@ -17,45 +20,6 @@ const smartFetch = async (url, options) => {
   }
 };
 
-// Walk every page of a list endpoint and return the full set.
-// A single /sales response is larger than the host allows, so paging is required.
-async function fetchAllList(path, key, limit = 200) {
-  const loadPage = async (page) => {
-    const joiner = path.includes("?") ? "&" : "?";
-    let lastErr = "Failed to load";
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const res = await smartFetch(`${API}${path}${joiner}page=${page}&limit=${limit}`, { headers: authHeaders() });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success !== false && Array.isArray(data[key])) return data;
-      lastErr = data.message || data.errorMessage || lastErr;
-    }
-    const err = new Error(lastErr);
-    err.page = page;
-    throw err;
-  };
-
-  const first = await loadPage(1);
-  const pages = Math.max(1, Number(first.pages) || 1);
-  const batches = [first[key]];
-  const queue = [];
-  for (let p = 2; p <= pages; p++) queue.push(p);
-  const workers = Math.min(4, queue.length);
-  let cursor = 0;
-  const rest = new Array(queue.length);
-  await Promise.all(Array.from({ length: workers }, async () => {
-    while (cursor < queue.length) {
-      const idx = cursor++;
-      rest[idx] = await loadPage(queue[idx]);
-    }
-  }));
-  rest.forEach((data) => batches.push(data[key]));
-  const all = batches.flat();
-  const total = Number(first.total) || all.length;
-  if (total && all.length < total) {
-    return { success: false, message: "List did not finish loading", [key]: all, total };
-  }
-  return { success: true, [key]: all, total };
-}
 export const getToken = () => localStorage.getItem("steelpos_token");
 export const authHeaders = () => ({ "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` });
 
@@ -71,7 +35,7 @@ export const api = {
   addPurchase:   (d) => smartFetch(`${API}/purchases`,{method:"POST",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   updatePurchase:(id,d) => smartFetch(`${API}/purchases/${id}`,{method:"PUT",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   deletePurchase:(id) => smartFetch(`${API}/purchases/${id}`,{method:"DELETE",headers:authHeaders()}).then(r=>r.json()),
-  getSales:      () => fetchAllList("/sales", "sales"),
+  getSales:      () => smartFetch(`${API}/sales`, {headers:authHeaders()}).then(r=>r.json()),
   addSale:       (d) => smartFetch(`${API}/sales`,    {method:"POST",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   updateSale:    (id,d) => smartFetch(`${API}/sales/${id}`,{method:"PUT",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   deleteSale:    (id) => smartFetch(`${API}/sales/${id}`,{method:"DELETE",headers:authHeaders()}).then(r=>r.json()),
