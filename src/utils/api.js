@@ -59,6 +59,7 @@ export const api = {
   getParty:       (id) => smartFetch(`${API}/parties/${id}`, {headers:authHeaders()}).then(r=>r.json()),
   updateParty:    (id,d) => smartFetch(`${API}/parties/${id}`,{method:"PUT",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   deleteParty:    (id) => smartFetch(`${API}/parties/${id}`,{method:"DELETE",headers:authHeaders()}).then(r=>r.json()),
+  blockParty:    (d) => smartFetch(`${API}/parties/block`,{method:"POST",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   addPartyEntry:  (id,d) => smartFetch(`${API}/parties/${id}/entries`,{method:"POST",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   deletePartyEntry:(id,eid) => smartFetch(`${API}/parties/${id}/entries/${eid}`,{method:"DELETE",headers:authHeaders()}).then(r=>r.json()),
   importParties:  () => smartFetch(`${API}/parties/import`,{method:"POST",headers:authHeaders()}).then(r=>r.json()),

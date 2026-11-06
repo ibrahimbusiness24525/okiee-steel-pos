@@ -1138,7 +1138,7 @@ function DailyAnalyticsModal({
 
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
-function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=[], purchaseReturns=[], parties=[], expenses=[], loadParties, loadExpenses }) {
+function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=[], purchaseReturns=[], parties=[], expenses=[], loadParties, loadExpenses, stockReady = false }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
@@ -1153,26 +1153,13 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   const [showInvPopup, setShowInvPopup] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
 
-  // Load expenses and parties data when component mounts
-  useEffect(() => {
-    console.log("Dashboard mounted, loading expenses and parties...");
-    console.log("Current expenses:", expenses);
-    console.log("Current parties:", parties);
-    if (loadExpenses) {
-      loadExpenses().then(() => console.log("Expenses loaded"));
-    }
-    if (loadParties) {
-      loadParties().then(() => console.log("Parties loaded"));
-    }
-  }, []);
-
   // ─── Two separate modal states ────────────────────────────────────────────────
   const [purchaseModal, setPurchaseModal] = useState(null);
   const [saleModal,     setSaleModal]     = useState(null);
   const [dashDetail,    setDashDetail]    = useState(null);
   const invStats = useMemo(
-    () => inventoryStats(products, { purchases, sales, purchaseReturns, saleReturns, products }),
-    [products, purchases, sales, purchaseReturns, saleReturns]
+    () => (stockReady ? inventoryStats(products) : { inventoryAmount: 0, stockedCount: 0 }),
+    [products, stockReady]
   );
 
   const today = new Date();
@@ -1939,9 +1926,9 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
         <ProfitCard/>
         <KpiCard
           label={isUrdu ? "اسٹاک لسٹ" : "Stock List"}
-          amount={formatPKR(invStats.inventoryAmount)}
-          sub={`${invStats.stockedCount} ${isUrdu ? "آئٹمز" : "in stock"}`}
-          onClick={() => setShowInvPopup(true)}
+          amount={stockReady ? formatPKR(invStats.inventoryAmount) : "—"}
+          sub={stockReady ? `${invStats.stockedCount} ${isUrdu ? "آئٹمز" : "in stock"}` : (isUrdu ? "لوڈ ہو رہا ہے" : "Loading")}
+          onClick={() => stockReady && setShowInvPopup(true)}
           color="#d97706"
         />
       </div>

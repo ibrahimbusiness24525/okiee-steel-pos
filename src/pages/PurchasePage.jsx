@@ -739,7 +739,7 @@ function PurchaseFormModal({ products, purchases = [], loadProducts, loadPurchas
 }
 
 // ─── Purchase Page ────────────────────────────────────────────────────────────
-function PurchasePage({ purchases, products, loadPurchases, loadProducts, purchaseReturns=[], loadPurchaseReturns, sales=[], saleReturns=[] }) {
+function PurchasePage({ purchases, products, loadPurchases, loadProducts, purchaseReturns=[], loadPurchaseReturns, sales=[], saleReturns=[], stockReady = false }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
@@ -1035,8 +1035,8 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
   );
 
   const { stockedCount, inventoryAmount, demandZero, demandLow } = useMemo(
-    () => inventoryStats(products, { purchases, sales, purchaseReturns, saleReturns, products }),
-    [products, purchases, sales, purchaseReturns, saleReturns]
+    () => (stockReady ? inventoryStats(products) : { stockedCount: 0, inventoryAmount: 0, demandZero: [], demandLow: [] }),
+    [products, stockReady]
   );
   const demandCount = (demandZero?.length || 0) + (demandLow?.length || 0);
 
@@ -1086,7 +1086,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
         />
         <StatCard
           label={t.inventoryValue}
-          value={formatPKR(inventoryAmount)}
+          value={stockReady ? formatPKR(inventoryAmount) : "—"}
           icon={ICONS.box}
           color="#f59e0b"
           sub={isUrdu ? "کلک کرکے دیکھیں" : "Click to open"}
@@ -1094,7 +1094,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
         />
         <StatCard
           label={isUrdu ? "اسٹاک لسٹ" : "Stock List"}
-          value={stockedCount}
+          value={stockReady ? stockedCount : "—"}
           icon={ICONS.box}
           color="#22c55e"
           sub={isUrdu ? "کلک کرکے دیکھیں" : "Click to open"}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn } from "../components/shared";
@@ -47,6 +47,17 @@ function LedgerPage({ purchases = [], sales = [], user = null }) {
   const [deletePass, setDeletePass] = useState("");
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [boxParty, setBoxParty] = useState(null);
+  const [boxPass, setBoxPass] = useState("");
+  const [boxError, setBoxError] = useState("");
+  const [boxDeleting, setBoxDeleting] = useState(false);
+  const hideStorageKey = `steelpos_hidden_parties_${user?._id || user?.id || "shop"}`;
+  const readHidden = () => {
+    try { return new Set(JSON.parse(localStorage.getItem(hideStorageKey) || "[]")); }
+    catch { return new Set(); }
+  };
+  const [blocked, setBlocked] = useState(readHidden);
+  const blockedRef = useRef(blocked);
 
   const L = isUrdu ? {
     createSupplier: "سپلائر بنائیں", createCustomer: "گاہک بنائیں",
@@ -69,6 +80,7 @@ function LedgerPage({ purchases = [], sales = [], user = null }) {
     giveHint: "رقم منتخب بینک / والٹ سے نکلے گی",
     youOwe: "میں دوں گا", theyOwe: "میں لوں گا", settled: "حساب صاف",
     edit: "ترمیم", del: "حذف", delParty: "کیا یہ کھاتہ حذف کریں؟",
+    delBox: "لاگ اِن پاس ورڈ لکھیں۔ یہ خانہ اور اس کھاتے کی ساری تفصیل حذف ہو جائے گی۔",
     delHint: "پہلے پورا ریکارڈ PDF میں محفوظ ہو گیا۔ حذف کے لیے اپنا لاگ اِن پاس ورڈ لکھیں۔",
     password: "پاس ورڈ", needPassword: "پاس ورڈ لکھیں", wrongPassword: "پاس ورڈ غلط ہے",
     delTx: "کیا یہ اندراج حذف کریں؟",
@@ -99,6 +111,7 @@ function LedgerPage({ purchases = [], sales = [], user = null }) {
     giveHint: "Money will go OUT of this bank or wallet",
     youOwe: "I will give", theyOwe: "I will get", settled: "Settled",
     edit: "Edit", del: "Delete", delParty: "Delete this account?",
+    delBox: "Type your login password. This box and the full account record will be deleted.",
     delHint: "The full record was saved as a PDF. Type your login password to delete this account.",
     password: "Password", needPassword: "Type your password", wrongPassword: "Wrong password",
     delTx: "Delete this entry?",
@@ -110,25 +123,36 @@ function LedgerPage({ purchases = [], sales = [], user = null }) {
     opening: "Opening Balance", total: "Total",
   };
 
+  const partyKey = (type, name) => `${type}::${String(name || "").trim().toLowerCase()}`;
   const load = async () => {
     try {
       let r = await ledgerApi.list();
       if (!r.success) { alert(r.message || "Could not load"); return; }
+      const hide = new Set([...(r.blocked || []), ...blockedRef.current, ...readHidden()]);
+      blockedRef.current = hide;
+      setBlocked(hide);
+      try { localStorage.setItem(hideStorageKey, JSON.stringify([...hide])); } catch { /* ignore */ }
       const have = new Set(
-        (r.parties || []).map((p) => `${p.type}::${String(p.name || "").trim().toLowerCase()}`)
+        (r.parties || []).map((p) => partyKey(p.type, p.name))
       );
       const missingFromTrade = (purchases || []).some((p) => {
         const n = (p.supplier || p.supplierName || "").trim();
-        return n && n !== "—" && !have.has(`supplier::${n.toLowerCase()}`);
+        const key = partyKey("supplier", n);
+        return n && n !== "—" && !have.has(key) && !hide.has(key);
       }) || (sales || []).some((s) => {
         const n = (s.customer || "").trim();
-        return n && n !== "—" && !have.has(`customer::${n.toLowerCase()}`);
+        const key = partyKey("customer", n);
+        return n && n !== "—" && !have.has(key) && !hide.has(key);
       });
       if (missingFromTrade) {
         await ledgerApi.importNames(purchases, sales);
         r = await ledgerApi.list();
       }
-      if (r.success) { setParties(r.parties || []); setRemote(r.remote !== false); }
+      if (r.success) {
+        const stillHidden = blockedRef.current;
+        setParties((r.parties || []).filter((p) => !stillHidden.has(partyKey(p.type, p.name))));
+        setRemote(r.remote !== false);
+      }
       else alert(r.message || "Could not load");
     } catch (e) {
       alert(e.message || "Could not load");
@@ -139,13 +163,13 @@ function LedgerPage({ purchases = [], sales = [], user = null }) {
   useEffect(() => { load(); }, []);
 
   const directory = useMemo(() => {
-    const list = [...parties];
-    const have = new Set(list.map((p) => `${p.type}::${String(p.name || "").trim().toLowerCase()}`));
+    const list = parties.filter((p) => !blocked.has(partyKey(p.type, p.name)));
+    const have = new Set(list.map((p) => partyKey(p.type, p.name)));
     const addGhost = (type, name) => {
       const n = (name || "").trim();
       if (!n || n === "—") return;
-      const key = `${type}::${n.toLowerCase()}`;
-      if (have.has(key)) return;
+      const key = partyKey(type, n);
+      if (have.has(key) || blocked.has(key)) return;
       have.add(key);
       list.push({
         _id: `ghost:${type}:${n.toLowerCase()}`,
@@ -162,7 +186,7 @@ function LedgerPage({ purchases = [], sales = [], user = null }) {
     (purchases || []).forEach((p) => addGhost("supplier", p.supplier || p.supplierName));
     (sales || []).forEach((s) => addGhost("customer", s.customer));
     return list;
-  }, [parties, purchases, sales]);
+  }, [parties, purchases, sales, blocked]);
 
   const totals = useMemo(() => {
     const list = directory.filter((p) => {
@@ -408,6 +432,51 @@ function LedgerPage({ purchases = [], sales = [], user = null }) {
     setEntries([]);
     await load();
   };
+  const startBoxDelete = (party, event) => {
+    event.stopPropagation();
+    setBoxParty(party);
+    setBoxPass("");
+    setBoxError("");
+  };
+  const cancelBoxDelete = () => {
+    if (boxDeleting) return;
+    setBoxParty(null);
+    setBoxPass("");
+    setBoxError("");
+  };
+  const confirmBoxDelete = async () => {
+    const password = boxPass.trim();
+    if (!boxParty?._id) return;
+    if (!password) { setBoxError(L.needPassword); return; }
+    if (!user?.email) { setBoxError(L.wrongPassword); return; }
+    setBoxDeleting(true);
+    setBoxError("");
+    try {
+      await api.login(user.email, password);
+    } catch {
+      setBoxDeleting(false);
+      setBoxError(L.wrongPassword);
+      return;
+    }
+    const key = partyKey(boxParty.type, boxParty.name);
+    const nextHide = new Set(blockedRef.current);
+    nextHide.add(key);
+    blockedRef.current = nextHide;
+    setBlocked(nextHide);
+    try { localStorage.setItem(hideStorageKey, JSON.stringify([...nextHide])); } catch { /* ignore */ }
+    setParties((prev) => prev.filter((p) => partyKey(p.type, p.name) !== key));
+    if (detail && (String(detail._id) === String(boxParty._id) || partyKey(detail.type, detail.name) === key)) {
+      setDetail(null);
+      setEntries([]);
+    }
+    const removed = boxParty;
+    setBoxParty(null);
+    setBoxPass("");
+    setBoxDeleting(false);
+    const id = String(removed._id || "");
+    if (/^[a-f\d]{24}$/i.test(id)) await ledgerApi.remove(id);
+    await ledgerApi.block(removed.type, removed.name);
+  };
 
   if (loading) {
     return <div style={{ textAlign: "center", padding: 60, color: th.textDim }}>⏳ {L.loading}</div>;
@@ -491,11 +560,21 @@ function LedgerPage({ purchases = [], sales = [], user = null }) {
                     <div style={{ color: th.text, fontWeight: 800, fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
                     <div style={{ color: th.textMuted, fontSize: 12, marginTop: 2 }}>{p.phone || "—"}</div>
                   </div>
-                  <span style={{
-                    fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 20, flexShrink: 0,
-                    background: p.type === "supplier" ? "rgba(217,119,6,0.15)" : "rgba(37,99,235,0.15)",
-                    color: p.type === "supplier" ? "#d97706" : "#2563eb",
-                  }}>{p.type === "supplier" ? L.supplier : L.customer}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                    <span style={{
+                      fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 20,
+                      background: p.type === "supplier" ? "rgba(217,119,6,0.15)" : "rgba(37,99,235,0.15)",
+                      color: p.type === "supplier" ? "#d97706" : "#2563eb",
+                    }}>{p.type === "supplier" ? L.supplier : L.customer}</span>
+                    <button
+                      type="button"
+                      title={L.del}
+                      onClick={(e) => startBoxDelete(p, e)}
+                      style={{ width: 28, height: 28, borderRadius: 8, border: "none", background: "rgba(220,38,38,0.1)", color: "#dc2626", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                    >
+                      <Icon path={ICONS.trash} size={15} />
+                    </button>
+                  </div>
                 </div>
                 {(p.partyType || p.address) && (
                   <div style={{ color: th.textDim, fontSize: 12, marginTop: 8 }}>
@@ -510,6 +589,28 @@ function LedgerPage({ purchases = [], sales = [], user = null }) {
             );
           })}
         </div>
+      )}
+
+      {boxParty && (
+        <Modal title={`${L.del} · ${boxParty.name || ""}`} onClose={cancelBoxDelete}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <p style={{ margin: 0, color: th.textMuted, fontSize: 13, lineHeight: 1.5 }}>{L.delBox}</p>
+            <input
+              type="password"
+              autoFocus
+              value={boxPass}
+              placeholder={L.password}
+              onChange={(e) => { setBoxPass(e.target.value); setBoxError(""); }}
+              onKeyDown={(e) => { if (e.key === "Enter") confirmBoxDelete(); }}
+              style={inpS}
+            />
+            {boxError ? <div style={{ color: "#dc2626", fontSize: 12, fontWeight: 700 }}>{boxError}</div> : null}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button type="button" onClick={cancelBoxDelete} disabled={boxDeleting} style={{ padding: "8px 14px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.bgCard, color: th.text, fontWeight: 700, cursor: "pointer" }}>{isUrdu ? "منسوخ" : "Cancel"}</button>
+              <button type="button" onClick={confirmBoxDelete} disabled={boxDeleting} style={{ padding: "8px 14px", borderRadius: 10, border: "none", background: "#dc2626", color: "#fff", fontWeight: 800, cursor: "pointer" }}>{boxDeleting ? "..." : L.del}</button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {showParty && (

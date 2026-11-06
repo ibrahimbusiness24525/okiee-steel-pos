@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, startTransition } from "react";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { LangProvider, useLang } from "./context/LangContext";
 import { useResponsive } from "./components/shared";
@@ -144,6 +144,7 @@ function AppInner() {
   const [loaders,   setLoaders]   = useState([]);
   const [parties,   setParties]   = useState([]);
   const [expenses,  setExpenses]  = useState([]);
+  const [stockReady, setStockReady] = useState(false);
 
   const loadLoaders   = async () => { try { const r = await api.getLoaders();   if (r.success) setLoaders(r.loaders || []); } catch (e) {} };
   const loadProducts  = async (opts = {}) => {
@@ -169,6 +170,8 @@ function AppInner() {
   const loadParties   = async () => { try { const r = await ledgerApi.list(); if (r.success) setParties(r.parties || []); } catch (e) { console.error("Failed to load parties:", e); } };
   const loadExpenses  = async () => { try { const r = await expenseApi.list(); if (r.success) setExpenses(r.expenses || []); } catch (e) { console.error("Failed to load expenses:", e); } };
   const shopLots = useMemo(() => {
+    // Purchases without sales price every piece as still in stock. Wait until both are in.
+    if (!stockReady) return { products, ctx: null };
     const priced = applyHardwareSalePrices(products, purchases);
     const ctx = makeLotContext({ purchases, sales, purchaseReturns, saleReturns, products: priced });
     const view = priced.map((p) => {
@@ -176,11 +179,24 @@ function AppInner() {
       const held = Number(lots.stock) || 0;
       const latestCost = Number(lots.latestCost) || Number(lots.fifoCost) || 0;
       const prev = Number(p.stock) || 0;
-      if (Math.abs(held - prev) < 0.0001 && Math.abs((Number(p.latestCost) || 0) - latestCost) < 0.009 && p.latestCost != null) return p;
-      return { ...p, stock: held, dbStock: prev, latestCost };
+      const same = Math.abs(held - prev) < 0.0001
+        && Math.abs((Number(p.latestCost) || 0) - latestCost) < 0.009
+        && p.costValue != null
+        && p._lots;
+      if (same) return p;
+      return {
+        ...p,
+        stock: held,
+        dbStock: prev,
+        latestCost,
+        fifoCost: lots.fifoCost,
+        costValue: Number(lots.costValue) || 0,
+        lotSale: lots.sale,
+        _lots: lots,
+      };
     });
     return { products: view, ctx };
-  }, [products, purchases, sales, purchaseReturns, saleReturns]);
+  }, [stockReady, products, purchases, sales, purchaseReturns, saleReturns]);
   const productsView = shopLots.products;
   const lotCtx = shopLots.ctx;
 
@@ -205,14 +221,38 @@ function AppInner() {
   }, []);
 
   useEffect(() => {
-    if (user && user.role !== "superadmin") {
-      loadProducts();
-      loadSales();
-      loadLoaders();
-      loadSaleReturns();
-      if (user.role === "admin") { loadPurchases(); loadStaff(); loadPurchaseReturns(); loadParties(); loadExpenses(); }
-      else loadPurchases();
-    }
+    if (!user || user.role === "superadmin") return;
+    let cancel = false;
+    setStockReady(false);
+    const pick = (r, key) => {
+      if (!r || r.success === false) return [];
+      if (Array.isArray(r[key])) return r[key];
+      if (Array.isArray(r.data)) return r.data;
+      if (Array.isArray(r)) return r;
+      return [];
+    };
+    (async () => {
+      const jobs = [
+        api.getProducts().catch(() => null),
+        api.getPurchases().catch(() => null),
+        api.getSales().catch(() => null),
+        listSaleReturns().catch(() => null),
+      ];
+      if (user.role === "admin") jobs.push(listPurchaseReturns().catch(() => null));
+      const [prod, purch, salesR, sret, pret] = await Promise.all(jobs);
+      if (cancel) return;
+      startTransition(() => {
+        setProducts(pick(prod, "products"));
+        setPurchases(pick(purch, "purchases"));
+        setSales(pick(salesR, "sales"));
+        setSaleReturns(sret && sret.success ? (sret.returns || []) : []);
+        if (user.role === "admin") setPurchaseReturns(pret && pret.success ? (pret.returns || []) : []);
+        setStockReady(true);
+      });
+    })();
+    loadLoaders();
+    if (user.role === "admin") { loadStaff(); loadParties(); loadExpenses(); }
+    return () => { cancel = true; };
   }, [user]);
 
   // Each admin has their own shop profile; staff inherits their admin's branding.
@@ -260,6 +300,7 @@ function AppInner() {
     clearShopProfileCache();
     setUser(null);
     setActiveState("dashboard");
+    setStockReady(false);
     setProducts([]); setPurchases([]); setSales([]); setStaff([]); setLoaders([]); setSaleReturns([]); setPurchaseReturns([]); setParties([]); setExpenses([]);
   };
 
@@ -271,9 +312,9 @@ function AppInner() {
     <main dir={isUrdu ? "rtl" : "ltr"} style={{ flex: 1, overflowY: "auto", padding: isMobile ? "14px" : "20px", paddingBottom: isMobile ? 80 : 20 }}>
       {user.role === "admin" && (
         <>
-          {active === "dashboard"    && <Dashboard products={productsView} purchases={purchases} sales={sales} staff={staff} loaders={loaders} saleReturns={saleReturns} purchaseReturns={purchaseReturns} parties={parties} expenses={expenses} loadParties={loadParties} loadExpenses={loadExpenses} />}
+          {active === "dashboard"    && <Dashboard products={productsView} purchases={purchases} sales={sales} staff={staff} loaders={loaders} saleReturns={saleReturns} purchaseReturns={purchaseReturns} parties={parties} expenses={expenses} loadParties={loadParties} loadExpenses={loadExpenses} stockReady={stockReady} />}
           {active === "products"     && <ProductsPage products={productsView} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} loadProducts={loadProducts} loadPurchases={loadPurchases} loadPurchaseReturns={loadPurchaseReturns} />}
-          {active === "purchase"     && <PurchasePage purchases={purchases} products={productsView} loadPurchases={loadPurchases} loadProducts={loadProducts} purchaseReturns={purchaseReturns} loadPurchaseReturns={loadPurchaseReturns} sales={sales} saleReturns={saleReturns} />}
+          {active === "purchase"     && <PurchasePage purchases={purchases} products={productsView} loadPurchases={loadPurchases} loadProducts={loadProducts} purchaseReturns={purchaseReturns} loadPurchaseReturns={loadPurchaseReturns} sales={sales} saleReturns={saleReturns} stockReady={stockReady} />}
           {active === "sales"        && <SalesPage sales={sales} products={productsView} lotCtx={lotCtx} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} saleReturns={saleReturns} loadSaleReturns={loadSaleReturns} purchases={purchases} purchaseReturns={purchaseReturns} />}
           {active === "accounts"     && <AccountsPage />}
           {active === "expenses"     && <ExpensesPage loadExpenses={loadExpenses} loadParties={loadParties} />}

@@ -40,6 +40,18 @@ export function inventoryStats(products = [], lotOpts) {
     const n = Number(p.lowStockThreshold);
     return Number.isFinite(n) && n > 0 ? n : 10;
   };
+  const valued = !lotOpts && products.length > 0 && products.every((p) => p && p.costValue != null);
+  if (valued) {
+    const stockOf = (p) => Number(p.stock) || 0;
+    const inStock = products.filter((p) => stockOf(p) > 0);
+    const demandZero = products.filter((p) => stockOf(p) <= 0);
+    const demandLow = products.filter((p) => {
+      const s = stockOf(p);
+      return s > 0 && s <= thresholdOf(p);
+    });
+    const inventoryAmount = inStock.reduce((s, p) => s + (Number(p.costValue) || 0), 0);
+    return { stockedCount: inStock.length, inventoryAmount, demandZero, demandLow, stockOf, thresholdOf };
+  }
   const ctx = lotOpts ? (lotOpts.ctx || makeLotContext(lotOpts)) : null;
   // Purchases can exist while product.stock is still 0 (missed stock link).
   // Count what the lots actually hold so those items stay on the stock list.
@@ -59,6 +71,23 @@ export function inventoryStats(products = [], lotOpts) {
     return s + stockOf(p) * (Number(cost) || 0);
   }, 0);
   return { stockedCount: inStock.length, inventoryAmount, demandZero, demandLow, stockOf, thresholdOf };
+}
+
+function recordDay(rec) {
+  const d = String(rec?.date || "").trim().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+  const iso = String(rec?.createdAt || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso : "";
+}
+
+function shiftIso(iso, days) {
+  const [y, m, d] = String(iso || "").split("-").map(Number);
+  if (!y || !m || !d) return "";
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + days);
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return `${dt.getFullYear()}-${mm}-${dd}`;
 }
 
 function stockLabel(cat, qty) {
@@ -664,20 +693,79 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
   const isDemand = kind === "demand";
   const [invSearch, setInvSearch] = useState("");
   const [invCat, setInvCat] = useState("");
+  const [asOf, setAsOf] = useState("");
   const [detail, setDetail] = useState(null);
+  const today = todayStr();
+  const yesterday = shiftIso(today, -1);
 
-  const lotCtx = useMemo(
-    () => makeLotContext({ purchases, sales, purchaseReturns, saleReturns, products }),
-    [purchases, sales, purchaseReturns, saleReturns, products]
-  );
   const lotsByKey = useMemo(() => {
     const m = new Map();
-    (products || []).forEach((p) => {
-      m.set(String(p._id || p.id || p.name || ""), lotsFromContext(p, lotCtx));
+    const list = products || [];
+    const cached = list.length > 0 && list.every((p) => p && p._lots);
+    const lotCtx = cached ? null : makeLotContext({ purchases, sales, purchaseReturns, saleReturns, products: list });
+    list.forEach((p) => {
+      m.set(String(p._id || p.id || p.name || ""), p._lots || lotsFromContext(p, lotCtx));
     });
     return m;
-  }, [products, lotCtx]);
-  const lotsOf = (p) => lotsByKey.get(String(p._id || p.id || p.name || "")) || lotsFromContext(p, lotCtx);
+  }, [products, purchases, sales, purchaseReturns, saleReturns]);
+  const lotsOf = (p) => lotsByKey.get(String(p._id || p.id || p.name || "")) || {
+    stock: Number(p.stock) || 0,
+    latestCost: Number(p.latestCost) || 0,
+    fifoCost: Number(p.fifoCost) || 0,
+    sale: Number(p.lotSale) || Number(p.price) || 0,
+    costValue: Number(p.costValue) || 0,
+    remaining: [],
+    allLots: [],
+    sold: 0,
+    purchRet: 0,
+  };
+  const compare = useMemo(() => {
+    if (!asOf || isDemand) return null;
+    const nameToId = new Map();
+    (products || []).forEach((p) => {
+      const id = pidOf(p?._id || p?.id);
+      const name = String(p?.name || "").trim().toLowerCase();
+      if (id && name) nameToId.set(name, id);
+    });
+    const pastDay = asOf < todayStr();
+    const before = (rec) => {
+      const d = recordDay(rec);
+      if (!d) return true;
+      return pastDay ? d <= asOf : d < asOf;
+    };
+    const since = (rec) => {
+      const d = recordDay(rec);
+      if (!d) return false;
+      return pastDay ? d > asOf : d >= asOf;
+    };
+    const ctx = makeLotContext({
+      purchases: (purchases || []).filter(before),
+      sales: (sales || []).filter(before),
+      purchaseReturns: (purchaseReturns || []).filter(before),
+      saleReturns: (saleReturns || []).filter(before),
+      products,
+    });
+    const was = new Map();
+    (products || []).forEach((p) => {
+      const lots = lotsFromContext(p, ctx);
+      was.set(String(p._id || p.id || ""), {
+        stock: Number(lots.stock) || 0,
+        value: Number(lots.costValue) || 0,
+      });
+    });
+    const sold = {};
+    (sales || []).forEach((s) => {
+      if (!since(s)) return;
+      saleSoldLines(s, nameToId).forEach((ln) => {
+        sold[ln.productId] = (sold[ln.productId] || 0) + ln.qty;
+      });
+    });
+    return { was, sold };
+  }, [asOf, isDemand, products, purchases, sales, purchaseReturns, saleReturns]);
+  const wasRow = (p) => (compare ? compare.was.get(String(p._id || p.id || "")) : null);
+  const wasOf = (p) => Number(wasRow(p)?.stock) || 0;
+  const wasValueOf = (p) => Number(wasRow(p)?.value) || 0;
+  const soldSinceOf = (p) => (compare ? (compare.sold[String(p._id || p.id || "")] || 0) : 0);
   const payMap = useMemo(() => purchasePayMap(purchases), [purchases]);
 
   const stockOf = (p) => Number(lotsOf(p).stock) || 0;
@@ -749,11 +837,16 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
   const inventory = products
     .filter((p) => {
       const stock = stockOf(p);
-      const inGroup = isDemand ? stock <= thresholdOf(p) : stock > 0;
+      const moved = wasOf(p) > 0.0001 || stock > 0.0001 || soldSinceOf(p) > 0.0001;
+      const inGroup = compare ? moved : (isDemand ? stock <= thresholdOf(p) : stock > 0);
       if (!inGroup || !matchesInvSearch(p) || !matchesInvCat(p)) return false;
       return true;
     })
     .sort((a, b) => {
+      if (compare) {
+        const drop = (wasOf(b) - stockOf(b)) - (wasOf(a) - stockOf(a));
+        if (Math.abs(drop) > 0.0001) return drop;
+      }
       if (isDemand) return stockOf(a) - stockOf(b);
       const sa = dateStampOf(a);
       const sb = dateStampOf(b);
@@ -791,14 +884,23 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
     const zero = stock <= 0;
     const cat = itemCatOf(p) || (isUrdu ? (p.category ? getUrduItemLabel(p.category) : "") : (p.category || ""));
     const status = isDemand ? (zero ? (isUrdu ? "زیرو" : "Zero") : (isUrdu ? "کم" : "Low")) : "";
+    const was = wasOf(p);
+    const soldQty = soldSinceOf(p);
+    const down = was - stock;
+    const stockText = compare
+      ? `${isUrdu ? "اس دن" : "That day"} ${stockLabel(p.category, was)} · ${isUrdu ? "آج" : "Today"} ${stockLabel(p.category, stock)} · ${isUrdu ? "فروخت" : "Sold"} ${stockLabel(p.category, soldQty)} · ${down >= -0.0001 ? (isUrdu ? "کمی" : "Down") : (isUrdu ? "اضافہ" : "Up")} ${stockLabel(p.category, Math.abs(down))}`
+      : stockLabel(p.category, stock);
     return {
       name: productDisplayName(p) || p.name || "—",
       category: [cat, status].filter(Boolean).join(" · "),
-      stock: stockLabel(p.category, stock),
-      value: lots.costValue || stock * lots.fifoCost,
+      stock: stockText,
+      value: compare ? wasValueOf(p) : (lots.costValue || stock * lots.fifoCost),
     };
   });
   const printTotal = printRows.reduce((s, r) => s + r.value, 0);
+  const todayValueTotal = compare ? inventory.reduce((s, p) => s + (Number(lotsOf(p).costValue) || 0), 0) : printTotal;
+  const wasValueTotal = compare ? printTotal : todayValueTotal;
+  const valueDown = wasValueTotal - todayValueTotal;
   const paySplit = inventory.reduce((acc, p) => {
     lotsOf(p).remaining.forEach((l) => {
       const value = (Number(l.remaining) || 0) * (Number(l.unitCost) || 0);
@@ -815,8 +917,10 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
     opacity: inventory.length ? 1 : 0.45, whiteSpace: "nowrap",
   });
 
-  const moneyCols = [isUrdu ? "لاگت / پیس" : "Cost / pc", isUrdu ? "فروخت / پیس" : "Sale / pc", t.totalLabel];
-  const cols = isDemand
+  const moneyCols = [isUrdu ? "لاگت / پیس" : "Cost / pc", isUrdu ? "فروخت / پیس" : "Sale / pc", compare ? (isUrdu ? "اس دن مالیت" : "That day value") : t.totalLabel];
+  const cols = compare
+    ? [t.name, t.category, isUrdu ? "اس دن" : "That day", isUrdu ? "آج" : "Today", isUrdu ? "فروخت" : "Sold", isUrdu ? "کمی" : "Down", ...moneyCols]
+    : isDemand
     ? [t.invoiceNum, t.date, t.supplier, t.name, t.category, isUrdu ? "حالت" : "Status", t.stock, ...moneyCols]
     : [t.invoiceNum, t.date, t.supplier, t.name, t.category, t.stock, ...moneyCols];
   if (onReturn) cols.push(t.actions);
@@ -834,17 +938,44 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
   return (
     <div style={{ position: "relative" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-        <div style={{ flex: "1 1 240px", minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ flex: "1 1 240px", minWidth: 0, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <input
             value={invSearch}
             onChange={(e) => setInvSearch(e.target.value)}
             placeholder={isUrdu ? "نام / انوائس نمبر" : "Name / invoice number"}
-            style={{ flex: "7 1 0", width: 0, minWidth: 0, padding: "7px 10px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.input || th.bgCard, color: th.text, fontSize: 13, outline: "none" }}
+            style={{ flex: "1 1 180px", minWidth: 140, padding: "7px 10px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.input || th.bgCard, color: th.text, fontSize: 13, outline: "none" }}
           />
+          {!isDemand && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              {[
+                { id: today, label: isUrdu ? "آج" : "Today" },
+                { id: yesterday, label: isUrdu ? "کل" : "Yesterday" },
+              ].map((b) => (
+                <button
+                  key={b.label}
+                  type="button"
+                  onClick={() => setAsOf((v) => (v === b.id ? "" : b.id))}
+                  style={{
+                    padding: "7px 12px", borderRadius: 10, border: "none", cursor: "pointer",
+                    fontWeight: 700, fontSize: 12,
+                    background: asOf === b.id ? "linear-gradient(135deg,#1abc9c,#2980b9)" : (th.thHead || th.bgCard),
+                    color: asOf === b.id ? "#fff" : th.textMuted,
+                  }}
+                >{b.label}</button>
+              ))}
+              <input
+                type="date"
+                value={asOf}
+                onChange={(e) => setAsOf(e.target.value)}
+                title={isUrdu ? "اس تاریخ سے موازنہ" : "Compare from this date"}
+                style={{ padding: "6px 8px", borderRadius: 10, border: `1px solid ${asOf && asOf !== today && asOf !== yesterday ? "#1abc9c" : th.border}`, background: th.input || th.bgCard, color: th.text, fontSize: 13, outline: "none" }}
+              />
+            </div>
+          )}
           <select
             value={invCat}
             onChange={(e) => setInvCat(e.target.value)}
-            style={{ flex: "3 1 0", width: 0, minWidth: 0, padding: "7px 10px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.input || th.bgCard, color: th.text, fontSize: 13, outline: "none" }}
+            style={{ flex: "0 1 180px", minWidth: 140, padding: "7px 10px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.input || th.bgCard, color: th.text, fontSize: 13, outline: "none" }}
           >
             <option value="">{isUrdu ? "تمام کیٹگری" : "All categories"}</option>
             <optgroup label={isUrdu ? "ہارڈ ویئر کیٹگری" : "Hardware category"}>
@@ -870,7 +1001,15 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
         </button>
       </div>
       <p style={{ color: th.textMuted, fontSize: 12, margin: "-4px 0 10px" }}>
-        {isUrdu ? "تفصیل کے لیے قطار پر کلک کریں" : "Click a row for purchase lots (first in, first out) and profit"}
+        {compare
+          ? (asOf >= today
+            ? (isUrdu
+              ? "اس دن = آج صبح کا اسٹاک۔ فروخت = آج کی سیل۔ کمی = آج صبح سے اب تک جتنی اسٹاک کم ہوئی"
+              : "That day = stock this morning. Sold = sold today. Down = how much stock is lower now.")
+            : (isUrdu
+              ? `اس دن = ${asOf} کے آخر کا اسٹاک۔ فروخت = اس کے بعد کی سیل۔ کمی = اس دن سے آج تک جتنی اسٹاک کم ہوئی`
+              : `That day = stock at the end of ${asOf}. Sold = sold after that day. Down = that day minus today.`))
+          : (isUrdu ? "تفصیل کے لیے قطار پر کلک کریں" : "Click a row for purchase lots (first in, first out) and profit")}
       </p>
       <div style={{ paddingBottom: inventory.length ? 8 : 0 }}>
       <Table
@@ -885,22 +1024,38 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
           const title = p.barcode ? `${name} · ${p.barcode}` : name;
           const zero = stock <= 0;
           const low = stock > 0 && stock <= thresholdOf(p);
-          const cells = [
+          const was = wasOf(p);
+          const soldQty = soldSinceOf(p);
+          const down = was - stock;
+          const cells = compare ? [
+            <div style={{ fontWeight: 700, color: th.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 260 }} title={title}>{name}</div>,
+            catBadge(p),
+            <span style={{ fontWeight: 700, fontSize: 12, whiteSpace: "nowrap" }}>{stockLabel(p.category, was)}</span>,
+            <span style={{ fontWeight: 700, fontSize: 12, color: "#34d399", whiteSpace: "nowrap" }}>{stockLabel(p.category, stock)}</span>,
+            <span style={{ fontWeight: 700, fontSize: 12, color: "#60a5fa", whiteSpace: "nowrap" }}>{stockLabel(p.category, soldQty)}</span>,
+            <span style={{ fontWeight: 800, fontSize: 12, whiteSpace: "nowrap", color: down > 0.0001 ? "#f87171" : down < -0.0001 ? "#34d399" : th.textMuted }}>
+              {Math.abs(down) < 0.0001 ? "—" : `${down > 0 ? (isUrdu ? "کمی " : "Down ") : (isUrdu ? "اضافہ " : "Up ")}${stockLabel(p.category, Math.abs(down))}`}
+            </span>,
+          ] : [
             <span style={{ fontFamily: "monospace", color: "#60a5fa", fontSize: 12, whiteSpace: "nowrap" }}>{invoiceOf(p, bill)}</span>,
             <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{dateOf(p, bill)}</span>,
             <span style={{ whiteSpace: "nowrap" }}>{supplierOf(p, bill)}</span>,
             <div style={{ fontWeight: 700, color: th.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 260 }} title={title}>{name}</div>,
             catBadge(p),
           ];
-          if (isDemand) cells.push(statusBadge(zero));
+          if (!compare && isDemand) cells.push(statusBadge(zero));
+          if (!compare) {
+            cells.push(
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, fontSize: 12, color: isDemand ? (zero ? "#f87171" : "#fbbf24") : (low ? "#d97706" : "#34d399"), whiteSpace: "nowrap" }}>
+                {stockLabel(p.category, stock)}
+                {!isDemand && low ? statusBadge(false) : null}
+              </span>
+            );
+          }
           cells.push(
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, fontSize: 12, color: isDemand ? (zero ? "#f87171" : "#fbbf24") : (low ? "#d97706" : "#34d399"), whiteSpace: "nowrap" }}>
-              {stockLabel(p.category, stock)}
-              {!isDemand && low ? statusBadge(false) : null}
-            </span>,
             <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(lots.latestCost)}</span>,
             <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(lots.sale)}</span>,
-            <span style={{ fontWeight: 700, whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(lots.costValue)}</span>,
+            <span style={{ fontWeight: 700, whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(compare ? wasValueOf(p) : lots.costValue)}</span>,
           );
           if (onReturn) {
             cells.push(
@@ -934,7 +1089,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
             {inventory.length} {isUrdu ? "آئٹمز" : "items"}
             {isDemand ? "" : ` · ${lowCount} ${isUrdu ? "کم اسٹاک" : "low stock"}`}
           </span>
-          {!isDemand && (
+          {!isDemand && !compare && (
             <span style={{ display: "inline-flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 13, fontWeight: 800 }}>
               <span style={{ color: "#0f766e", whiteSpace: "nowrap" }}>
                 {isUrdu ? "کیش" : "Cash"} · {formatPKR(paySplit.cash)}
@@ -945,7 +1100,25 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
               </span>
             </span>
           )}
-          <span style={{ color: th.text, fontSize: 14, fontWeight: 800, whiteSpace: "nowrap" }}>{isUrdu ? "کل مالیت" : "Total value"} · {formatPKR(printTotal)}</span>
+          {compare ? (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 13, fontWeight: 800 }}>
+              <span style={{ color: th.text, whiteSpace: "nowrap" }}>
+                {isUrdu ? "اس دن" : "That day"} · {formatPKR(wasValueTotal)}
+              </span>
+              <span style={{ color: th.textDim }}>·</span>
+              <span style={{ color: "#0f766e", whiteSpace: "nowrap" }}>
+                {isUrdu ? "آج" : "Today"} · {formatPKR(todayValueTotal)}
+              </span>
+              <span style={{ color: th.textDim }}>·</span>
+              <span style={{ color: valueDown > 0.5 ? "#f87171" : valueDown < -0.5 ? "#34d399" : th.textMuted, whiteSpace: "nowrap" }}>
+                {Math.abs(valueDown) < 0.5
+                  ? (isUrdu ? "کمی" : "Down") + " · " + formatPKR(0)
+                  : `${valueDown > 0 ? (isUrdu ? "کمی" : "Down") : (isUrdu ? "اضافہ" : "Up")} · ${formatPKR(Math.abs(valueDown))}`}
+              </span>
+            </span>
+          ) : (
+            <span style={{ color: th.text, fontSize: 14, fontWeight: 800, whiteSpace: "nowrap" }}>{isUrdu ? "کل مالیت" : "Total value"} · {formatPKR(printTotal)}</span>
+          )}
         </div>
       )}
       {!inventory.length && (

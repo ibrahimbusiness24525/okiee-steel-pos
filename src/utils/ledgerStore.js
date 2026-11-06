@@ -209,8 +209,17 @@ export const ledgerApi = {
     try {
       const r = await api.deleteParty(id);
       if (isRemoteOk(r)) return { ...r, entries: sortLedgerEntries(r.entries || []), remote: true };
+      if (r && r.success === false) return r;
     } catch { /* local */ }
     return local.remove(id);
+  },
+  async block(type, name) {
+    try {
+      const r = await api.blockParty({ type, name });
+      if (isRemoteOk(r)) return r;
+      if (r && r.success === false) return r;
+    } catch { /* hidden locally */ }
+    return { success: true, remote: false };
   },
   async addEntry(id, payload) {
     try {

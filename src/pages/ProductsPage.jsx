@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, FInput, SaveBtn, Table } from "../components/shared";
@@ -6,7 +6,6 @@ import { api } from "../utils/api";
 import { formatPKR, todayStr } from "../utils/helpers";
 import { CHADER_TYPES, NET_TYPES, NET_CHORUS_GAUGES, ROUND_INCHES, SQUARE_INCHES, PIPE_GAUGES, productDisplayName } from "../utils/constants";
 import HardwareManageModal from "../components/HardwareManageModal";
-import { stockLotsForProduct, makeLotContext } from "../components/InventoryStockTable";
 import { hardwareSalePrice } from "../utils/productPrices";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -22,11 +21,6 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
   const [catTab,setCatTab]=useState("all"); const [search,setSearch]=useState("");
   const [showHwModal,setShowHwModal]=useState(false); const [hwSeed,setHwSeed]=useState(null);
   const [revealedCost,setRevealedCost]=useState(() => new Set());
-
-  const lotCtx = useMemo(
-    () => makeLotContext({ purchases, sales, purchaseReturns, saleReturns, products }),
-    [purchases, sales, purchaseReturns, saleReturns, products]
-  );
 
   const toggleCostPrice = (id, e) => {
     e?.stopPropagation?.();
@@ -196,15 +190,14 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
         rows={displayed.map((p,i)=>{
           const cc=catColor[p.category]||catColor.Custom;
           const isPipe = p.category==="Pipe";
-          const lots = stockLotsForProduct(p, { ctx: lotCtx });
           const isHw = p.category === "Hardware" || p.category === "Custom";
           // Hardware catalog cost/sale live on the product; purchase lots can lag after edits.
           const cost = isHw
-            ? (Number(p.purchasePrice) || Number(lots.latestCost || lots.avgCost || lots.fifoCost) || 0)
-            : (Number(lots.latestCost || lots.avgCost || lots.fifoCost) || 0);
+            ? (Number(p.purchasePrice) || Number(p.latestCost) || Number(p.fifoCost) || 0)
+            : (Number(p.latestCost) || Number(p.fifoCost) || 0);
           const sale = isHw
             ? (hardwareSalePrice(p, purchases) || Number(p.price) || 0)
-            : (Number(lots.sale) || Number(p.price) || 0);
+            : (Number(p.lotSale) || Number(p.price) || 0);
           const costShown = revealedCost.has(p._id);
           const fmtRs = (n) => {
             const v = Math.round((Number(n) || 0) * 100) / 100;
