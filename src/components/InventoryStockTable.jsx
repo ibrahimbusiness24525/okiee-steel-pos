@@ -234,7 +234,7 @@ function addQtyMaps(returns, byId, byName) {
 
 function saleSoldLines(sale, nameToId) {
   const lines = [];
-  const byId = new Map();
+  const seen = new Set();
   const resolveId = (raw, name) => {
     const id = pidOf(raw);
     if (id) return id;
@@ -251,37 +251,28 @@ function saleSoldLines(sale, nameToId) {
     const m = String(row.desc || "").match(/^(\d+\.?\d*)/);
     return m ? parseFloat(m[1]) : 0;
   };
-  const add = (productId, qty, extra = {}) => {
+  const push = (productId, qty, extra = {}) => {
     const id = resolveId(productId, extra.productName);
     const q = Number(qty) || 0;
-    if (!id || q <= 0) return;
-    const prev = byId.get(id);
-    if (prev) {
-      prev.qty += q;
-      return;
-    }
-    const line = {
+    if (!id || q <= 0 || seen.has(id)) return;
+    seen.add(id);
+    lines.push({
       productId: String(id),
       productName: extra.productName || "",
       qty: q,
-    };
-    byId.set(id, line);
-    lines.push(line);
+    });
   };
-  const saleItems = Array.isArray(sale.saleItems) ? sale.saleItems : [];
-  const items = Array.isArray(sale.items) ? sale.items : [];
-  // One bill can sell the same item on several lines (1 + 1 + 2). Sum them.
-  // items[] is the same lines saved again, so skip a product already taken from saleItems.
-  if (saleItems.length) {
-    saleItems.forEach((si) => add(si.productId || si.product, si.qty, { productName: si.productName }));
+  // Count each product once per bill. The shop stock list (the Netlify figure)
+  // uses the first line only. Adding later lines of the same item on that bill
+  // was dropping the stock value.
+  if (Array.isArray(sale.saleItems)) {
+    sale.saleItems.forEach((si) => push(si.productId || si.product, si.qty, { productName: si.productName }));
   }
-  items.forEach((it) => {
-    const id = resolveId(it.productId || it.product, it.productName);
-    if (saleItems.length && id && byId.has(id)) return;
-    add(it.productId || it.product, qtyFromItem(it), { productName: it.productName });
-  });
+  if (Array.isArray(sale.items)) {
+    sale.items.forEach((it) => push(it.productId || it.product, qtyFromItem(it), { productName: it.productName }));
+  }
   if (!lines.length && sale.product) {
-    add(sale.product, sale.qty, { productName: sale.productName || "" });
+    push(sale.product, sale.qty, { productName: sale.productName || "" });
   }
   return lines;
 }
