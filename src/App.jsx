@@ -28,6 +28,7 @@ import AccountsPage from "./pages/AccountsPage";
 import ExpensesPage from "./pages/ExpensesPage";
 import LedgerPage from "./pages/LedgerPage";
 import RecordsPage from "./pages/RecordsPage";
+import ProductHistoryPage from "./pages/ProductHistoryPage";
 import StaffPage from "./pages/StaffPage";
 import LoadersPage from "./pages/LoadersPage";
 import ShopProfilePage from "./pages/ShopProfilePage";
@@ -312,7 +313,7 @@ function AppInner() {
     <main dir={isUrdu ? "rtl" : "ltr"} style={{ flex: 1, overflowY: "auto", padding: isMobile ? "14px" : "20px", paddingBottom: isMobile ? 80 : 20 }}>
       {user.role === "admin" && (
         <>
-          {active === "dashboard"    && <Dashboard products={productsView} purchases={purchases} sales={sales} staff={staff} loaders={loaders} saleReturns={saleReturns} purchaseReturns={purchaseReturns} parties={parties} expenses={expenses} loadParties={loadParties} loadExpenses={loadExpenses} stockReady={stockReady} />}
+          {active === "dashboard"    && <Dashboard products={productsView} purchases={purchases} sales={sales} staff={staff} loaders={loaders} saleReturns={saleReturns} purchaseReturns={purchaseReturns} parties={parties} expenses={expenses} loadParties={loadParties} loadExpenses={loadExpenses} loadProducts={loadProducts} loadPurchases={loadPurchases} loadPurchaseReturns={loadPurchaseReturns} stockReady={stockReady} />}
           {active === "products"     && <ProductsPage products={productsView} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} loadProducts={loadProducts} loadPurchases={loadPurchases} loadPurchaseReturns={loadPurchaseReturns} />}
           {active === "purchase"     && <PurchasePage purchases={purchases} products={productsView} loadPurchases={loadPurchases} loadProducts={loadProducts} purchaseReturns={purchaseReturns} loadPurchaseReturns={loadPurchaseReturns} sales={sales} saleReturns={saleReturns} stockReady={stockReady} />}
           {active === "sales"        && <SalesPage sales={sales} products={productsView} lotCtx={lotCtx} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} saleReturns={saleReturns} loadSaleReturns={loadSaleReturns} purchases={purchases} purchaseReturns={purchaseReturns} />}
@@ -320,6 +321,7 @@ function AppInner() {
           {active === "expenses"     && <ExpensesPage loadExpenses={loadExpenses} loadParties={loadParties} />}
           {active === "ledger"       && <LedgerPage purchases={purchases} sales={sales} user={user} />}
           {active === "records"      && <RecordsPage products={productsView} purchases={purchases} sales={sales} />}
+          {active === "history"     && <ProductHistoryPage products={productsView} purchases={purchases} sales={sales} saleReturns={saleReturns} />}
           {active === "staff"        && <StaffPage staff={staff} loadStaff={loadStaff} />}
           {active === "loaders"      && <LoadersPage loaders={loaders} loadLoaders={loadLoaders} />}
           {active === "shop-profile" && <ShopProfilePage />}

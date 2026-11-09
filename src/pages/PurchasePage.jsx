@@ -1273,7 +1273,19 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
 
       {showInvPopup && (
         <Modal title={isUrdu ? `اسٹاک لسٹ · ${stockedCount}` : `Stock List · ${stockedCount}`} onClose={() => setShowInvPopup(false)} xl>
-          <InventoryStockTable products={products} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} onReturn={openInvReturn} />
+          <InventoryStockTable
+            products={products}
+            purchases={purchases}
+            sales={sales}
+            purchaseReturns={purchaseReturns}
+            saleReturns={saleReturns}
+            onReturn={openInvReturn}
+            onChanged={async () => {
+              await loadPurchases();
+              await loadProducts();
+              if (loadPurchaseReturns) await loadPurchaseReturns();
+            }}
+          />
         </Modal>
       )}
 

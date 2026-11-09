@@ -3,6 +3,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { Table, Modal } from "./shared";
 import { formatPKR, formatWeightKgG, printThermalOrA4, todayStr } from "../utils/helpers";
+import { api } from "../utils/api";
 import { productDisplayName } from "../utils/constants";
 import { pidOf } from "./StockReturns";
 import {
@@ -232,7 +233,7 @@ function addQtyMaps(returns, byId, byName) {
   });
 }
 
-function saleSoldLines(sale, nameToId) {
+export function saleSoldLines(sale, nameToId) {
   const lines = [];
   const seen = new Set();
   const resolveId = (raw, name) => {
@@ -677,7 +678,180 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t }) {
   );
 }
 
-export default function InventoryStockTable({ products = [], purchases = [], sales = [], purchaseReturns = [], saleReturns = [], onReturn, kind = "inventory" }) {
+function billProductId(raw) {
+  if (!raw) return "";
+  if (typeof raw === "object") return String(raw._id || raw.id || "");
+  return String(raw);
+}
+
+function newestBillFor(product, purchases) {
+  const id = billProductId(product?._id || product?.id);
+  const name = String(product?.name || "").trim().toLowerCase();
+  const related = (purchases || []).filter((b) => {
+    const bid = billProductId(b.product || b.productId);
+    if (id && bid === id) return true;
+    const entries = Array.isArray(b.entries) ? b.entries : [];
+    if (entries.some((e) => id && billProductId(e.product || e.productId) === id)) return true;
+    return name && String(b.productName || "").trim().toLowerCase() === name;
+  });
+  related.sort((a, b) => `${b.date || ""}|${b.createdAt || ""}`.localeCompare(`${a.date || ""}|${a.createdAt || ""}`));
+  return related[0] || null;
+}
+
+function StockEditModal({ product, lots, purchases, onClose, onChanged, isUrdu, th }) {
+  const [qty, setQty] = useState(String(Math.round((Number(lots.stock) || 0) * 1000) / 1000));
+  const [cost, setCost] = useState(String(Number(lots.latestCost) || 0));
+  const [sale, setSale] = useState(String(Number(lots.sale) || 0));
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const name = productDisplayName(product) || product.name || "—";
+
+  const inputStyle = {
+    width: "100%", padding: "10px 12px", borderRadius: 10, border: `1px solid ${th.border}`,
+    background: th.input || th.bgCard, color: th.text, fontSize: 14, outline: "none",
+  };
+
+  const save = async () => {
+    const nextQty = Number(qty);
+    const nextCost = Number(cost);
+    const nextSale = Number(sale);
+    if (!Number.isFinite(nextQty) || nextQty < 0) {
+      setErr(isUrdu ? "اسٹاک صفر یا اس سے زیادہ ہونا چاہیے" : "Stock must be zero or more");
+      return;
+    }
+    if (!Number.isFinite(nextCost) || nextCost < 0 || !Number.isFinite(nextSale) || nextSale < 0) {
+      setErr(isUrdu ? "قیمت صفر یا اس سے زیادہ ہونی چاہیے" : "Price must be zero or more");
+      return;
+    }
+    const fromQty = Number(lots.stock) || 0;
+    const diff = Math.round((nextQty - fromQty) * 1000) / 1000;
+    const costChanged = Math.abs(nextCost - (Number(lots.latestCost) || 0)) > 0.009;
+    const saleChanged = Math.abs(nextSale - (Number(lots.sale) || 0)) > 0.009;
+    setSaving(true);
+    setErr("");
+    try {
+      const id = product._id || product.id;
+      const applyPrices = async () => {
+        const fields = product.category === "Pipe"
+          ? { price: nextCost, purchasePrice: nextSale }
+          : { purchasePrice: nextCost, price: nextSale };
+        const res = await api.updateProduct(id, fields);
+        if (!res?.success) throw new Error(res?.message || "Price was not saved");
+      };
+      if (diff > 0.0001) {
+        const total = Math.round(nextCost * diff * 100) / 100;
+        const pur = await api.addPurchase({
+          supplier: "Stock edit",
+          date: todayStr(),
+          product: id,
+          productName: product.name,
+          category: product.category || "",
+          qty: diff,
+          rate: nextCost,
+          total,
+          productPrice: nextCost,
+          rows: [{ qty: diff, purchasePrice: nextCost, salePrice: nextSale, unit: product.unit || "piece" }],
+          unit: product.unit || "piece",
+          paymentMethod: "cash",
+          settlement: "full",
+          paidAmount: total,
+          remainingAmount: 0,
+          notes: "Stock edit",
+        });
+        if (!pur?.success) throw new Error(pur?.message || "Stock was not updated");
+      } else if (diff < -0.0001) {
+        const need = Math.abs(diff);
+        let db = product.dbStock != null ? Number(product.dbStock) : fromQty;
+        if (!Number.isFinite(db)) db = fromQty;
+        if (db + 0.0001 < need) {
+          const bump = await api.adjustStock(id, "add", Math.round((need - db) * 1000) / 1000);
+          if (!bump?.success) throw new Error(bump?.message || "Stock was not updated");
+        }
+        const ret = await api.addPurchaseReturn({
+          date: todayStr(),
+          supplier: "Stock edit",
+          notes: "Stock edit",
+          items: [{ productId: id, qty: need, rate: nextCost }],
+        });
+        if (!ret?.success) throw new Error(ret?.message || "Stock was not updated");
+        try { await api.reconcileStock([id]); } catch { /* return already reduced stock */ }
+      }
+      if ((costChanged || saleChanged) && diff <= 0.0001) {
+        const bill = newestBillFor(product, purchases);
+        if (bill) {
+          const billId = bill._id || bill.id;
+          const entries = Array.isArray(bill.entries) ? bill.entries : [];
+          if (entries.length) {
+            const nextEntries = entries.map((e) => {
+              const eid = billProductId(e.product || e.productId);
+              if (String(id) && eid !== String(id)) return e;
+              return { ...e, productPrice: nextCost, rate: nextCost, purchasePrice: nextCost, salePrice: nextSale };
+            });
+            const upd = await api.updatePurchase(billId, { entries: nextEntries });
+            if (!upd?.success) throw new Error(upd?.message || "Price was not saved");
+          } else {
+            const q = Number(bill.qty) || Number(bill.rows?.[0]?.qty) || 0;
+            const rows = (bill.rows && bill.rows.length)
+              ? bill.rows.map((r, i) => (i === 0 ? { ...r, purchasePrice: nextCost, salePrice: nextSale, qty: Number(r.qty) || q } : r))
+              : [{ qty: q, purchasePrice: nextCost, salePrice: nextSale, unit: product.unit || "piece" }];
+            const upd = await api.updatePurchase(billId, {
+              rate: nextCost,
+              productPrice: nextCost,
+              total: Math.round(nextCost * q * 100) / 100,
+              rows,
+              qty: q,
+            });
+            if (!upd?.success) throw new Error(upd?.message || "Price was not saved");
+          }
+        }
+      }
+      await applyPrices();
+      if (onChanged) await onChanged();
+      onClose();
+    } catch (e) {
+      setErr(e?.message || (isUrdu ? "محفوظ نہیں ہوا" : "Could not save"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={isUrdu ? "اسٹاک ایڈٹ" : "Edit stock"} onClose={onClose} layer={300}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ fontWeight: 800, color: th.text, fontSize: 16 }}>{name}</div>
+        <div style={{ color: th.textMuted, fontSize: 12 }}>
+          {isUrdu ? "اب" : "Now"} {stockLabel(product.category, lots.stock)}
+          {" · "}{isUrdu ? "لاگت" : "Cost"} {formatPKR(lots.latestCost)}
+          {" · "}{isUrdu ? "فروخت" : "Sale"} {formatPKR(lots.sale)}
+        </div>
+        <label style={{ display: "flex", flexDirection: "column", gap: 6, color: th.textMuted, fontSize: 12, fontWeight: 700 }}>
+          {isUrdu ? "اسٹاک (کم یا زیادہ)" : "Stock (less or more)"}
+          <input value={qty} onChange={(e) => setQty(e.target.value)} inputMode="decimal" style={inputStyle} />
+        </label>
+        <label style={{ display: "flex", flexDirection: "column", gap: 6, color: th.textMuted, fontSize: 12, fontWeight: 700 }}>
+          {isUrdu ? "لاگت / پیس" : "Cost / pc"}
+          <input value={cost} onChange={(e) => setCost(e.target.value)} inputMode="decimal" style={inputStyle} />
+        </label>
+        <label style={{ display: "flex", flexDirection: "column", gap: 6, color: th.textMuted, fontSize: 12, fontWeight: 700 }}>
+          {isUrdu ? "فروخت / پیس" : "Sale / pc"}
+          <input value={sale} onChange={(e) => setSale(e.target.value)} inputMode="decimal" style={inputStyle} />
+        </label>
+        {err ? <div style={{ color: "#f87171", fontSize: 13, fontWeight: 700 }}>{err}</div> : null}
+        <button
+          type="button"
+          data-save="1"
+          disabled={saving}
+          onClick={save}
+          style={{ padding: "11px 14px", borderRadius: 10, border: "none", cursor: saving ? "wait" : "pointer", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "#fff", fontWeight: 800, fontSize: 14 }}
+        >
+          {saving ? (isUrdu ? "محفوظ ہو رہا ہے" : "Saving...") : (isUrdu ? "محفوظ کریں" : "Save")}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+export default function InventoryStockTable({ products = [], purchases = [], sales = [], purchaseReturns = [], saleReturns = [], onReturn, onChanged, kind = "inventory" }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const isUrdu = lang === "ur";
@@ -686,6 +860,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
   const [invCat, setInvCat] = useState("");
   const [asOf, setAsOf] = useState("");
   const [detail, setDetail] = useState(null);
+  const [editRow, setEditRow] = useState(null);
   const today = todayStr();
   const yesterday = shiftIso(today, -1);
 
@@ -914,7 +1089,8 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
     : isDemand
     ? [t.invoiceNum, t.date, t.supplier, t.name, t.category, isUrdu ? "حالت" : "Status", t.stock, ...moneyCols]
     : [t.invoiceNum, t.date, t.supplier, t.name, t.category, t.stock, ...moneyCols];
-  if (onReturn) cols.push(t.actions);
+  if (onReturn) cols.push(isUrdu ? "واپسی" : "Return");
+  if (!isDemand && onChanged) cols.push(isUrdu ? "ایڈٹ" : "Edit");
 
   const statusBadge = (zero) => (
     <span style={{
@@ -1056,6 +1232,15 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
               >↩ {isUrdu ? "واپسی" : "Return"}</button>
             );
           }
+          if (!isDemand && onChanged) {
+            cells.push(
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setEditRow(p); }}
+                style={{ padding: "5px 10px", borderRadius: 8, border: "none", cursor: "pointer", background: "rgba(59,130,246,0.15)", color: "#60a5fa", fontWeight: 700, fontSize: 12, whiteSpace: "nowrap" }}
+              >✎ {isUrdu ? "ایڈٹ" : "Edit"}</button>
+            );
+          }
           return { data: p, cells };
         })}
       />
@@ -1122,6 +1307,17 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
       <div style={{ position: "absolute", left: 0, top: 0, width: 0, height: 0, overflow: "hidden", pointerEvents: "none" }} aria-hidden="true">
         <InventoryPrintSheet rows={printRows} total={printTotal} isUrdu={isUrdu} kind={kind} />
       </div>
+      {editRow && (
+        <StockEditModal
+          product={editRow}
+          lots={lotsOf(editRow)}
+          purchases={purchases}
+          isUrdu={isUrdu}
+          th={th}
+          onClose={() => setEditRow(null)}
+          onChanged={onChanged}
+        />
+      )}
       {detail && (
         <Modal
           title={isUrdu ? "اسٹاک تفصیل" : "Stock detail"}

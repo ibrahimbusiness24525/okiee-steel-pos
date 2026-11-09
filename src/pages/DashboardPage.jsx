@@ -6,6 +6,7 @@ import { useResponsive, Icon, ICONS, Modal, Table } from "../components/shared";
 import { formatPKR, formatDateTime, printThermalOrA4, downloadInvoicePdf, sharePdfOnWhatsApp, loadShopProfile, inDateFilter } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
 import InventoryStockTable, { inventoryStats } from "../components/InventoryStockTable";
+import DemandList from "../components/DemandList";
 import { netSaleAmount, saleReturnedAmount, netSaleItems, netPurchaseLine, purchaseInvoiceNet, saleInvoiceNet } from "../utils/returnsStore";
 import {
   slipPage, slipLine, ThermalSlipHeader, ThermalSlipFooter,
@@ -1138,7 +1139,7 @@ function DailyAnalyticsModal({
 
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
-function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=[], purchaseReturns=[], parties=[], expenses=[], loadParties, loadExpenses, stockReady = false }) {
+function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=[], purchaseReturns=[], parties=[], expenses=[], loadParties, loadExpenses, loadProducts, loadPurchases, loadPurchaseReturns, stockReady = false }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
@@ -1151,6 +1152,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   const [customerSearch, setCustomerSearch] = useState("");
   const [showProfitModal, setShowProfitModal] = useState(false);
   const [showInvPopup, setShowInvPopup] = useState(false);
+  const [showDemand, setShowDemand] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
 
   // ─── Two separate modal states ────────────────────────────────────────────────
@@ -1853,9 +1855,26 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
         </Modal>
       )}
 
+      {showDemand && (
+        <Modal title={isUrdu ? "ڈیمانڈ" : "Print Demand"} onClose={() => setShowDemand(false)} xl>
+          <DemandList products={products} />
+        </Modal>
+      )}
+
       {showInvPopup && (
         <Modal title={isUrdu ? "اسٹاک لسٹ" : "Stock List"} onClose={() => setShowInvPopup(false)} xl>
-          <InventoryStockTable products={products} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} />
+          <InventoryStockTable
+            products={products}
+            purchases={purchases}
+            sales={sales}
+            purchaseReturns={purchaseReturns}
+            saleReturns={saleReturns}
+            onChanged={async () => {
+              if (loadProducts) await loadProducts();
+              if (loadPurchases) await loadPurchases();
+              if (loadPurchaseReturns) await loadPurchaseReturns();
+            }}
+          />
         </Modal>
       )}
 
@@ -1880,6 +1899,24 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
           onChange={e => { setCustomTo(e.target.value); setFilter("custom"); }}
         />
         <span style={{ marginLeft:"auto", color:th.textDim, fontSize:12 }}>{filterLabel()}</span>
+        <button
+          type="button"
+          disabled={!stockReady}
+          onClick={() => stockReady && setShowDemand(true)}
+          style={{
+            padding: "8px 16px",
+            borderRadius: 10,
+            border: "none",
+            cursor: stockReady ? "pointer" : "not-allowed",
+            opacity: stockReady ? 1 : 0.5,
+            background: "linear-gradient(135deg,#d97706,#b45309)",
+            color: "#fff",
+            fontWeight: 700,
+            fontSize: 13,
+          }}
+        >
+          {isUrdu ? "ڈیمانڈ پرنٹ" : "Print Demand"}
+        </button>
         <button
           type="button"
           onClick={async () => {

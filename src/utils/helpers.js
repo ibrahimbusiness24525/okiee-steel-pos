@@ -391,9 +391,9 @@ export function safePdfName(name) {
   return `${clean || "invoice"}.pdf`;
 }
 
-/** Capture #thermal-invoice into a jsPDF document. */
-export async function invoicePdfDoc(filename) {
-  const inv = document.getElementById("thermal-invoice");
+/** Capture a slip into a jsPDF document. Defaults to the thermal invoice node. */
+export async function invoicePdfDoc(filename, rootId = "thermal-invoice") {
+  const inv = document.getElementById(rootId);
   if (!inv) return null;
 
   const file = safePdfName(filename);
@@ -452,9 +452,9 @@ export async function invoicePdfDoc(filename) {
   }
 }
 
-/** Capture #thermal-invoice and download an A4 PDF file (no print dialog). */
-export async function downloadInvoicePdf(filename) {
-  const r = await invoicePdfDoc(filename);
+/** Capture a slip and download an A4 PDF file (no print dialog). */
+export async function downloadInvoicePdf(filename, rootId) {
+  const r = await invoicePdfDoc(filename, rootId);
   if (r?.pdf) r.pdf.save(r.file);
 }
 
