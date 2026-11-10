@@ -152,13 +152,52 @@ function itemMatchesProduct(it, id, name) {
   return !!(name && iname && iname === name);
 }
 
-/** Sales and returns saved after a stock edit. Older bills stay inside the edited count. */
+function isStockEditReturn(r) {
+  const notes = String(r?.notes || "").trim().toLowerCase();
+  const supplier = String(r?.supplier || "").trim().toLowerCase();
+  return notes === "stock edit" || supplier === "stock edit";
+}
+
+function editLot(qty, date, createdAt) {
+  const n = Math.round((Number(qty) || 0) * 1000) / 1000;
+  return {
+    date: String(date || createdAt || "").slice(0, 10) || "—",
+    invoice: "Edit",
+    supplier: "Edit",
+    bought: Math.abs(n),
+    remaining: n,
+    unitCost: 0,
+    createdAt: createdAt || "",
+    edit: true,
+  };
+}
+
+/** A stock edit is not a sale and not a supplier return. It must not mark a purchase bill as used. */
+function productReturnSplit(product, ctx) {
+  const id = pidOf(product?._id || product?.id);
+  const name = normName(product?.name);
+  const edits = [];
+  let realQty = 0;
+  (ctx?.purchaseReturns || []).forEach((r) => {
+    (r.items || []).forEach((it) => {
+      if (!itemMatchesProduct(it, id, name)) return;
+      const q = Number(it.qty) || 0;
+      if (q <= 0) return;
+      if (isStockEditReturn(r)) edits.push({ qty: q, date: r.date, createdAt: r.createdAt });
+      else realQty += q;
+    });
+  });
+  return { edits, realQty };
+}
+
+/** Sales and supplier returns saved after a stock edit. Older bills stay inside the edited count. */
 function movementsAfter(product, ctx, baselineAt) {
   const id = pidOf(product?._id || product?.id);
   const name = normName(product?.name);
   let sold = 0;
   let saleRet = 0;
-  let purchRet = 0;
+  let realRet = 0;
+  let editQty = 0;
   (ctx?.sales || []).forEach((s) => {
     if (lotTime(s) <= baselineAt) return;
     saleSoldLines(s, ctx.nameToId).forEach((ln) => {
@@ -174,10 +213,14 @@ function movementsAfter(product, ctx, baselineAt) {
   (ctx?.purchaseReturns || []).forEach((r) => {
     if (lotTime(r) <= baselineAt) return;
     (r.items || []).forEach((it) => {
-      if (itemMatchesProduct(it, id, name)) purchRet += Number(it.qty) || 0;
+      if (!itemMatchesProduct(it, id, name)) return;
+      const q = Number(it.qty) || 0;
+      if (q <= 0) return;
+      if (isStockEditReturn(r)) editQty += q;
+      else realRet += q;
     });
   });
-  return { sold, saleRet, purchRet };
+  return { sold, saleRet, realRet, editQty };
 }
 
 function invoiceKey(p) {
@@ -455,56 +498,41 @@ function lotsFromContext(product, ctx) {
 
   const sold = qtyFromMaps(ctx.soldById, ctx.soldByName, product, ctx);
   const saleRet = qtyFromMaps(ctx.saleRetById, ctx.saleRetByName, product, ctx);
-  const purchRet = qtyFromMaps(ctx.purchRetById, ctx.purchRetByName, product, ctx);
+  const split = productReturnSplit(product, ctx);
+  const purchRet = split.realQty;
+  const editQty = split.edits.reduce((s, e) => s + e.qty, 0);
+
+  const takeFromLots = (consume) => {
+    let left = Math.max(0, consume);
+    for (const lot of lots) {
+      if (left <= 0) break;
+      const take = Math.min(lot.remaining, left);
+      if (take <= 0) continue;
+      lot.soldTake = (lot.soldTake || 0) + take;
+      lot.remaining -= take;
+      left -= take;
+    }
+  };
 
   const baselineAt = Date.parse(product?.stockBaselineAt || "");
   const baselineQty = Number(product?.stockBaseline);
   const hasBaseline = product?.stockBaselineAt && Number.isFinite(baselineAt) && Number.isFinite(baselineQty) && baselineQty >= 0;
 
   if (hasBaseline) {
-    // The edit is the on-hand. Bills from before it stay inside that number.
-    // A purchase saved after the edit is added in full and is not filled back with the old pieces.
-    const pre = [];
-    const post = [];
-    lots.forEach((lot) => ((lotTime(lot) > baselineAt) ? post : pre).push(lot));
-    let cut = pre.reduce((s, l) => s + l.remaining, 0) - baselineQty;
-    if (cut > 0.0001) {
-      for (const lot of pre) {
-        if (cut <= 0.0001) break;
-        const take = Math.min(lot.remaining, cut);
-        lot.remaining -= take;
-        cut -= take;
-      }
-    } else if (cut < -0.0001) {
-      const extra = -cut;
-      pre.push({
-        date: String(product.stockBaselineAt).slice(0, 10),
-        invoice: "Stock edit",
-        supplier: "Stock edit",
-        bought: extra,
-        remaining: extra,
-        unitCost: fallback,
-        createdAt: product.stockBaselineAt,
-      });
-    }
+    // The number saved on Edit is the stock. A later purchase adds only its own qty.
+    // It does not mark the previous bill as used.
     const after = movementsAfter(product, ctx, baselineAt);
-    let consume = Math.max(0, after.sold - after.saleRet) + after.purchRet;
-    lots.length = 0;
-    [...pre, ...post].forEach((lot) => lots.push(lot));
-    for (const lot of lots) {
-      if (consume <= 0) break;
-      const take = Math.min(lot.remaining, consume);
-      lot.remaining -= take;
-      consume -= take;
-    }
+    takeFromLots(Math.max(0, after.sold - after.saleRet) + after.realRet);
+    const preBought = lots
+      .filter((lot) => lotTime(lot) <= baselineAt)
+      .reduce((s, lot) => s + (Number(lot.bought) || 0), 0);
+    const editDelta = Math.round((baselineQty - preBought - after.editQty) * 1000) / 1000;
+    if (Math.abs(editDelta) > 0.0001) lots.push(editLot(editDelta, product.stockBaselineAt, product.stockBaselineAt));
   } else {
-    let consume = Math.max(0, sold - saleRet) + purchRet;
-    for (const lot of lots) {
-      if (consume <= 0) break;
-      const take = Math.min(lot.remaining, consume);
-      lot.remaining -= take;
-      consume -= take;
-    }
+    // Only a real sale or a real supplier return reduces a bill.
+    // A stock edit is its own "Edit" line, so the next purchase cannot zero the previous bill.
+    takeFromLots(Math.max(0, sold - saleRet) + purchRet);
+    split.edits.forEach((e) => lots.push(editLot(-e.qty, e.date, e.createdAt)));
   }
 
   let held = lots.reduce((s, l) => s + l.remaining, 0);
@@ -534,11 +562,24 @@ function lotsFromContext(product, ctx) {
     held = lots.reduce((s, l) => s + l.remaining, 0);
   }
 
-  const remaining = lots.filter((l) => l.remaining > 0.0001);
+  // Money still follows FIFO: an edit removes the oldest pieces from the value.
+  // The bill rows themselves stay visible and are not marked used.
+  const valued = lots
+    .filter((l) => !l.edit)
+    .map((l) => ({ remaining: Number(l.bought) || 0, unitCost: Number(l.unitCost) || fallback, stamp: stampOf(l) }));
+  valued.sort((a, b) => a.stamp.localeCompare(b.stamp));
+  let eat = Math.max(0, valued.reduce((s, l) => s + l.remaining, 0) - held);
+  for (const layer of valued) {
+    if (eat <= 0.0001) break;
+    const take = Math.min(layer.remaining, eat);
+    layer.remaining -= take;
+    eat -= take;
+  }
+  const remaining = valued.filter((l) => l.remaining > 0.0001);
   const costValue = remaining.reduce((s, l) => s + l.remaining * l.unitCost, 0);
   const fifoCost = remaining.length ? Number(remaining[0].unitCost) || fallback : fallback;
   // Display cost = latest purchase price (newest lot by stamp), while profit still uses FIFO.
-  const latestLot = [...lots].sort((a, b) => stampOf(a).localeCompare(stampOf(b)));
+  const latestLot = [...lots].filter((l) => !l.edit).sort((a, b) => stampOf(a).localeCompare(stampOf(b)));
   const newest = latestLot[latestLot.length - 1];
   const latestCost = newest ? Number(newest.unitCost) || fallback : fallback;
   const sale = costAndSale(product).sale;
@@ -558,6 +599,8 @@ function lotsFromContext(product, ctx) {
     profitStock,
     sold: Math.max(0, sold - saleRet),
     purchRet,
+    editQty: hasBaseline ? Math.abs(lots.filter((l) => l.edit).reduce((s, l) => s + (Number(l.remaining) || 0), 0)) : editQty,
+    valueLots: remaining.map((l) => ({ remaining: l.remaining, bought: l.remaining, unitCost: l.unitCost })),
   };
 }
 
@@ -571,7 +614,7 @@ export function fifoCostForQty(product, qty, opts = {}, extraQty = 0) {
   const lots = stockLotsForProduct(product, opts);
   const need0 = Math.max(0, Number(qty) || 0);
   if (need0 <= 0) return 0;
-  const layers = (lots.allLots || []).map((l) => ({
+  const layers = (lots.valueLots || lots.allLots || []).filter((l) => !l.edit).map((l) => ({
     remaining: Number(l.remaining) || 0,
     bought: Number(l.bought) || Number(l.remaining) || 0,
     unitCost: Number(l.unitCost) || 0,
@@ -701,8 +744,8 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t }) {
         </div>
         <p style={{ color: th.textMuted, fontSize: 11, margin: "0 0 8px", lineHeight: 1.4 }}>
           {isUrdu
-            ? "تازہ خریداری اوپر۔ فروخت پرانی سے پہلے ہوتی ہے۔ Remaining 0 = ختم۔"
-            : "Latest purchase on top. Sales still consume oldest first. Remaining 0 = used."}
+            ? "تازہ خریداری اوپر۔ فروخت پر «Sold» لکھا ہوتا ہے۔ اسٹاک ایڈٹ پر «Edit» لکھا ہوتا ہے۔"
+            : "Latest purchase on top. A sale is marked Sold. A stock edit is marked Edit."}
         </p>
         <div style={{
           maxHeight: 8 * 42 + 40,
@@ -726,19 +769,24 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t }) {
               .reverse()
               .map((l) => {
                 const rem = Number(l.remaining) || 0;
-                const gone = rem <= 0.0001;
+                const gone = !l.edit && rem <= 0.0001;
+                const remText = l.edit
+                  ? `${isUrdu ? "ایڈٹ" : "Edit"} ${rem < 0 ? "−" : "+"}${stockLabel(product.category, Math.abs(rem))}`
+                  : gone
+                    ? (isUrdu ? "0 (فروخت)" : "0 (sold)")
+                    : stockLabel(product.category, rem);
                 return {
                   data: l,
                   cells: [
                     <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{l.opening ? (isUrdu ? "پرانا / اوپننگ" : "Opening") : l.date}</span>,
-                    <span style={{ fontFamily: "monospace", color: "#60a5fa", fontSize: 12, whiteSpace: "nowrap" }}>{l.invoice}</span>,
-                    <span style={{ whiteSpace: "nowrap" }}>{l.supplier}</span>,
-                    <span style={{ fontWeight: 700, color: th.textMuted, whiteSpace: "nowrap" }}>{stockLabel(product.category, l.bought)}</span>,
-                    <span style={{ fontWeight: 700, color: gone ? "#f87171" : "#34d399", whiteSpace: "nowrap" }}>
-                      {gone ? (isUrdu ? "0 (ختم)" : "0 (used)") : stockLabel(product.category, rem)}
+                    <span style={{ fontFamily: "monospace", color: l.edit ? "#fbbf24" : "#60a5fa", fontSize: 12, whiteSpace: "nowrap" }}>{l.invoice}</span>,
+                    <span style={{ whiteSpace: "nowrap", fontWeight: l.edit ? 800 : 400 }}>{l.edit ? (isUrdu ? "ایڈٹ" : "Edit") : l.supplier}</span>,
+                    <span style={{ fontWeight: 700, color: th.textMuted, whiteSpace: "nowrap" }}>{l.edit ? "—" : stockLabel(product.category, l.bought)}</span>,
+                    <span style={{ fontWeight: 700, color: l.edit ? "#fbbf24" : gone ? "#f87171" : "#34d399", whiteSpace: "nowrap" }}>
+                      {remText}
                     </span>,
-                    <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(l.unitCost)}</span>,
-                    <span style={{ fontWeight: 700, whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(rem * l.unitCost)}</span>,
+                    <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{l.edit ? "—" : formatPKR(l.unitCost)}</span>,
+                    <span style={{ fontWeight: 700, whiteSpace: "nowrap", fontSize: 12 }}>{l.edit ? "—" : formatPKR((Number(l.bought) || 0) * l.unitCost)}</span>,
                   ],
                 };
               })}
@@ -752,6 +800,7 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "10px 12px", borderRadius: 12, border: `1px solid ${th.border}`, background: th.bgCard }}>
         <span style={{ color: th.textMuted, fontSize: 13 }}>
           {isUrdu ? "فروخت شدہ" : "Sold"} {stockLabel(product.category, lots.sold)}
+          {lots.editQty > 0 ? ` · ${isUrdu ? "ایڈٹ" : "Edit"} ${stockLabel(product.category, lots.editQty)}` : ""}
           {lots.purchRet > 0 ? ` · ${isUrdu ? "واپسی" : "Returned"} ${stockLabel(product.category, lots.purchRet)}` : ""}
         </span>
         <span style={{ color: th.text, fontWeight: 800, fontSize: 13, whiteSpace: "nowrap" }}>
