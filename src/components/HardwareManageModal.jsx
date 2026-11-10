@@ -369,34 +369,11 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
     return res;
   };
 
-  // The list shows stock from purchases minus returns, not the raw product field.
-  // Raising stock adds a purchase. Lowering stock adds a return. Both stay after refresh.
-  const applyStockChange = async (productId, fromQty, toQty, payload, supplier) => {
-    const diff = toQty - fromQty;
-    if (Math.abs(diff) < 0.0001) return { success: true };
-    if (diff > 0) {
-      const pur = await openingPurchase(productId, diff, payload, supplier);
-      return pur && pur.success === false ? pur : { success: true };
-    }
-    const need = Math.abs(diff);
-    const row = (products || []).find((p) => String(p._id) === String(productId));
-    let db = row && row.dbStock != null ? Number(row.dbStock) : fromQty;
-    if (!Number.isFinite(db)) db = fromQty;
-    if (db + 0.0001 < need) {
-      const bump = await api.adjustStock(productId, "add", Math.round((need - db) * 1000) / 1000);
-      if (!bump?.success) return bump || { success: false, message: "Stock was not updated" };
-    }
-    const ret = await api.addPurchaseReturn({
-      date: todayStr(),
-      supplier: supplier || "Stock edit",
-      notes: "Stock edit",
-      items: [{ productId, qty: need, rate: Number(payload.purchasePrice) || 0 }],
-    });
-    if (!ret?.success) {
-      try { await api.reconcileStock([productId]); } catch { /* show the return error */ }
-      return ret || { success: false, message: "Stock was not updated" };
-    }
-    try { await api.reconcileStock([productId]); } catch { /* the return still reduces the list */ }
+  // The typed piece count is kept. A purchase saved after this adds only its own quantity.
+  const applyStockChange = async (productId, fromQty, toQty) => {
+    if (Math.abs(toQty - fromQty) < 0.0001) return { success: true };
+    const res = await api.setStockCount(productId, toQty);
+    if (!res?.success) return res || { success: false, message: "Stock was not updated" };
     return { success: true };
   };
 
@@ -467,20 +444,22 @@ export default function HardwareManageModal({ products, purchases = [], loadProd
         const rate = Number(payload.purchasePrice) || 0;
         const sale = Number(payload.price) || 0;
         const qty = Number(newest.qty) || Number(newest.rows?.[0]?.qty) || 0;
-        const rows = (newest.rows && newest.rows.length)
-          ? newest.rows.map((r, i) => (i === 0
-            ? { ...r, purchasePrice: rate, salePrice: sale, qty: Number(r.qty) || qty }
-            : r))
-          : [{ qty, purchasePrice: rate, salePrice: sale, unit: payload.unit || "piece" }];
-        try {
-          await api.updatePurchase(newest._id || newest.id, {
-            rate,
-            productPrice: rate,
-            total: Math.round(rate * qty * 100) / 100,
-            rows,
-            qty,
-          });
-        } catch { /* non-blocking */ }
+        if (qty > 0) {
+          const rows = (newest.rows && newest.rows.length)
+            ? newest.rows.map((r, i) => (i === 0
+              ? { ...r, purchasePrice: rate, salePrice: sale, qty }
+              : r))
+            : [{ qty, purchasePrice: rate, salePrice: sale, unit: payload.unit || "piece" }];
+          try {
+            await api.updatePurchase(newest._id || newest.id, {
+              rate,
+              productPrice: rate,
+              total: Math.round(rate * qty * 100) / 100,
+              rows,
+              qty,
+            });
+          } catch { /* non-blocking */ }
+        }
       }
     }
     await refresh();

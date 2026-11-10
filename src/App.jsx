@@ -232,28 +232,40 @@ function AppInner() {
       if (Array.isArray(r)) return r;
       return [];
     };
-    (async () => {
-      const jobs = [
+    const refresh = async () => {
+      const [prod, purch, salesR, sret, pret] = await Promise.all([
         api.getProducts().catch(() => null),
         api.getPurchases().catch(() => null),
         api.getSales().catch(() => null),
         listSaleReturns().catch(() => null),
-      ];
-      if (user.role === "admin") jobs.push(listPurchaseReturns().catch(() => null));
-      const [prod, purch, salesR, sret, pret] = await Promise.all(jobs);
+        listPurchaseReturns().catch(() => null),
+      ]);
       if (cancel) return;
       startTransition(() => {
-        setProducts(pick(prod, "products"));
-        setPurchases(pick(purch, "purchases"));
-        setSales(pick(salesR, "sales"));
-        setSaleReturns(sret && sret.success ? (sret.returns || []) : []);
-        if (user.role === "admin") setPurchaseReturns(pret && pret.success ? (pret.returns || []) : []);
+        if (prod && prod.success) setProducts(pick(prod, "products"));
+        if (purch && purch.success) setPurchases(pick(purch, "purchases"));
+        if (salesR && salesR.success) setSales(pick(salesR, "sales"));
+        if (sret && sret.success) setSaleReturns(sret.returns || []);
+        // Billing must see the same returns the stock list uses, including stock edits.
+        if (pret && pret.success) setPurchaseReturns(pret.returns || []);
         setStockReady(true);
       });
-    })();
+    };
+    refresh();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    const timer = setInterval(refresh, user.role === "staff" ? 20000 : 60000);
     loadLoaders();
     if (user.role === "admin") { loadStaff(); loadParties(); loadExpenses(); }
-    return () => { cancel = true; };
+    return () => {
+      cancel = true;
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(timer);
+    };
   }, [user]);
 
   // Each admin has their own shop profile; staff inherits their admin's branding.

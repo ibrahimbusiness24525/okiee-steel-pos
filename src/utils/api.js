@@ -31,6 +31,7 @@ export const api = {
   updateProduct: (id,d) => smartFetch(`${API}/products/${id}`,{method:"PUT",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   deleteProduct: (id) => smartFetch(`${API}/products/${id}`,{method:"DELETE",headers:authHeaders()}).then(r=>r.json()),
   adjustStock:   (id,type,qty) => smartFetch(`${API}/products/${id}/stock`,{method:"PATCH",headers:authHeaders(),body:JSON.stringify({type,qty})}).then(r=>r.json()),
+  setStockCount: (id, qty) => smartFetch(`${API}/products/${id}/stock-count`, { method: "PATCH", headers: authHeaders(), body: JSON.stringify({ qty }) }).then(r => r.json()),
   getPurchases:  () => smartFetch(`${API}/purchases`, {headers:authHeaders()}).then(r=>r.json()),
   addPurchase:   (d) => smartFetch(`${API}/purchases`,{method:"POST",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   updatePurchase:(id,d) => smartFetch(`${API}/purchases/${id}`,{method:"PUT",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),

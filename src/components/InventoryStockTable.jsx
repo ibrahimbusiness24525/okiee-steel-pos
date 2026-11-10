@@ -138,6 +138,48 @@ function stampOf(p) {
   return `${p.date || ""}|${p.createdAt || ""}`;
 }
 
+function lotTime(l) {
+  const created = Date.parse(l?.createdAt || "");
+  if (Number.isFinite(created) && created > 0) return created;
+  const dated = Date.parse(l?.date || "");
+  return Number.isFinite(dated) ? dated : 0;
+}
+
+function itemMatchesProduct(it, id, name) {
+  const iid = pidOf(it?.product || it?.productId);
+  if (iid && id) return iid === id;
+  const iname = normName(it?.productName || it?.name);
+  return !!(name && iname && iname === name);
+}
+
+/** Sales and returns saved after a stock edit. Older bills stay inside the edited count. */
+function movementsAfter(product, ctx, baselineAt) {
+  const id = pidOf(product?._id || product?.id);
+  const name = normName(product?.name);
+  let sold = 0;
+  let saleRet = 0;
+  let purchRet = 0;
+  (ctx?.sales || []).forEach((s) => {
+    if (lotTime(s) <= baselineAt) return;
+    saleSoldLines(s, ctx.nameToId).forEach((ln) => {
+      if (id && String(ln.productId) === String(id)) sold += Number(ln.qty) || 0;
+    });
+  });
+  (ctx?.saleReturns || []).forEach((r) => {
+    if (lotTime(r) <= baselineAt) return;
+    (r.items || []).forEach((it) => {
+      if (itemMatchesProduct(it, id, name)) saleRet += Number(it.qty) || 0;
+    });
+  });
+  (ctx?.purchaseReturns || []).forEach((r) => {
+    if (lotTime(r) <= baselineAt) return;
+    (r.items || []).forEach((it) => {
+      if (itemMatchesProduct(it, id, name)) purchRet += Number(it.qty) || 0;
+    });
+  });
+  return { sold, saleRet, purchRet };
+}
+
 function invoiceKey(p) {
   const inv = String(p?.invoice || p?.invoiceNum || "").trim();
   return inv && inv !== "—" ? inv : "";
@@ -359,6 +401,10 @@ export function makeLotContext({ purchases = [], sales = [], purchaseReturns = [
     saleRetByName,
     purchRetById,
     purchRetByName,
+    sales: sales || [],
+    saleReturns: saleReturns || [],
+    purchaseReturns: purchaseReturns || [],
+    nameToId,
   };
 }
 
@@ -410,13 +456,55 @@ function lotsFromContext(product, ctx) {
   const sold = qtyFromMaps(ctx.soldById, ctx.soldByName, product, ctx);
   const saleRet = qtyFromMaps(ctx.saleRetById, ctx.saleRetByName, product, ctx);
   const purchRet = qtyFromMaps(ctx.purchRetById, ctx.purchRetByName, product, ctx);
-  let consume = Math.max(0, sold - saleRet) + purchRet;
 
-  for (const lot of lots) {
-    if (consume <= 0) break;
-    const take = Math.min(lot.remaining, consume);
-    lot.remaining -= take;
-    consume -= take;
+  const baselineAt = Date.parse(product?.stockBaselineAt || "");
+  const baselineQty = Number(product?.stockBaseline);
+  const hasBaseline = product?.stockBaselineAt && Number.isFinite(baselineAt) && Number.isFinite(baselineQty) && baselineQty >= 0;
+
+  if (hasBaseline) {
+    // The edit is the on-hand. Bills from before it stay inside that number.
+    // A purchase saved after the edit is added in full and is not filled back with the old pieces.
+    const pre = [];
+    const post = [];
+    lots.forEach((lot) => ((lotTime(lot) > baselineAt) ? post : pre).push(lot));
+    let cut = pre.reduce((s, l) => s + l.remaining, 0) - baselineQty;
+    if (cut > 0.0001) {
+      for (const lot of pre) {
+        if (cut <= 0.0001) break;
+        const take = Math.min(lot.remaining, cut);
+        lot.remaining -= take;
+        cut -= take;
+      }
+    } else if (cut < -0.0001) {
+      const extra = -cut;
+      pre.push({
+        date: String(product.stockBaselineAt).slice(0, 10),
+        invoice: "Stock edit",
+        supplier: "Stock edit",
+        bought: extra,
+        remaining: extra,
+        unitCost: fallback,
+        createdAt: product.stockBaselineAt,
+      });
+    }
+    const after = movementsAfter(product, ctx, baselineAt);
+    let consume = Math.max(0, after.sold - after.saleRet) + after.purchRet;
+    lots.length = 0;
+    [...pre, ...post].forEach((lot) => lots.push(lot));
+    for (const lot of lots) {
+      if (consume <= 0) break;
+      const take = Math.min(lot.remaining, consume);
+      lot.remaining -= take;
+      consume -= take;
+    }
+  } else {
+    let consume = Math.max(0, sold - saleRet) + purchRet;
+    for (const lot of lots) {
+      if (consume <= 0) break;
+      const take = Math.min(lot.remaining, consume);
+      lot.remaining -= take;
+      consume -= take;
+    }
   }
 
   let held = lots.reduce((s, l) => s + l.remaining, 0);
@@ -738,43 +826,10 @@ function StockEditModal({ product, lots, purchases, onClose, onChanged, isUrdu, 
         const res = await api.updateProduct(id, fields);
         if (!res?.success) throw new Error(res?.message || "Price was not saved");
       };
-      if (diff > 0.0001) {
-        const total = Math.round(nextCost * diff * 100) / 100;
-        const pur = await api.addPurchase({
-          supplier: "Stock edit",
-          date: todayStr(),
-          product: id,
-          productName: product.name,
-          category: product.category || "",
-          qty: diff,
-          rate: nextCost,
-          total,
-          productPrice: nextCost,
-          rows: [{ qty: diff, purchasePrice: nextCost, salePrice: nextSale, unit: product.unit || "piece" }],
-          unit: product.unit || "piece",
-          paymentMethod: "cash",
-          settlement: "full",
-          paidAmount: total,
-          remainingAmount: 0,
-          notes: "Stock edit",
-        });
-        if (!pur?.success) throw new Error(pur?.message || "Stock was not updated");
-      } else if (diff < -0.0001) {
-        const need = Math.abs(diff);
-        let db = product.dbStock != null ? Number(product.dbStock) : fromQty;
-        if (!Number.isFinite(db)) db = fromQty;
-        if (db + 0.0001 < need) {
-          const bump = await api.adjustStock(id, "add", Math.round((need - db) * 1000) / 1000);
-          if (!bump?.success) throw new Error(bump?.message || "Stock was not updated");
-        }
-        const ret = await api.addPurchaseReturn({
-          date: todayStr(),
-          supplier: "Stock edit",
-          notes: "Stock edit",
-          items: [{ productId: id, qty: need, rate: nextCost }],
-        });
-        if (!ret?.success) throw new Error(ret?.message || "Stock was not updated");
-        try { await api.reconcileStock([id]); } catch { /* return already reduced stock */ }
+      if (Math.abs(diff) > 0.0001) {
+        // Freeze this piece count. A later purchase adds only its own qty.
+        const counted = await api.setStockCount(id, nextQty);
+        if (!counted?.success) throw new Error(counted?.message || "Stock was not updated");
       }
       if ((costChanged || saleChanged) && diff <= 0.0001) {
         const bill = newestBillFor(product, purchases);
@@ -791,8 +846,9 @@ function StockEditModal({ product, lots, purchases, onClose, onChanged, isUrdu, 
             if (!upd?.success) throw new Error(upd?.message || "Price was not saved");
           } else {
             const q = Number(bill.qty) || Number(bill.rows?.[0]?.qty) || 0;
+            if (!(q > 0)) throw new Error(isUrdu ? "بل کی مقدار نہیں ملی" : "Could not read the bill quantity");
             const rows = (bill.rows && bill.rows.length)
-              ? bill.rows.map((r, i) => (i === 0 ? { ...r, purchasePrice: nextCost, salePrice: nextSale, qty: Number(r.qty) || q } : r))
+              ? bill.rows.map((r, i) => (i === 0 ? { ...r, purchasePrice: nextCost, salePrice: nextSale, qty: q } : r))
               : [{ qty: q, purchasePrice: nextCost, salePrice: nextSale, unit: product.unit || "piece" }];
             const upd = await api.updatePurchase(billId, {
               rate: nextCost,
