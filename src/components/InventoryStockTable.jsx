@@ -5,6 +5,7 @@ import { Table, Modal } from "./shared";
 import { formatPKR, formatWeightKgG, printThermalOrA4, todayStr } from "../utils/helpers";
 import { api } from "../utils/api";
 import { productDisplayName } from "../utils/constants";
+import { getUnitLabel, productUnitOf } from "../utils/unitConversion";
 import { pidOf } from "./StockReturns";
 import {
   slipPage, slipLine, ThermalSlipHeader, ThermalSlipFooter,
@@ -36,29 +37,18 @@ const getUrduItemLabel = (cat) => {
   }
 };
 
-export function inventoryStats(products = [], lotOpts) {
+export function inventoryStats(products = []) {
   const thresholdOf = (p) => {
     const n = Number(p.lowStockThreshold);
     return Number.isFinite(n) && n > 0 ? n : 10;
   };
-  const valued = !lotOpts && products.length > 0 && products.every((p) => p && p.costValue != null);
-  if (valued) {
-    const stockOf = (p) => Number(p.stock) || 0;
-    const inStock = products.filter((p) => stockOf(p) > 0);
-    const demandZero = products.filter((p) => stockOf(p) <= 0);
-    const demandLow = products.filter((p) => {
-      const s = stockOf(p);
-      return s > 0 && s <= thresholdOf(p);
-    });
-    const inventoryAmount = inStock.reduce((s, p) => s + (Number(p.costValue) || 0), 0);
-    return { stockedCount: inStock.length, inventoryAmount, demandZero, demandLow, stockOf, thresholdOf };
-  }
-  const ctx = lotOpts ? (lotOpts.ctx || makeLotContext(lotOpts)) : null;
-  // Purchases can exist while product.stock is still 0 (missed stock link).
-  // Count what the lots actually hold so those items stay on the stock list.
-  const stockOf = (p) => {
-    if (!ctx) return Number(p.stock) || 0;
-    return Number(lotsFromContext(p, ctx).stock) || 0;
+  const stockOf = (p) => Number(p.stock) || 0;
+  const valueOf = (p) => {
+    const saved = Number(p.costValue);
+    if (Number.isFinite(saved) && saved > 0) return saved;
+    const stock = stockOf(p);
+    const cost = Number(p.listCost) || 0;
+    return stock * cost;
   };
   const inStock = products.filter((p) => stockOf(p) > 0);
   const demandZero = products.filter((p) => stockOf(p) <= 0);
@@ -66,11 +56,7 @@ export function inventoryStats(products = [], lotOpts) {
     const s = stockOf(p);
     return s > 0 && s <= thresholdOf(p);
   });
-  const inventoryAmount = inStock.reduce((s, p) => {
-    if (ctx) return s + (Number(lotsFromContext(p, ctx).costValue) || 0);
-    const { cost } = costAndSale(p);
-    return s + stockOf(p) * (Number(cost) || 0);
-  }, 0);
+  const inventoryAmount = inStock.reduce((s, p) => s + valueOf(p), 0);
   return { stockedCount: inStock.length, inventoryAmount, demandZero, demandLow, stockOf, thresholdOf };
 }
 
@@ -98,52 +84,71 @@ function stockLabel(cat, qty) {
     : String(Math.round(qty || 0));
 }
 
-function shortUnit(unit) {
-  const u = String(unit || "piece").trim().toLowerCase();
-  const map = {
-    piece: "pc", pcs: "pc", pc: "pc",
-    feet: "ft", foot: "ft", ft: "ft",
-    kg: "kg", kilo: "kg", kilogram: "kg",
-    gram: "g", dozen: "dozen", meter: "m",
-    liter: "L", litre: "L", ml: "ml",
-    bundle: "bundle", box: "box", pair: "pair",
-    set: "set", ton: "ton", packet: "packet", carton: "carton",
-  };
-  return map[u] || u || "pc";
-}
-
-function billPriceLength(bill) {
-  const row = (bill?.rows || [])[0] || {};
-  const len = parseFloat(String(row.length || "").replace(/[^0-9.]/g, "")) || 0;
-  return len > 0 ? len : 0;
-}
-
-function priceUnitOf(product, bill) {
-  const cat = product?.category || "";
-  if (cat === "Pipe" || cat === "Net") return "ft";
-  if (cat === "Chader") return "kg";
-  const raw = bill?.unit || bill?.rows?.[0]?.unit || product?.stockUnit || product?.unit || "piece";
-  return shortUnit(raw);
-}
-
-function costInPriceUnit(product, perStockCost, length) {
-  const n = Number(perStockCost) || 0;
-  if (product?.category === "Pipe" && Number(length) > 0) return n / Number(length);
-  return n;
-}
-
-function moneyWithUnit(amount, unit) {
-  return `${formatPKR(amount)}/${unit}`;
-}
-
 function costAndSale(product) {
   if (!product) return { cost: 0, sale: 0 };
+  const listCost = Number(product.listCost) || 0;
   if (product.category === "Pipe") {
-    return { cost: Number(product.price) || 0, sale: Number(product.purchasePrice) || 0 };
+    const priced = unitPrices(product);
+    return { cost: priced.cost, sale: priced.sale };
   }
   return {
-    cost: Number(product.purchasePrice) || 0,
+    cost: listCost || Number(product.purchasePrice) || 0,
     sale: Number(product.price) || 0,
+  };
+}
+
+function pipeLengthFt(product, bill) {
+  const fromBill = parseFloat(String(bill?.rows?.[0]?.length || "").replace(/[^0-9.]/g, "")) || 0;
+  const fromProd = Number(product?.length) || Number(product?.unitLength) || 0;
+  if (fromBill > 0) return fromBill;
+  if (fromProd > 0) return fromProd;
+  return 20;
+}
+
+/** Pipe listCost is often per piece (length × /ft). Never use sale price to decide that. */
+function pipeListCostIsPerPiece(listCost, lengthFt) {
+  const cost = Number(listCost) || 0;
+  const len = Number(lengthFt) || 0;
+  if (!(cost > 0) || len < 6) return false;
+  const perFt = cost / len;
+  return cost >= 400 && perFt >= 15 && cost >= perFt * 8;
+}
+
+export function unitPrices(product, bill) {
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const cat = product?.category || "";
+  if (cat === "Pipe") {
+    const len = pipeLengthFt(product, bill);
+    let cost = Number(product?.listCost) || 0;
+    if (pipeListCostIsPerPiece(cost, len)) cost = cost / len;
+    else if (!(cost > 0)) cost = Number(product?.price) || 0;
+    // Pipe: `price` is cost/ft (purchase screen). `purchasePrice` is sale/ft.
+    const sale = Number(product?.purchasePrice) || 0;
+    return { unit: "ft", cost: round2(cost), sale: round2(sale), lengthFt: len };
+  }
+  if (cat === "Chader") {
+    return {
+      unit: "kg",
+      cost: round2(Number(product?.listCost) || Number(product?.purchasePrice) || 0),
+      sale: round2(Number(product?.price) || 0),
+      lengthFt: 0,
+    };
+  }
+  if (cat === "Net") {
+    return {
+      unit: "ft",
+      cost: round2(Number(product?.listCost) || Number(product?.purchasePrice) || 0),
+      sale: round2(Number(product?.price) || 0),
+      lengthFt: 0,
+    };
+  }
+  const u = productUnitOf(product);
+  const unit = u === "piece" ? "pc" : u === "feet" ? "ft" : (getUnitLabel(u) || "pc").toLowerCase();
+  return {
+    unit,
+    cost: round2(Number(product?.listCost) || Number(product?.purchasePrice) || 0),
+    sale: round2(Number(product?.price) || 0),
+    lengthFt: 0,
   };
 }
 
@@ -318,21 +323,32 @@ function normName(s) {
 }
 
 /** Bill name "ANTOL TRIMMER" → product "ANTOL TRIMMER 600W" when that product is the only match. */
+function buildAliasByProduct(products, maps) {
+  const catalog = (products || []).map((p) => normName(p?.name)).filter(Boolean);
+  const exact = new Set(catalog);
+  const candidates = new Set();
+  (maps || []).forEach((m) => Object.keys(m || {}).forEach((k) => candidates.add(normName(k))));
+  const byProduct = {};
+  candidates.forEach((k) => {
+    if (!k || exact.has(k)) return;
+    const hits = [];
+    for (let i = 0; i < catalog.length; i++) {
+      const n = catalog[i];
+      if (n === k || n.includes(k) || k.includes(n)) hits.push(n);
+      if (hits.length > 1) break;
+    }
+    if (hits.length !== 1) return;
+    if (!byProduct[hits[0]]) byProduct[hits[0]] = [];
+    byProduct[hits[0]].push(k);
+  });
+  return byProduct;
+}
+
 function aliasNamesFor(product, ctx) {
   const name = normName(product?.name);
   if (!name || !ctx) return [];
-  const catalog = (ctx.products || []).map((p) => normName(p?.name)).filter(Boolean);
-  const candidates = new Set();
-  [ctx.purchByName, ctx.soldByName, ctx.saleRetByName, ctx.purchRetByName].forEach((m) => {
-    Object.keys(m || {}).forEach((k) => candidates.add(normName(k)));
-  });
-  const keys = [];
-  candidates.forEach((k) => {
-    if (!k || k === name) return;
-    const hits = catalog.filter((n) => n === k || n.includes(k) || k.includes(n));
-    if (hits.length === 1 && hits[0] === name) keys.push(k);
-  });
-  return keys;
+  if (ctx.aliasByProduct) return ctx.aliasByProduct[name] || [];
+  return [];
 }
 
 function qtyFromMaps(byId, byName, product, ctx) {
@@ -419,8 +435,7 @@ export function makeLotContext({ purchases = [], sales = [], purchaseReturns = [
     map[key].push(lot);
   };
   (purchases || []).forEach((p) => {
-    const priceLength = billPriceLength(p);
-    const makeLot = (qty, unitCost, length) => {
+    const makeLot = (qty, unitCost) => {
       const bought = Number(qty) || 0;
       if (bought <= 0) return null;
       return {
@@ -430,14 +445,13 @@ export function makeLotContext({ purchases = [], sales = [], purchaseReturns = [
         bought,
         remaining: bought,
         unitCost: Number(unitCost) || 0,
-        priceLength: Number(length) || priceLength || 0,
         createdAt: p.createdAt || "",
       };
     };
     const entries = Array.isArray(p.entries) ? p.entries : [];
     if (entries.length) {
       entries.forEach((e) => {
-        const lot = makeLot(e.quantity || e.qty, e.productPrice || e.rate || e.purchasePrice, e.length);
+        const lot = makeLot(e.quantity || e.qty, e.productPrice || e.rate || e.purchasePrice);
         if (!lot) return;
         const id = pidOf(e.product || e.productId);
         const name = normName(e.productName || e.name || p.productName || "");
@@ -473,6 +487,7 @@ export function makeLotContext({ purchases = [], sales = [], purchaseReturns = [
   const purchRetByName = {};
   addQtyMaps(saleReturns, saleRetById, saleRetByName);
   addQtyMaps(purchaseReturns, purchRetById, purchRetByName);
+  const aliasByProduct = buildAliasByProduct(products, [purchByName, soldByName, saleRetByName, purchRetByName]);
 
   return {
     products: products || [],
@@ -488,6 +503,7 @@ export function makeLotContext({ purchases = [], sales = [], purchaseReturns = [
     saleReturns: saleReturns || [],
     purchaseReturns: purchaseReturns || [],
     nameToId,
+    aliasByProduct,
   };
 }
 
@@ -622,7 +638,6 @@ function lotsFromContext(product, ctx) {
   const latestLot = [...lots].filter((l) => !l.edit).sort((a, b) => stampOf(a).localeCompare(stampOf(b)));
   const newest = latestLot[latestLot.length - 1];
   const latestCost = newest ? Number(newest.unitCost) || fallback : fallback;
-  const priceLength = newest ? (Number(newest.priceLength) || 0) : 0;
   const sale = costAndSale(product).sale;
   const profitPc = sale - fifoCost;
   const profitStock = remaining.reduce((s, l) => s + l.remaining * (sale - (Number(l.unitCost) || 0)), 0);
@@ -633,7 +648,6 @@ function lotsFromContext(product, ctx) {
     stock: held,
     fifoCost: Math.round((Number(fifoCost) || 0) * 100) / 100,
     latestCost: roundedLatest,
-    priceLength,
     avgCost: roundedLatest,
     costValue,
     sale,
@@ -753,13 +767,9 @@ function MiniStat({ label, value, color, th }) {
   );
 }
 
-function StockDetailView({ product, lots, onClose, isUrdu, th, t, unit = "pc", length = 0 }) {
+function StockDetailView({ product, lots, onClose, isUrdu, th, t }) {
   const name = productDisplayName(product) || product.name || "—";
-  const unitCostOf = (amount, lotLength) => costInPriceUnit(product, amount, Number(lotLength) || length || lots.priceLength);
-  const latestShown = unitCostOf(lots.latestCost, lots.priceLength);
-  const fifoShown = unitCostOf(lots.fifoCost, lots.priceLength);
-  const profitShown = (Number(lots.sale) || 0) - fifoShown;
-  const profitColor = profitShown >= 0 ? "#34d399" : "#f87171";
+  const profitColor = lots.profitPc >= 0 ? "#34d399" : "#f87171";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div>
@@ -772,9 +782,9 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t, unit = "pc", l
       </div>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <MiniStat th={th} label={isUrdu ? `تازہ لاگت / ${unit}` : `Latest cost / ${unit}`} value={moneyWithUnit(latestShown, unit)} />
-        <MiniStat th={th} label={isUrdu ? `فروخت قیمت / ${unit}` : `Sale / ${unit}`} value={moneyWithUnit(lots.sale, unit)} />
-        <MiniStat th={th} label={isUrdu ? `منافع / ${unit}` : `Profit / ${unit}`} value={moneyWithUnit(profitShown, unit)} color={profitColor} />
+        <MiniStat th={th} label={isUrdu ? "تازہ لاگت / پیس" : "Latest cost / pc"} value={formatPKR(lots.latestCost)} />
+        <MiniStat th={th} label={isUrdu ? "فروخت قیمت / پیس" : "Sale / pc"} value={formatPKR(lots.sale)} />
+        <MiniStat th={th} label={isUrdu ? "منافع / پیس" : "Profit / pc"} value={formatPKR(lots.profitPc)} color={profitColor} />
         <MiniStat th={th} label={isUrdu ? "کل منافع (اسٹاک)" : "Profit on stock"} value={formatPKR(lots.profitStock)} color={profitColor} />
       </div>
 
@@ -807,7 +817,7 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t, unit = "pc", l
               t.supplier,
               isUrdu ? "خریدا" : "Bought",
               isUrdu ? "باقی" : "Remaining",
-              isUrdu ? `لاگت / ${unit}` : `Cost / ${unit}`,
+              isUrdu ? "فی پیس لاگت" : "Cost / pc",
               t.totalLabel,
             ]}
             rows={[...(lots.allLots || lots.remaining)]
@@ -831,7 +841,7 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t, unit = "pc", l
                     <span style={{ fontWeight: 700, color: l.edit ? "#fbbf24" : gone ? "#f87171" : "#34d399", whiteSpace: "nowrap" }}>
                       {remText}
                     </span>,
-                    <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{l.edit ? "—" : moneyWithUnit(unitCostOf(l.unitCost, l.priceLength), unit)}</span>,
+                    <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{l.edit ? "—" : formatPKR(l.unitCost)}</span>,
                     <span style={{ fontWeight: 700, whiteSpace: "nowrap", fontSize: 12 }}>{l.edit ? "—" : formatPKR((Number(l.bought) || 0) * l.unitCost)}</span>,
                   ],
                 };
@@ -881,12 +891,12 @@ function newestBillFor(product, purchases) {
   return related[0] || null;
 }
 
-function StockEditModal({ product, lots, purchases, onClose, onChanged, isUrdu, th, unit = "pc", length = 0 }) {
-  const priceLength = Number(length) || Number(lots.priceLength) || 0;
-  const shownCost = costInPriceUnit(product, lots.latestCost, priceLength);
+function StockEditModal({ product, lots, purchases, onClose, onChanged, isUrdu, th }) {
+  const bill = newestBillFor(product, purchases);
+  const shown = unitPrices(product, bill);
   const [qty, setQty] = useState(String(Math.round((Number(lots.stock) || 0) * 1000) / 1000));
-  const [cost, setCost] = useState(String(Math.round(shownCost * 1000) / 1000));
-  const [sale, setSale] = useState(String(Number(lots.sale) || 0));
+  const [cost, setCost] = useState(String(shown.cost));
+  const [sale, setSale] = useState(String(shown.sale));
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const name = productDisplayName(product) || product.name || "—";
@@ -910,69 +920,43 @@ function StockEditModal({ product, lots, purchases, onClose, onChanged, isUrdu, 
     }
     const fromQty = Number(lots.stock) || 0;
     const diff = Math.round((nextQty - fromQty) * 1000) / 1000;
-    const costChanged = Math.abs(nextCost - shownCost) > 0.009;
-    const saleChanged = Math.abs(nextSale - (Number(lots.sale) || 0)) > 0.009;
+    const costChanged = Math.abs(nextCost - shown.cost) > 0.009;
+    const saleChanged = Math.abs(nextSale - shown.sale) > 0.009;
+    const isPipe = product.category === "Pipe";
     setSaving(true);
     setErr("");
     try {
       const id = product._id || product.id;
-      const len = priceLength;
-      const isPipe = product.category === "Pipe";
-      const billForPrice = newestBillFor(product, purchases);
-      const pct = Number(billForPrice?.rows?.[0]?.purchasePercentage) || 0;
-      const factor = 1 + pct / 100;
-      const pipeBase = isPipe && Math.abs(factor) > 0.0001 ? nextCost / factor : nextCost;
-      const pieceCost = isPipe && len > 0 ? nextCost * len : nextCost;
-      const savedCost = Math.round((isPipe ? pipeBase : nextCost) * 1000) / 1000;
-      const applyPrices = async () => {
-        const fields = isPipe
-          ? { price: savedCost, purchasePrice: nextSale }
-          : { purchasePrice: nextCost, price: nextSale };
-        const res = await api.updateProduct(id, fields);
-        if (!res?.success) throw new Error(res?.message || "Price was not saved");
-      };
+      const jobs = [];
       if (Math.abs(diff) > 0.0001) {
-        // Freeze this piece count. A later purchase adds only its own qty.
-        const counted = await api.setStockCount(id, nextQty);
-        if (!counted?.success) throw new Error(counted?.message || "Stock was not updated");
+        jobs.push((async () => {
+          const counted = await api.setStockCount(id, nextQty);
+          if (!counted?.success) throw new Error(counted?.message || "Stock was not updated");
+        })());
       }
-      if ((costChanged || saleChanged) && diff <= 0.0001) {
-        const bill = newestBillFor(product, purchases);
-        if (bill) {
-          const billId = bill._id || bill.id;
-          const entries = Array.isArray(bill.entries) ? bill.entries : [];
-          const billRate = isPipe ? Math.round(pieceCost * 1000) / 1000 : nextCost;
-          const billProductPrice = isPipe ? savedCost : nextCost;
-          if (entries.length) {
-            const nextEntries = entries.map((e) => {
-              const eid = billProductId(e.product || e.productId);
-              if (String(id) && eid !== String(id)) return e;
-              return { ...e, productPrice: billProductPrice, rate: billRate, purchasePrice: billProductPrice, salePrice: nextSale };
-            });
-            const upd = await api.updatePurchase(billId, { entries: nextEntries, rate: billRate, productPrice: billProductPrice });
-            if (!upd?.success) throw new Error(upd?.message || "Price was not saved");
-          } else {
-            const q = Number(bill.qty) || Number(bill.rows?.[0]?.qty) || Number(bill.rows?.[0]?.quantity) || 0;
-            if (!(q > 0)) throw new Error(isUrdu ? "بل کی مقدار نہیں ملی" : "Could not read the bill quantity");
-            const rows = isPipe
-              ? (bill.rows || [])
-              : (bill.rows && bill.rows.length)
-                ? bill.rows.map((r, i) => (i === 0 ? { ...r, purchasePrice: nextCost, salePrice: nextSale, qty: q } : r))
-                : [{ qty: q, purchasePrice: nextCost, salePrice: nextSale, unit: product.unit || "piece" }];
-            const upd = await api.updatePurchase(billId, {
-              rate: billRate,
-              productPrice: billProductPrice,
-              total: Math.round(billRate * q * 100) / 100,
-              rows,
-              qty: q,
-            });
-            if (!upd?.success) throw new Error(upd?.message || "Price was not saved");
-          }
+      if (costChanged || saleChanged) {
+        const fields = {};
+        if (saleChanged) {
+          if (isPipe) fields.purchasePrice = nextSale;
+          else fields.price = nextSale;
         }
+        if (costChanged) {
+          const len = shown.lengthFt || Number(product.length) || 20;
+          const raw = Number(product.listCost) || 0;
+          fields.listCost = isPipe && pipeListCostIsPerPiece(raw, len)
+            ? Math.round(nextCost * len * 1000) / 1000
+            : nextCost;
+          if (isPipe) fields.price = nextCost;
+          else fields.purchasePrice = nextCost;
+        }
+        jobs.push((async () => {
+          const res = await api.updateProduct(id, fields);
+          if (!res?.success) throw new Error(res?.message || "Price was not saved");
+        })());
       }
-      if (costChanged || saleChanged) await applyPrices();
-      if (onChanged) await onChanged();
+      if (jobs.length) await Promise.all(jobs);
       onClose();
+      if (onChanged) onChanged();
     } catch (e) {
       setErr(e?.message || (isUrdu ? "محفوظ نہیں ہوا" : "Could not save"));
     } finally {
@@ -986,19 +970,19 @@ function StockEditModal({ product, lots, purchases, onClose, onChanged, isUrdu, 
         <div style={{ fontWeight: 800, color: th.text, fontSize: 16 }}>{name}</div>
         <div style={{ color: th.textMuted, fontSize: 12 }}>
           {isUrdu ? "اب" : "Now"} {stockLabel(product.category, lots.stock)}
-          {" · "}{isUrdu ? "لاگت" : "Cost"} {moneyWithUnit(shownCost, unit)}
-          {" · "}{isUrdu ? "فروخت" : "Sale"} {moneyWithUnit(lots.sale, unit)}
+          {" · "}{isUrdu ? "لاگت" : "Cost"} {formatPKR(shown.cost)}/{shown.unit}
+          {" · "}{isUrdu ? "فروخت" : "Sale"} {formatPKR(shown.sale)}/{shown.unit}
         </div>
         <label style={{ display: "flex", flexDirection: "column", gap: 6, color: th.textMuted, fontSize: 12, fontWeight: 700 }}>
           {isUrdu ? "اسٹاک (کم یا زیادہ)" : "Stock (less or more)"}
           <input value={qty} onChange={(e) => setQty(e.target.value)} inputMode="decimal" style={inputStyle} />
         </label>
         <label style={{ display: "flex", flexDirection: "column", gap: 6, color: th.textMuted, fontSize: 12, fontWeight: 700 }}>
-          {isUrdu ? `لاگت / ${unit}` : `Cost / ${unit}`}
+          {isUrdu ? `لاگت / ${shown.unit}` : `Cost / ${shown.unit}`}
           <input value={cost} onChange={(e) => setCost(e.target.value)} inputMode="decimal" style={inputStyle} />
         </label>
         <label style={{ display: "flex", flexDirection: "column", gap: 6, color: th.textMuted, fontSize: 12, fontWeight: 700 }}>
-          {isUrdu ? `فروخت / ${unit}` : `Sale / ${unit}`}
+          {isUrdu ? `فروخت / ${shown.unit}` : `Sale / ${shown.unit}`}
           <input value={sale} onChange={(e) => setSale(e.target.value)} inputMode="decimal" style={inputStyle} />
         </label>
         {err ? <div style={{ color: "#f87171", fontSize: 13, fontWeight: 700 }}>{err}</div> : null}
@@ -1031,14 +1015,32 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
 
   const lotsByKey = useMemo(() => {
     const m = new Map();
-    const list = products || [];
-    const cached = list.length > 0 && list.every((p) => p && p._lots);
-    const lotCtx = cached ? null : makeLotContext({ purchases, sales, purchaseReturns, saleReturns, products: list });
-    list.forEach((p) => {
-      m.set(String(p._id || p.id || p.name || ""), p._lots || lotsFromContext(p, lotCtx));
+    (products || []).forEach((p) => {
+      const cs = costAndSale(p);
+      const stock = Number(p.stock) || 0;
+      const latestCost = Number(p.listCost) || cs.cost || 0;
+      const sale = cs.sale || 0;
+      const invoice = p.lastInvoice || "";
+      const savedVal = Number(p.costValue);
+      const costValue = Number.isFinite(savedVal) && savedVal > 0 ? savedVal : Math.round(stock * latestCost * 100) / 100;
+      const unitCost = stock > 0 ? costValue / stock : latestCost;
+      m.set(String(p._id || p.id || p.name || ""), {
+        stock,
+        latestCost,
+        fifoCost: latestCost,
+        avgCost: latestCost,
+        sale,
+        costValue,
+        remaining: stock > 0 ? [{ remaining: stock, bought: stock, unitCost, invoice, opening: !invoice }] : [],
+        allLots: [],
+        sold: 0,
+        purchRet: 0,
+        editQty: 0,
+        valueLots: [],
+      });
     });
     return m;
-  }, [products, purchases, sales, purchaseReturns, saleReturns]);
+  }, [products]);
   const lotsOf = (p) => lotsByKey.get(String(p._id || p.id || p.name || "")) || {
     stock: Number(p.stock) || 0,
     latestCost: Number(p.latestCost) || 0,
@@ -1229,6 +1231,13 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
     };
   });
   const printTotal = printRows.reduce((s, r) => s + r.value, 0);
+  const shopInStock = (products || []).filter((p) => (Number(p.stock) || 0) > 0);
+  const shopTotal = shopInStock.reduce((s, p) => {
+    const saved = Number(p.costValue);
+    if (Number.isFinite(saved) && saved > 0) return s + saved;
+    return s + (Number(lotsOf(p).costValue) || 0);
+  }, 0);
+  const listIsFiltered = !!(invSearch || invCat);
   const todayValueTotal = compare ? inventory.reduce((s, p) => s + (Number(lotsOf(p).costValue) || 0), 0) : printTotal;
   const wasValueTotal = compare ? printTotal : todayValueTotal;
   const valueDown = wasValueTotal - todayValueTotal;
@@ -1384,11 +1393,10 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
               </span>
             );
           }
-          const priceUnit = priceUnitOf(p, bill);
-          const priceLength = Number(lots.priceLength) || billPriceLength(bill);
+          const prices = unitPrices(p, bill);
           cells.push(
-            <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{moneyWithUnit(costInPriceUnit(p, lots.latestCost, priceLength), priceUnit)}</span>,
-            <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{moneyWithUnit(lots.sale, priceUnit)}</span>,
+            <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(prices.cost)}/{prices.unit}</span>,
+            <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(prices.sale)}/{prices.unit}</span>,
             <span style={{ fontWeight: 700, whiteSpace: "nowrap", fontSize: 12 }}>{formatPKR(compare ? wasValueOf(p) : lots.costValue)}</span>,
           );
           if (onReturn) {
@@ -1429,7 +1437,9 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
           boxShadow: "0 -8px 20px rgba(15,23,42,0.08)",
         }}>
           <span style={{ color: th.textMuted, fontSize: 13, fontWeight: 600 }}>
-            {inventory.length} {isUrdu ? "آئٹمز" : "items"}
+            {listIsFiltered
+              ? `${inventory.length} ${isUrdu ? "قطار" : "rows"} · ${shopInStock.length} ${isUrdu ? "کل اسٹاک" : "in stock"}`
+              : `${inventory.length} ${isUrdu ? "آئٹمز" : "items"}`}
             {isDemand ? "" : ` · ${lowCount} ${isUrdu ? "کم اسٹاک" : "low stock"}`}
           </span>
           {!isDemand && !compare && (
@@ -1460,7 +1470,11 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
               </span>
             </span>
           ) : (
-            <span style={{ color: th.text, fontSize: 14, fontWeight: 800, whiteSpace: "nowrap" }}>{isUrdu ? "کل مالیت" : "Total value"} · {formatPKR(printTotal)}</span>
+            <span style={{ color: th.text, fontSize: 14, fontWeight: 800, whiteSpace: "nowrap" }}>
+              {listIsFiltered
+                ? `${isUrdu ? "یہ قطاریں" : "These rows"} · ${formatPKR(printTotal)}  ·  ${isUrdu ? "کل اسٹاک" : "All stock"} · ${formatPKR(shopTotal)}`
+                : `${isUrdu ? "کل مالیت" : "Total value"} · ${formatPKR(shopTotal || printTotal)}`}
+            </span>
           )}
         </div>
       )}
@@ -1479,8 +1493,6 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
           product={editRow}
           lots={lotsOf(editRow)}
           purchases={purchases}
-          unit={priceUnitOf(editRow, billOf(editRow))}
-          length={Number(lotsOf(editRow).priceLength) || billPriceLength(billOf(editRow))}
           isUrdu={isUrdu}
           th={th}
           onClose={() => setEditRow(null)}
@@ -1497,8 +1509,6 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
           <StockDetailView
             product={detail}
             lots={lotsOf(detail)}
-            unit={priceUnitOf(detail, billOf(detail))}
-            length={Number(lotsOf(detail).priceLength) || billPriceLength(billOf(detail))}
             onClose={() => setDetail(null)}
             isUrdu={isUrdu}
             th={th}

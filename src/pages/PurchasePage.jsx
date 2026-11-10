@@ -794,7 +794,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
       : await api.addPurchase(data);
     if (res.success) {
       await loadPurchases();
-      await loadProducts({ reconcile: true, productIds: [productId].filter(Boolean) });
+      await loadProducts();
     }
     else alert(res.message || "Error saving purchase");
     return res;
@@ -1280,11 +1280,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
             purchaseReturns={purchaseReturns}
             saleReturns={saleReturns}
             onReturn={openInvReturn}
-            onChanged={async () => {
-              await loadPurchases();
-              await loadProducts();
-              if (loadPurchaseReturns) await loadPurchaseReturns();
-            }}
+            onChanged={() => { loadProducts(); }}
           />
         </Modal>
       )}

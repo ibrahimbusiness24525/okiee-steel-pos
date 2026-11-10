@@ -7,6 +7,7 @@ import { formatPKR, todayStr } from "../utils/helpers";
 import { CHADER_TYPES, NET_TYPES, NET_CHORUS_GAUGES, ROUND_INCHES, SQUARE_INCHES, PIPE_GAUGES, productDisplayName } from "../utils/constants";
 import HardwareManageModal from "../components/HardwareManageModal";
 import { hardwareSalePrice } from "../utils/productPrices";
+import { unitPrices } from "../components/InventoryStockTable";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PRODUCTS PAGE
@@ -20,12 +21,12 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
   const [editing,setEditing]=useState(null); const [saving,setSaving]=useState(false);
   const [catTab,setCatTab]=useState("all"); const [search,setSearch]=useState("");
   const [showHwModal,setShowHwModal]=useState(false); const [hwSeed,setHwSeed]=useState(null);
-  const [revealedCost,setRevealedCost]=useState(() => new Set());
+  const [hiddenCost,setHiddenCost]=useState(() => new Set());
 
   const toggleCostPrice = (id, e) => {
     e?.stopPropagation?.();
     e?.preventDefault?.();
-    setRevealedCost((prev) => {
+    setHiddenCost((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -56,7 +57,10 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
       : (form.name||form.subType||form.category);
     setSaving(true);
     let payload={name:resolvedName,category:form.category,stock:Number(form.stock)||0,unit:form.unit||"piece"};
-    if(form.category==="Pipe") payload={...payload,price:parseFloat(form.price)||0,purchasePrice:parseFloat(form.purchasePrice)||0,pipeType:form.pipeType,pipeSubType:form.pipeSubType,pipeInch:form.pipeInch,gauge:form.gauge,length:form.length,weight:Number(form.weight)||0,basePrice:Number(form.basePrice)||0,percentage:Number(form.percentage)||0,size:form.pipeInch};
+    if(form.category==="Pipe") {
+      const costFt=parseFloat(form.price)||0;
+      payload={...payload,price:costFt,purchasePrice:parseFloat(form.purchasePrice)||0,listCost:costFt,pipeType:form.pipeType,pipeSubType:form.pipeSubType,pipeInch:form.pipeInch,gauge:form.gauge,length:form.length,weight:Number(form.weight)||0,basePrice:Number(form.basePrice)||0,percentage:Number(form.percentage)||0,size:form.pipeInch};
+    }
     else if(form.category==="Chader") payload={...payload,subType:form.subType,purchasePrice:parseFloat(form.purchasePrice)||0,price:parseFloat(form.price)||0};
     else if(form.category==="Net") payload={...payload,subType:form.subType,gauge:form.gauge||"",width:form.width||"",purchasePrice:parseFloat(form.purchasePrice)||0,price:parseFloat(form.price)||0};
     else if(form.category==="Hardware") payload={...payload,subType:form.subType,purchasePrice:parseFloat(form.purchasePrice)||0,price:parseFloat(form.price)||0};
@@ -191,14 +195,16 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
           const cc=catColor[p.category]||catColor.Custom;
           const isPipe = p.category==="Pipe";
           const isHw = p.category === "Hardware" || p.category === "Custom";
-          // Hardware catalog cost/sale live on the product; purchase lots can lag after edits.
+          const priced = unitPrices(p);
+          // Pipe: price=cost/ft, purchasePrice=sale/ft. Hardware catalog can lag vs lots.
           const cost = isHw
-            ? (Number(p.purchasePrice) || Number(p.latestCost) || Number(p.fifoCost) || 0)
-            : (Number(p.latestCost) || Number(p.fifoCost) || 0);
+            ? (Number(p.purchasePrice) || Number(p.listCost) || Number(p.latestCost) || Number(p.fifoCost) || 0)
+            : (Number(priced.cost) || Number(p.listCost) || Number(p.latestCost) || Number(p.fifoCost) || 0);
           const sale = isHw
             ? (hardwareSalePrice(p, purchases) || Number(p.price) || 0)
-            : (Number(p.lotSale) || Number(p.price) || 0);
-          const costShown = revealedCost.has(p._id);
+            : (Number(priced.sale) || Number(p.lotSale) || 0);
+          const unitLbl = priced.unit ? ` /${priced.unit}` : (isPipe ? " /ft" : "");
+          const costShown = !hiddenCost.has(p._id);
           const fmtRs = (n) => {
             const v = Math.round((Number(n) || 0) * 100) / 100;
             if (!v) return "—";
@@ -225,12 +231,12 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
             <span style={{color:th.textDim,fontSize:14}}>{i+1}</span>,
             <span style={{fontWeight:600,color:th.text,fontSize:15}}>{getProductDisplayName(p)}</span>,
             <span style={{display:"inline-flex",alignItems:"center",gap:5,flexWrap:"nowrap",whiteSpace:"nowrap",fontSize:13,fontWeight:600}}>
-              <span style={{color:th.textMuted}}>{costText}</span>
+              <span style={{color:th.textMuted}}>{costText}{costShown && cost>0 ? <span style={{color:th.textMuted,fontSize:12,fontWeight:400}}>{unitLbl}</span> : null}</span>
               {eyeBtn}
               <span style={{color:th.textMuted,fontWeight:500}}>/</span>
               <span style={{color:"#34d399",fontWeight:700}}>
                 {fmtRs(sale)}
-                {isPipe && sale>0 ? <span style={{color:th.textMuted,fontSize:12,fontWeight:400}}> /ft</span> : null}
+                {sale>0 ? <span style={{color:th.textMuted,fontSize:12,fontWeight:400}}>{unitLbl}</span> : null}
               </span>
             </span>,
             <span style={{fontSize:13,padding:"3px 10px",borderRadius:20,fontWeight:600,background:cc.bg,color:cc.color}}>
@@ -604,7 +610,10 @@ export function ProductQuickAddModal({ loadProducts, loadPurchases, onClose, onS
       : (form.name || form.subType || form.category);
     setSaving(true);
     let payload = { name: resolvedName, category: form.category, stock: Number(form.stock) || 0, unit: form.unit || "piece" };
-    if (form.category === "Pipe") payload = { ...payload, price: parseFloat(form.price) || 0, purchasePrice: parseFloat(form.purchasePrice) || 0, pipeType: form.pipeType, pipeSubType: form.pipeSubType, pipeInch: form.pipeInch, gauge: form.gauge, length: form.length, weight: Number(form.weight) || 0, basePrice: Number(form.basePrice) || 0, percentage: Number(form.percentage) || 0, size: form.pipeInch };
+    if (form.category === "Pipe") {
+      const costFt = parseFloat(form.price) || 0;
+      payload = { ...payload, price: costFt, purchasePrice: parseFloat(form.purchasePrice) || 0, listCost: costFt, pipeType: form.pipeType, pipeSubType: form.pipeSubType, pipeInch: form.pipeInch, gauge: form.gauge, length: form.length, weight: Number(form.weight) || 0, basePrice: Number(form.basePrice) || 0, percentage: Number(form.percentage) || 0, size: form.pipeInch };
+    }
     else if (form.category === "Chader") payload = { ...payload, subType: form.subType, purchasePrice: parseFloat(form.purchasePrice) || 0, price: parseFloat(form.price) || 0 };
     else if (form.category === "Net") payload = { ...payload, subType: form.subType, gauge: form.gauge || "", width: form.width || "", purchasePrice: parseFloat(form.purchasePrice) || 0, price: parseFloat(form.price) || 0 };
     else if (form.category === "Custom") payload = { ...payload, purchasePrice: parseFloat(form.purchasePrice) || 0, price: parseFloat(form.price) || 0 };

@@ -23,7 +23,7 @@ import { productDisplayName } from "../utils/constants";
 import PaymentTerms, { useAccounts, derivePayment, isPayValid, calcDiscount, DiscountCashFields } from "../components/PaymentTerms";
 import { recordTradeFinance, reverseTradeFinance } from "../utils/tradeFinance";
 import PartyNamePicker from "../components/PartyNamePicker";
-import { stockLotsForProduct, fifoCostForQty } from "../components/InventoryStockTable";
+import { stockLotsForProduct, fifoCostForQty, unitPrices } from "../components/InventoryStockTable";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BILLING PAGE — COMPLETE UPDATE
@@ -117,7 +117,7 @@ const stockUnitLabel = (cat, product) => {
 const getBillingBlockSubtotal = (block, products) => {
   const prod = products.find(p => (p._id || p.id) === block.productId);
   if (!prod) return 0;
-  const pp = prod.price || 0;
+  const pp = prod.category === "Pipe" ? unitPrices(prod).sale : (Number(prod.price) || 0);
   if (prod.category === "Pipe")   return (block.pipeRows||[]).reduce((s,r) => s + pipeBillCalc(pp, r.percentage, r.qty, r.length).total, 0);
   if (prod.category === "Chader") return (block.chaderRows||[]).reduce((s,r) => s + chaderBillCalc(r.salePrice ?? pp, r.weight).total, 0);
   if (prod.category === "Net")    return (block.netRows||[]).reduce((s,r) => s + netBillCalc(r.salePrice ?? pp, r.feet).total, 0);
@@ -704,7 +704,7 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
   const wrapRef = useRef(null);
   const keepInViewRef = useRef(false);
   const [open, setOpen] = useState(true);
-  const [showCost, setShowCost] = useState(false);
+  const [showCost, setShowCost] = useState(true);
   const [search, setSearch] = useState(() => {
     const found = products.find(p => (p._id || p.id) === block.productId);
     return found ? productDisplayName(found) : "";
@@ -729,7 +729,7 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
   };
   const handleSelectProduct = (product) => {
     const pp = product.category === "Pipe"
-      ? (Number(product.price) || 0)
+      ? unitPrices(product).sale
       : product.category === "Hardware"
         ? (Number(product.price) || Number(product.purchasePrice) || 0)
         : (Number(product.purchasePrice) || Number(product.price) || 0);
@@ -778,8 +778,9 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
                     {filtered.length===0
                       ? <div style={{padding:"10px",textAlign:"center",color:th.textDim,fontSize:13}}>{isUrdu?"کوئی product نہیں ملا":"No products found"}</div>
                       : filtered.map((p, i)=>{
-                          const displayPrice = (p.category==="Pipe" || p.category==="Hardware") ? (Number(p.price)||Number(p.purchasePrice)||0) : (Number(p.purchasePrice)||Number(p.price)||0);
-                          const displayUnit  = stockUnitLabel(p.category, p);
+                          const prices = unitPrices(p);
+                          const displayPrice = prices.cost;
+                          const displayUnit  = prices.unit;
                           return (
                           <div key={p._id||p.id} data-nav-i={i} onMouseDown={(e)=>{ e.preventDefault(); e.stopPropagation(); handleSelectProduct(p); }}
                             onMouseEnter={(e)=>{ e.currentTarget.style.background="rgba(26,188,156,0.16)"; }}
@@ -806,18 +807,17 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
             const saleUnit = (category === "Hardware" || category === "Custom")
               ? (block.hwRows?.[0]?.unit || pUnit)
               : pUnit;
+            const prices = unitPrices(selectedProduct);
             const uLbl = (category === "Hardware" || category === "Custom")
               ? getUnitLabel(saleUnit)
-              : stockUnitLabel(category, selectedProduct);
-            const rawSale = (selectedProduct.category==="Pipe" || selectedProduct.category==="Hardware")
-              ? (Number(selectedProduct.price)||Number(selectedProduct.purchasePrice)||0)
-              : (Number(selectedProduct.purchasePrice)||Number(selectedProduct.price)||0);
+              : prices.unit;
+            const rawSale = prices.sale;
             const displayPrice = (category === "Hardware" || category === "Custom") && canConvert(pUnit, saleUnit)
               ? convertPrice(rawSale, pUnit, saleUnit)
               : rawSale;
             const displayAvg = (category === "Hardware" || category === "Custom") && canConvert(pUnit, saleUnit)
-              ? convertPrice(displayCost, pUnit, saleUnit)
-              : displayCost;
+              ? convertPrice(prices.cost || displayCost, pUnit, saleUnit)
+              : (prices.cost || displayCost);
             return (
             <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderRadius:8,background:catBgs[category]||"transparent",border:`1px solid ${(catColors[category]||"#aaa")}40`,flexWrap:"wrap"}}>
               <span style={{color:catColors[category],fontSize:12,fontWeight:700}}>{category}</span>
@@ -832,7 +832,7 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
             </div>
             );
           })()}
-          {category==="Pipe"     && <PipeBillingRows    rows={block.pipeRows||[]}   onChange={rows=>onChange({...block,pipeRows:rows})}   purchasePrice={Number(selectedProduct?.price)||Number(selectedProduct?.purchasePrice)||0} avgCost={displayCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
+          {category==="Pipe"     && <PipeBillingRows    rows={block.pipeRows||[]}   onChange={rows=>onChange({...block,pipeRows:rows})}   purchasePrice={unitPrices(selectedProduct).sale} avgCost={unitPrices(selectedProduct).cost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
           {category==="Chader"   && <ChaderBillingRows  rows={block.chaderRows||[]} onChange={rows=>onChange({...block,chaderRows:rows})} purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} avgCost={displayCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
           {category==="Net"      && <NetBillingRows     rows={block.netRows||[]}    onChange={rows=>onChange({...block,netRows:rows})}    purchasePrice={Number(selectedProduct?.purchasePrice)||Number(selectedProduct?.price)||0} avgCost={displayCost} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)}/>}
           {category==="Hardware" && <HwBillingRows      rows={block.hwRows||[]}     onChange={rows=>onChange({...block,hwRows:rows})}     purchasePrice={Number(selectedProduct?.purchasePrice)||0} avgCost={displayCost} purchaseUnit={productUnitOf(selectedProduct)} productSalePrice={Number(selectedProduct?.price)||0} availStock={availStock} isUrdu={isUrdu} showCost={showCost} onToggleCost={() => setShowCost((v) => !v)} catLabel="Hardware Total" catColor="#fbbf24" catBg="rgba(251,191,36,0.08)"/>}
@@ -1267,7 +1267,7 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
       const cat  = prod?.category || "";
       const extra = extraStockOf(block.productId);
       const pp   = (cat === "Pipe")
-        ? (Number(prod?.price) || Number(prod?.purchasePrice) || 0)
+        ? unitPrices(prod).sale
         : (Number(prod?.purchasePrice) || 0);
       let rows   = [];
       let itemQty = 0;
@@ -1740,7 +1740,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
     const res = editData
       ? await api.updateSale(editData._id, saleData)
       : await api.addSale(saleData);
-    if (res.success) { await loadSales(); await loadProducts(); }
+    if (res.success) { await loadProducts(); }
     return res;
   };
 

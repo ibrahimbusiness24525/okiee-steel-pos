@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, startTransition } from "react";
+import { useState, useEffect, useMemo, useRef, startTransition } from "react";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { LangProvider, useLang } from "./context/LangContext";
 import { useResponsive } from "./components/shared";
@@ -6,7 +6,6 @@ import { Sidebar, Topbar, BottomNav } from "./components/Layout";
 import { api, API, authHeaders } from "./utils/api";
 import { listPurchaseReturns, listSaleReturns } from "./utils/returnsStore";
 import { applyHardwareSalePrices } from "./utils/productPrices";
-import { makeLotContext, stockLotsForProduct } from "./components/InventoryStockTable";
 import { expenseApi } from "./utils/expenseStore";
 import { ledgerApi } from "./utils/ledgerStore";
 import {
@@ -16,6 +15,7 @@ import {
   normalizeShopProfile,
   isShopProfileEmpty,
   loadLegacyShopProfile,
+  todayStr,
 } from "./utils/helpers";
 
 // Pages
@@ -163,43 +163,15 @@ function AppInner() {
       return { success: false, message: err.message };
     }
   };
-  const loadPurchases = async () => { try { const r = await api.getPurchases(); if (r.success) setPurchases(Array.isArray(r.purchases) ? r.purchases : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); } catch (err) { console.error("Failed to load purchases:", err); } };
-  const loadSales     = async () => { try { const r = await api.getSales();     if (r.success) setSales(Array.isArray(r.sales) ? r.sales : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); } catch (err) { console.error("Failed to load sales:", err); } };
+  const loadPurchases = async (opts = {}) => { try { const r = await api.getPurchases(opts); if (r.success) setPurchases(Array.isArray(r.purchases) ? r.purchases : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); } catch (err) { console.error("Failed to load purchases:", err); } };
+  const loadSales     = async (opts = {}) => { try { const r = await api.getSales(opts);     if (r.success) setSales(Array.isArray(r.sales) ? r.sales : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); } catch (err) { console.error("Failed to load sales:", err); } };
   const loadSaleReturns = async () => { try { const r = await listSaleReturns(); if (r.success) setSaleReturns(r.returns || []); } catch (e) {} };
   const loadPurchaseReturns = async () => { try { const r = await listPurchaseReturns(); if (r.success) setPurchaseReturns(r.returns || []); } catch (e) {} };
   const loadStaff     = async () => { const r = await api.getStaff();     if (r.success) setStaff(Array.isArray(r.staff) ? r.staff : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
   const loadParties   = async () => { try { const r = await ledgerApi.list(); if (r.success) setParties(r.parties || []); } catch (e) { console.error("Failed to load parties:", e); } };
   const loadExpenses  = async () => { try { const r = await expenseApi.list(); if (r.success) setExpenses(r.expenses || []); } catch (e) { console.error("Failed to load expenses:", e); } };
-  const shopLots = useMemo(() => {
-    // Purchases without sales price every piece as still in stock. Wait until both are in.
-    if (!stockReady) return { products, ctx: null };
-    const priced = applyHardwareSalePrices(products, purchases);
-    const ctx = makeLotContext({ purchases, sales, purchaseReturns, saleReturns, products: priced });
-    const view = priced.map((p) => {
-      const lots = stockLotsForProduct(p, { ctx });
-      const held = Number(lots.stock) || 0;
-      const latestCost = Number(lots.latestCost) || Number(lots.fifoCost) || 0;
-      const prev = Number(p.stock) || 0;
-      const same = Math.abs(held - prev) < 0.0001
-        && Math.abs((Number(p.latestCost) || 0) - latestCost) < 0.009
-        && p.costValue != null
-        && p._lots;
-      if (same) return p;
-      return {
-        ...p,
-        stock: held,
-        dbStock: prev,
-        latestCost,
-        fifoCost: lots.fifoCost,
-        costValue: Number(lots.costValue) || 0,
-        lotSale: lots.sale,
-        _lots: lots,
-      };
-    });
-    return { products: view, ctx };
-  }, [stockReady, products, purchases, sales, purchaseReturns, saleReturns]);
-  const productsView = shopLots.products;
-  const lotCtx = shopLots.ctx;
+  const productsView = products;
+  const lotCtx = null;
 
   useEffect(() => {
     const token = localStorage.getItem("steelpos_token");
@@ -233,40 +205,45 @@ function AppInner() {
       return [];
     };
     const refresh = async () => {
-      const [prod, purch, salesR, sret, pret] = await Promise.all([
-        api.getProducts().catch(() => null),
-        api.getPurchases().catch(() => null),
-        api.getSales().catch(() => null),
+      const prod = await api.getProducts().catch(() => null);
+      if (cancel) return;
+      if (prod && prod.success) {
+        startTransition(() => {
+          setProducts(pick(prod, "products"));
+          setStockReady(true);
+        });
+      }
+      const day = todayStr();
+      const [purch, salesR, sret, pret] = await Promise.all([
+        api.getPurchases({ from: day, to: day }).catch(() => null),
+        api.getSales({ from: day, to: day }).catch(() => null),
         listSaleReturns().catch(() => null),
         listPurchaseReturns().catch(() => null),
       ]);
       if (cancel) return;
       startTransition(() => {
-        if (prod && prod.success) setProducts(pick(prod, "products"));
         if (purch && purch.success) setPurchases(pick(purch, "purchases"));
         if (salesR && salesR.success) setSales(pick(salesR, "sales"));
         if (sret && sret.success) setSaleReturns(sret.returns || []);
-        // Billing must see the same returns the stock list uses, including stock edits.
         if (pret && pret.success) setPurchaseReturns(pret.returns || []);
         setStockReady(true);
       });
     };
     refresh();
-    const onVisible = () => {
-      if (document.visibilityState === "visible") refresh();
-    };
-    window.addEventListener("focus", onVisible);
-    document.addEventListener("visibilitychange", onVisible);
-    const timer = setInterval(refresh, user.role === "staff" ? 20000 : 60000);
     loadLoaders();
     if (user.role === "admin") { loadStaff(); loadParties(); loadExpenses(); }
-    return () => {
-      cancel = true;
-      window.removeEventListener("focus", onVisible);
-      document.removeEventListener("visibilitychange", onVisible);
-      clearInterval(timer);
-    };
+    return () => { cancel = true; };
   }, [user]);
+
+  const fullBillsAsked = useRef(false);
+  useEffect(() => {
+    if (!user || user.role === "superadmin") return;
+    if (fullBillsAsked.current) return;
+    if (!["sales", "purchase", "records", "history", "ledger"].includes(active)) return;
+    fullBillsAsked.current = true;
+    loadSales();
+    loadPurchases();
+  }, [user, active]);
 
   // Each admin has their own shop profile; staff inherits their admin's branding.
   useEffect(() => {

@@ -1869,11 +1869,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
             sales={sales}
             purchaseReturns={purchaseReturns}
             saleReturns={saleReturns}
-            onChanged={async () => {
-              if (loadProducts) await loadProducts();
-              if (loadPurchases) await loadPurchases();
-              if (loadPurchaseReturns) await loadPurchaseReturns();
-            }}
+            onChanged={() => { if (loadProducts) loadProducts(); }}
           />
         </Modal>
       )}
