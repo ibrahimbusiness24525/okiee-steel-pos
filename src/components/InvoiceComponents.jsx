@@ -86,7 +86,8 @@ export const pipeCalc = (row, price) => {
   const pieces    = Number(row.quantity) || 0;
   const totalFeet = length * pieces;
   const pct       = Number(row.purchasePercentage) || 0;
-  const total     = totalFeet * (Number(price) || 0) * (1 + pct / 100);
+  const perFt     = length > 0 ? (Number(price) || 0) / length : 0;
+  const total     = totalFeet * perFt * (1 + pct / 100);
   return { totalFeet, pieces, total };
 };
 

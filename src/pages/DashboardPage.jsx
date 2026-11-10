@@ -1264,7 +1264,7 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
       const length = parseFloat(String(row.length||"").replace(/[^0-9.]/g,"")) || 0;
       const pieces = Number(row.quantity) || 0;
       const pct    = Number(row.purchasePercentage) || 0;
-      const pricePerFt = (Number(purchasePrice)||0) * (1 + pct/100);
+      const pricePerFt = (length > 0 ? (Number(purchasePrice)||0) / length : 0) * (1 + pct/100);
       const pricePerPc = pricePerFt * length;
       const total      = pricePerPc * pieces;
       return { desc:`${pieces}pc × Rs${pricePerPc.toFixed(0)}/pc`, amount: total };

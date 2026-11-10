@@ -77,10 +77,13 @@ function getProductId(product) {
   return product._id || product.id || null;
 }
 
-const pipeBillCalc = (purchasePrice, percentage, qty, length) => {
-  const totalFeet = (Number(qty)||0) * (Number(length)||0);
-  const effectivePrice = (Number(purchasePrice)||0) * (1 + (Number(percentage)||0)/100);
-  return { totalFeet, effectivePrice, total: totalFeet * effectivePrice };
+const pipeBillCalc = (lengthPrice, percentage, qty, length) => {
+  const len = Number(length) || 0;
+  const pieces = Number(qty) || 0;
+  const rate = Number(lengthPrice) || 0;
+  const perFt = len > 0 ? rate / len : 0;
+  const effectivePrice = perFt * (1 + (Number(percentage) || 0) / 100);
+  return { totalFeet: pieces * len, effectivePrice, total: pieces * len * effectivePrice };
 };
 const netBillCalc = (salePricePerFeet, feet) => {
   const sp = Number(salePricePerFeet)||0; const f = Number(feet)||0;
@@ -111,7 +114,8 @@ const roundUnitAmt = (n) => {
 };
 const stockUnitLabel = (cat, product) => {
   if (cat === "Chader") return "kg";
-  if (cat === "Net" || cat === "Pipe") return "ft";
+  if (cat === "Net") return "ft";
+  if (cat === "Pipe") return "length";
   return getUnitLabel(productUnitOf(product));
 };
 const getBillingBlockSubtotal = (block, products) => {
@@ -388,7 +392,6 @@ function PipeBillingRows({ rows, onChange, purchasePrice, avgCost = 0, availStoc
   const row = currentRows[0];
   const update = (k, v) => onChange([{ ...row, [k]: v }]);
   const c = pipeBillCalc(purchasePrice, row.percentage, row.qty, row.length);
-  const pricePerPc = c.effectivePrice * (Number(row.length)||0);
   const enteredQty = Number(row.qty) || 0;
   const stockErr   = enteredQty > 0 && enteredQty > availStock;
   return (
@@ -427,7 +430,7 @@ function PipeBillingRows({ rows, onChange, purchasePrice, avgCost = 0, availStoc
         )}
         {c.total > 0 && !stockErr && (
           <div style={{marginTop:8,padding:"5px 10px",borderRadius:8,background:"rgba(52,211,153,0.08)",border:"1px solid rgba(52,211,153,0.15)",display:"flex",justifyContent:"space-between",fontSize:13}}>
-            <span style={{color:th.textMuted}}>{row.qty}pc × Rs{pricePerPc.toFixed(0)}/pc</span>
+            <span style={{color:th.textMuted}}>{row.qty}pc × {row.length}ft × Rs{c.effectivePrice.toFixed(2)}/ft</span>
             <span style={{color:"#34d399",fontWeight:700}}>{formatPKR(c.total)}</span>
           </div>
         )}
@@ -818,6 +821,11 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
             const displayAvg = (category === "Hardware" || category === "Custom") && canConvert(pUnit, saleUnit)
               ? convertPrice(displayCost, pUnit, saleUnit)
               : displayCost;
+            const pipeLen = category === "Pipe"
+              ? (parseFloat(String(block.pipeRows?.[0]?.length || "").replace(/[^0-9.]/g, "")) || 0)
+              : 0;
+            const saleShown = category === "Pipe" && pipeLen > 0 ? rawSale / pipeLen : displayPrice;
+            const saleUnitLbl = category === "Pipe" && pipeLen > 0 ? "ft" : uLbl;
             return (
             <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderRadius:8,background:catBgs[category]||"transparent",border:`1px solid ${(catColors[category]||"#aaa")}40`,flexWrap:"wrap"}}>
               <span style={{color:catColors[category],fontSize:12,fontWeight:700}}>{category}</span>
@@ -827,7 +835,7 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
                 <CostEyeBtn show={showCost} onToggle={() => setShowCost((v) => !v)} color="#fbbf24" />
               </span>
               <span style={{color:displayPrice>0?catColors[category]:"#f87171",fontSize:12,fontWeight:600,padding:"2px 8px",borderRadius:8,background:th.input}}>
-                {displayPrice>0 ? `${isUrdu?"فروخت":"Sale"}: Rs ${fmtAvgCost(displayPrice)}/${uLbl}` : "⚠️ Sale price not set"}
+                {displayPrice>0 ? `${isUrdu?"فروخت":"Sale"}: Rs ${fmtAvgCost(saleShown)}/${saleUnitLbl}` : "⚠️ Sale price not set"}
               </span>
             </div>
             );
@@ -1274,8 +1282,7 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
       if (cat === "Pipe") {
         const r = block.pipeRows[0] || {};
         const c = pipeBillCalc(pp, r.percentage, r.qty, r.length);
-        const pricePerPc = c.effectivePrice * (Number(r.length)||0);
-        rows = [{ desc:`${r.qty||0}pc × Rs${pricePerPc.toFixed(0)}/pc`, amount:c.total }];
+        rows = [{ desc:`${r.qty||0}pc × ${r.length||0}ft × Rs${c.effectivePrice.toFixed(2)}/ft`, amount:c.total }];
         itemQty = Number(r.qty) || 0;
       } else if (cat === "Chader") {
         const r  = block.chaderRows[0] || {};
@@ -1677,8 +1684,8 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
         const pp   = prod?.price || 0;
         if (cat === "Pipe") {
           const r = item.rows[0]; const desc = r?.desc || "";
-          const qM = desc.match(/^(\d+\.?\d*)pc/); const pM = desc.match(/Rs(\d+\.?\d*)\/pc/);
-          allRows.push({ _id:Date.now()+Math.random(), length:0, quantity:qM?parseFloat(qM[1]):0, purchasePercentage:0, salePrice:pM?parseFloat(pM[1]):0 });
+          const qM = desc.match(/^(\d+\.?\d*)pc/); const lenM = desc.match(/×\s*(\d+\.?\d*)ft/); const ftM = desc.match(/Rs(\d+\.?\d*)\/ft/); const pM = desc.match(/Rs(\d+\.?\d*)\/pc/);
+          allRows.push({ _id:Date.now()+Math.random(), length:lenM?parseFloat(lenM[1]):0, quantity:qM?parseFloat(qM[1]):0, purchasePercentage:0, salePrice:ftM?parseFloat(ftM[1]):(pM?parseFloat(pM[1]):0) });
         } else if (cat === "Chader") {
           const r = item.rows[0]; const desc = r?.desc || "";
           const wM = desc.match(/^(\d+\.?\d*)kg/); const pM = desc.match(/Rs(\d+\.?\d*)\/kg/);
