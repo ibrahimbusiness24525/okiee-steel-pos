@@ -27,8 +27,7 @@ const pipeCalc = (row, price) => {
   const pieces    = Number(row.quantity) || 0;
   const totalFeet = length * pieces;
   const pct       = Number(row.purchasePercentage) || 0;
-  const perFt     = length > 0 ? (Number(price) || 0) / length : 0;
-  const total     = totalFeet * perFt * (1 + pct / 100);
+  const total     = totalFeet * (Number(price) || 0) * (1 + pct / 100);
   return { totalFeet, pieces, total };
 };
 
@@ -133,7 +132,7 @@ function PurchaseEntryTable({ category, rows, setRows, productPrice, product }) 
     const length     = parseLength(row.length);
     const pieces     = Number(row.quantity) || 0;
     const pct        = Number(row.purchasePercentage) || 0;
-    const pricePerFt = (length > 0 ? pp / length : 0) * (1 + pct / 100);
+    const pricePerFt = pp * (1 + pct / 100);
     const pricePerPc = pricePerFt * length;
     const total      = pricePerPc * pieces;
     return { pieces, pricePerPc, total };
@@ -143,7 +142,7 @@ function PurchaseEntryTable({ category, rows, setRows, productPrice, product }) 
   const tdCell = { padding: "5px 6px", verticalAlign: "middle" };
 
   const pipeHint = category === "Pipe" && pp > 0
-    ? <span style={{ fontSize: 12, color: "#60a5fa", fontWeight: 600 }}>Price: Rs {pp}/length{parseLength(rows[0]?.length) > 0 ? ` · Rs ${(pp / parseLength(rows[0].length)).toFixed(2)}/ft` : ""} — Pieces × length price = Total</span>
+    ? <span style={{ fontSize: 12, color: "#60a5fa", fontWeight: 600 }}>Price: Rs {pp}/ft — Pieces × Length = Total Amount</span>
     : null;
 
   return (
@@ -384,7 +383,7 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 11px", borderRadius: 8, background: catBg, border: `1px solid ${catColor}40`, flexWrap: "wrap" }}>
               <span style={{ color: catColor, fontSize: 12, fontWeight: 700 }}>{category}</span>
               <span style={{ color: th.text, fontSize: 13, fontWeight: 600 }}>{selectedProduct.name}</span>
-              {category === "Pipe" && productPrice > 0 && <span style={{ marginLeft: "auto", color: "#60a5fa", fontSize: 12, fontWeight: 600 }}>Rs {productPrice}/length</span>}
+              {category === "Pipe" && productPrice > 0 && <span style={{ marginLeft: "auto", color: "#60a5fa", fontSize: 12, fontWeight: 600 }}>Rs {productPrice}/ft</span>}
               {category !== "Pipe" && (() => {
                 const cs = productCostSale(selectedProduct);
                 return (

@@ -230,7 +230,7 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
               <span style={{color:th.textMuted,fontWeight:500}}>/</span>
               <span style={{color:"#34d399",fontWeight:700}}>
                 {fmtRs(sale)}
-                {isPipe && sale>0 ? <span style={{color:th.textMuted,fontSize:12,fontWeight:400}}> /length</span> : null}
+                {isPipe && sale>0 ? <span style={{color:th.textMuted,fontSize:12,fontWeight:400}}> /ft</span> : null}
               </span>
             </span>,
             <span style={{fontSize:13,padding:"3px 10px",borderRadius:20,fontWeight:600,background:cc.bg,color:cc.color}}>
@@ -356,14 +356,14 @@ function PipeForm({ form, setForm }) {
       )}
       {showPrice&&(
         <div>
-          <LabelRow text={isUrdu ? "فی لمبائی قیمت (روپے)" : "Price per length (PKR)"} required/>
+          <LabelRow text={isUrdu ? "فی فٹ قیمت (روپے)" : "Price per Feet (PKR)"} required/>
           <div style={{position:"relative"}}>
             <span style={{position:"absolute",left:14,top:"50%",transform:"translateY(-50%)",color:th.textMuted,fontSize:14,fontWeight:600}}>Rs</span>
             <input type="text" inputMode="decimal" value={form.price||""} onChange={e=>setForm(p=>({...p,price:e.target.value}))} placeholder="e.g. 28.5" style={{...s,paddingLeft:44,border:"2px solid rgba(26,188,156,0.4)",fontSize:17,fontWeight:700}} onFocus={e=>e.target.style.borderColor="#1abc9c"} onBlur={e=>e.target.style.borderColor="rgba(26,188,156,0.4)"}/>
           </div>
-          {form.price&&parseFloat(form.price)>0&&(<p style={{color:"#34d399",fontSize:13,margin:"4px 0 0"}}>{formatPKR(parseFloat(form.price))} / {isUrdu?"لمبائی":"length"}</p>)}
+          {form.price&&parseFloat(form.price)>0&&(<p style={{color:"#34d399",fontSize:13,margin:"4px 0 0"}}>{formatPKR(parseFloat(form.price))} / {isUrdu?"فٹ":"feet"}</p>)}
           <div style={{marginTop:12}}>
-            <LabelRow text={isUrdu ? "فروخت قیمت فی لمبائی (روپے)" : "Sale price per length (PKR)"}/>
+            <LabelRow text={isUrdu ? "فروخت قیمت فی فٹ (روپے)" : "Sale price per feet (PKR)"}/>
             <div style={{position:"relative"}}>
               <span style={{position:"absolute",left:14,top:"50%",transform:"translateY(-50%)",color:th.textMuted,fontSize:14,fontWeight:600}}>Rs</span>
               <input type="text" inputMode="decimal" value={form.purchasePrice||""} onChange={e=>setForm(p=>({...p,purchasePrice:e.target.value}))} placeholder="0" style={{...s,paddingLeft:44}} onFocus={e=>e.target.style.borderColor="#1abc9c"} onBlur={e=>e.target.style.borderColor=th.inputBorder}/>
