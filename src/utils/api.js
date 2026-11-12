@@ -2,6 +2,11 @@
 const RAILWAY_API = "https://pos-steel-backend-production.up.railway.app/api";
 const getBaseURL = () => {
   const saved = localStorage.getItem("steelpos_api_url");
+  const onLocal = typeof window !== "undefined" && /localhost|127\.0\.0\.1/i.test(window.location.hostname);
+  if (onLocal) {
+    if (saved && /localhost|127\.0\.0\.1/i.test(saved)) return saved;
+    return "http://127.0.0.1:5000/api";
+  }
   if (saved && !/netlify\.app/i.test(saved)) return saved;
   const fromEnv = import.meta.env.VITE_API_URL;
   if (fromEnv && !/netlify\.app/i.test(fromEnv)) return fromEnv;

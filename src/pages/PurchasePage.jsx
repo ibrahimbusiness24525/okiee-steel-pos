@@ -760,6 +760,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
   const [purchaseSearch,   setPurchaseSearch]   = useState("");
   const [editGroup,        setEditGroup]        = useState(null);
   const [historyGroup,     setHistoryGroup]     = useState(null);
+  const [deleting,         setDeleting]         = useState(false);
 
   const handleSave = async (payload) => {
     const { supplier, invoice, date, productId, rows, total, qty, rate, category, productPrice } = payload;
@@ -855,28 +856,37 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
   const closePurchaseModal = () => { setShowModal(false); setEditGroup(null); };
 
   const delGroup = async (g) => {
-    const items = g.items || [g];
+    if (deleting) return;
+    const items = (g.items || [g]).filter((line) => line && line._id);
+    if (!items.length) return;
     const inv = g.head?.invoice || g.head?.invoiceNum || g.invoice || g.invoiceNum || "";
     const n = items.length;
     const ok = window.confirm(
-      n > 1
-        ? (isUrdu ? `انوائس ${inv} کی ${n} آئٹمز حذف کریں؟` : `Delete invoice ${inv} (${n} items)?`)
-        : t.deletePurchaseConfirm
+      isUrdu
+        ? `انوائس ${inv} مستقل حذف ہو گی اور اسٹاک کم ہو جائے گا۔ یہ واپس نہیں آئے گی۔ جاری رکھیں؟`
+        : `Permanently delete invoice ${inv}${n > 1 ? ` (${n} items)` : ""}? Stock of these items will be reduced. This cannot be undone.`
     );
     if (!ok) return;
-    for (const line of items) {
-      const res = await api.deletePurchase(line._id);
-      if (!res.success) { alert(res.message); return; }
+    setDeleting(true);
+    try {
+      for (const line of items) {
+        const res = await api.deletePurchase(line._id);
+        if (!res.success) { alert(res.message || (isUrdu ? "حذف نہیں ہوا" : "Could not delete")); return; }
+      }
+      await reverseTradeFinance({
+        kind: "purchase",
+        partyName: g.head?.supplier || g.supplier || g.supplierName,
+        invoice: inv,
+        paid: g.head?.paidAmount ?? g.paidAmount,
+        accountId: g.head?.accountId || g.accountId,
+      });
+      setViewGroup(null);
+      await loadPurchases();
+      await loadProducts();
+      await loadPurchaseReturns?.();
+    } finally {
+      setDeleting(false);
     }
-    await reverseTradeFinance({
-      kind: "purchase",
-      partyName: g.head?.supplier || g.supplier || g.supplierName,
-      invoice: inv,
-      paid: g.head?.paidAmount ?? g.paidAmount,
-      accountId: g.head?.accountId || g.accountId,
-    });
-    setViewGroup(null);
-    await loadPurchases(); await loadProducts(); await loadPurchaseReturns?.();
   };
 
   const delReturn = async (r) => {
@@ -1186,6 +1196,7 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
             };
           })}
           onEdit={openEditPurchase}
+          onDelete={delGroup}
           onHistory={(g) => setHistoryGroup(g)}
           onRowClick={(g) => setViewGroup(g)}
         />
@@ -1260,13 +1271,23 @@ function PurchasePage({ purchases, products, loadPurchases, loadProducts, purcha
                 };
               })}
             />
-            <button
-              type="button"
-              onClick={() => { const g = viewGroup; setViewGroup(null); openPurchaseInvoice(g); }}
-              style={{ padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "#fff", fontWeight: 700, fontSize: 13 }}
-            >
-              🖨️ {isUrdu ? "پرنٹ رسید" : "Print invoice"}
-            </button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => { const g = viewGroup; setViewGroup(null); openPurchaseInvoice(g); }}
+                style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#1abc9c,#2980b9)", color: "#fff", fontWeight: 700, fontSize: 13 }}
+              >
+                🖨️ {isUrdu ? "پرنٹ رسید" : "Print invoice"}
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => delGroup(viewGroup)}
+                style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(239,68,68,0.35)", cursor: deleting ? "wait" : "pointer", background: "rgba(239,68,68,0.1)", color: "#f87171", fontWeight: 700, fontSize: 13, opacity: deleting ? 0.7 : 1 }}
+              >
+                🗑️ {deleting ? (isUrdu ? "حذف ہو رہا ہے…" : "Deleting…") : (isUrdu ? "حذف کریں" : "Delete")}
+              </button>
+            </div>
           </div>
         </Modal>
       )}
