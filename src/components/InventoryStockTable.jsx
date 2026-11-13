@@ -1,8 +1,8 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { Table, Modal } from "./shared";
-import { formatPKR, formatWeightKgG, printThermalOrA4, todayStr } from "../utils/helpers";
+import { formatPKR, formatWeightKgG, printThermalOrA4, todayStr, formatDateTime } from "../utils/helpers";
 import { api } from "../utils/api";
 import { productDisplayName } from "../utils/constants";
 import { getUnitLabel, productUnitOf } from "../utils/unitConversion";
@@ -435,6 +435,7 @@ export function makeLotContext({ purchases = [], sales = [], purchaseReturns = [
     map[key].push(lot);
   };
   (purchases || []).forEach((p) => {
+    if (p?.stockEdit || String(p?.notes || "").toLowerCase().includes("stock edit") || /^STK-/i.test(String(p?.invoice || p?.invoiceNum || ""))) return;
     const makeLot = (qty, unitCost) => {
       const bought = Number(qty) || 0;
       if (bought <= 0) return null;
@@ -767,9 +768,140 @@ function MiniStat({ label, value, color, th }) {
   );
 }
 
-function StockDetailView({ product, lots, onClose, isUrdu, th, t }) {
+function actionLabel(type, isUrdu) {
+  const map = {
+    purchase: isUrdu ? "خریداری" : "Purchase",
+    sale: isUrdu ? "فروخت" : "Sale",
+    "stock-edit": isUrdu ? "اسٹاک ایڈٹ" : "Stock edit",
+    "purchase-edit": isUrdu ? "خرید ایڈٹ" : "Purchase edit",
+    "sale-edit": isUrdu ? "فروخت ایڈٹ" : "Sale edit",
+    "purchase-delete": isUrdu ? "خرید حذف" : "Purchase deleted",
+    "sale-delete": isUrdu ? "فروخت حذف" : "Sale deleted",
+  };
+  return map[type] || type;
+}
+
+function actionColor(type) {
+  if (type === "sale") return "#34d399";
+  if (type === "purchase") return "#60a5fa";
+  if (String(type || "").includes("edit")) return "#fbbf24";
+  if (String(type || "").includes("delete")) return "#f87171";
+  return "#a78bfa";
+}
+
+function qtyForPurchaseLine(bill, id, name) {
+  const entries = Array.isArray(bill.entries) ? bill.entries : [];
+  if (entries.length) {
+    return entries.reduce((sum, e) => {
+      const eid = pidOf(e.product || e.productId);
+      const en = String(e.productName || e.name || "").trim().toLowerCase();
+      if ((id && eid === id) || (name && en === name)) return sum + (Number(e.quantity) || Number(e.qty) || 0);
+      return sum;
+    }, 0);
+  }
+  const bid = pidOf(bill.product || bill.productId);
+  const bn = String(bill.productName || bill.name || "").trim().toLowerCase();
+  if (!((id && bid === id) || (name && bn === name))) return 0;
+  const q = Number(bill.qty);
+  if (q > 0) return q;
+  return (bill.rows || []).reduce((s, r) => s + (Number(r.qty) || Number(r.quantity) || Number(r.weight) || Number(r.feet) || 0), 0);
+}
+
+function StockDetailView({ product, lots, purchases = [], sales = [], products = [], onClose, isUrdu, th, t }) {
   const name = productDisplayName(product) || product.name || "—";
-  const profitColor = lots.profitPc >= 0 ? "#34d399" : "#f87171";
+  const prices = unitPrices(product);
+  const profitColor = (prices.sale - prices.cost) >= 0 ? "#34d399" : "#f87171";
+  const id = String(product._id || product.id || "");
+  const pname = String(product.name || "").trim().toLowerCase();
+  const [events, setEvents] = useState([]);
+
+  useEffect(() => {
+    if (!id) return;
+    let live = true;
+    api.getActivity({ productId: id, limit: 800 }).then((r) => {
+      if (live) setEvents(Array.isArray(r?.activities) ? r.activities : []);
+    }).catch(() => { if (live) setEvents([]); });
+    return () => { live = false; };
+  }, [id]);
+
+  const bought = useMemo(() => {
+    const rows = [];
+    (purchases || []).forEach((b) => {
+      const qty = qtyForPurchaseLine(b, id, pname);
+      if (qty <= 0) return;
+      const edit = !!(b.stockEdit || String(b.notes || "").toLowerCase().includes("stock edit"));
+      rows.push({
+        date: recordDay(b) || "—",
+        invoice: b.invoice || b.invoiceNum || "—",
+        party: edit ? (isUrdu ? "ایڈٹ" : "Stock edit") : (b.supplier || b.supplierName || "—"),
+        qty,
+        rate: Number(b.rate) || Number(b.productPrice) || Number(b.rows?.[0]?.purchasePrice) || 0,
+        edit,
+        fromQty: b.fromQty,
+        toQty: b.toQty,
+        stamp: `${b.createdAt || ""}|${b.date || ""}`,
+      });
+    });
+    rows.sort((a, b) => String(b.stamp).localeCompare(String(a.stamp)));
+    return rows;
+  }, [purchases, id, pname, isUrdu]);
+
+  const sold = useMemo(() => {
+    const nameToId = new Map();
+    (products || []).forEach((p) => {
+      const pid = String(p._id || p.id || "");
+      const n = String(p.name || "").trim().toLowerCase();
+      if (pid && n) nameToId.set(n, pid);
+    });
+    const rows = [];
+    (sales || []).forEach((s) => {
+      saleSoldLines(s, nameToId).forEach((ln) => {
+        if (String(ln.productId) !== id) return;
+        rows.push({
+          date: recordDay(s) || "—",
+          invoice: s.invoice || s.invoiceNum || "—",
+          party: s.customer || s.customerName || "—",
+          qty: Number(ln.qty) || 0,
+          stamp: `${s.createdAt || ""}|${s.date || ""}`,
+        });
+      });
+    });
+    rows.sort((a, b) => String(b.stamp).localeCompare(String(a.stamp)));
+    return rows;
+  }, [sales, products, id]);
+
+  const happened = useMemo(() => {
+    const list = (events || []).map((a) => ({
+      when: formatDateTime(a.date, a.createdAt),
+      type: a.type,
+      invoice: a.invoice || "—",
+      qty: a.fromQty != null && a.toQty != null
+        ? `${stockLabel(product.category, a.fromQty).replace(/ pcs$| kg$| ft²$/, "")} → ${stockLabel(product.category, a.toQty)}`
+        : stockLabel(product.category, a.qty),
+      detail: a.party || a.summary || a.byName || "—",
+      stamp: a.createdAt || a.date || "",
+    }));
+    if (list.length) {
+      list.sort((a, b) => String(b.stamp).localeCompare(String(a.stamp)));
+      return list;
+    }
+    const fallback = [
+      ...bought.map((r) => ({
+        when: r.date, type: r.edit ? "stock-edit" : "purchase", invoice: r.invoice,
+        qty: r.edit && r.fromQty != null
+          ? `${stockLabel(product.category, r.fromQty).replace(/ pcs$| kg$| ft²$/, "")} → ${stockLabel(product.category, r.toQty)}`
+          : stockLabel(product.category, r.qty),
+        detail: r.party, stamp: r.stamp,
+      })),
+      ...sold.map((r) => ({
+        when: r.date, type: "sale", invoice: r.invoice,
+        qty: stockLabel(product.category, r.qty), detail: r.party, stamp: r.stamp,
+      })),
+    ];
+    fallback.sort((a, b) => String(b.stamp).localeCompare(String(a.stamp)));
+    return fallback;
+  }, [events, bought, sold, product.category]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div>
@@ -777,91 +909,74 @@ function StockDetailView({ product, lots, onClose, isUrdu, th, t }) {
         <div style={{ color: th.textMuted, fontSize: 12, marginTop: 4 }}>
           {product.category || "—"}
           {product.barcode ? ` · ${product.barcode}` : ""}
-          {" · "}{isUrdu ? "اسٹاک" : "Stock"} {stockLabel(product.category, lots.stock)}
+          {" · "}{isUrdu ? "اسٹاک" : "Stock"} {stockLabel(product.category, Number(product.stock) || lots.stock)}
         </div>
       </div>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <MiniStat th={th} label={isUrdu ? "تازہ لاگت / پیس" : "Latest cost / pc"} value={formatPKR(lots.latestCost)} />
-        <MiniStat th={th} label={isUrdu ? "فروخت قیمت / پیس" : "Sale / pc"} value={formatPKR(lots.sale)} />
-        <MiniStat th={th} label={isUrdu ? "منافع / پیس" : "Profit / pc"} value={formatPKR(lots.profitPc)} color={profitColor} />
-        <MiniStat th={th} label={isUrdu ? "کل منافع (اسٹاک)" : "Profit on stock"} value={formatPKR(lots.profitStock)} color={profitColor} />
+        <MiniStat th={th} label={isUrdu ? `تازہ لاگت / ${prices.unit}` : `Latest cost / ${prices.unit}`} value={formatPKR(prices.cost)} />
+        <MiniStat th={th} label={isUrdu ? `فروخت / ${prices.unit}` : `Sale / ${prices.unit}`} value={formatPKR(prices.sale)} />
+        <MiniStat th={th} label={isUrdu ? `منافع / ${prices.unit}` : `Profit / ${prices.unit}`} value={formatPKR(prices.sale - prices.cost)} color={profitColor} />
+        <MiniStat th={th} label={isUrdu ? "اسٹاک مالیت" : "Stock value"} value={formatPKR(lots.costValue)} />
       </div>
-
-      <p style={{ color: th.textMuted, fontSize: 12, margin: 0, lineHeight: 1.45 }}>
-        {isUrdu
-          ? "اسکرین پر تازہ ترین خرید قیمت دکھتی ہے۔ فروخت پر منافع پہلے والے اسٹاک (FIFO) کی لاگت سے بنتی ہے۔"
-          : "Screen shows the latest purchase cost. Sale profit still uses the oldest remaining stock (FIFO)."}
-      </p>
 
       <div>
-        <div style={{ color: th.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>
-          {isUrdu ? "تمام خریداریاں (FIFO)" : "All purchases (FIFO)"}
-        </div>
-        <p style={{ color: th.textMuted, fontSize: 11, margin: "0 0 8px", lineHeight: 1.4 }}>
-          {isUrdu
-            ? "تازہ خریداری اوپر۔ فروخت پر «Sold» لکھا ہوتا ہے۔ اسٹاک ایڈٹ پر «Edit» لکھا ہوتا ہے۔"
-            : "Latest purchase on top. A sale is marked Sold. A stock edit is marked Edit."}
-        </p>
-        <div style={{
-          maxHeight: 8 * 42 + 40,
-          overflowY: "auto",
-          border: `1px solid ${th.border}`,
-          borderRadius: 12,
-        }}>
+        <h3 style={{ margin: "0 0 8px", color: th.text, fontSize: 15 }}>{isUrdu ? "سب کچھ جو ہوا" : "What happened"} · {happened.length}</h3>
+        <div style={{ maxHeight: 280, overflowY: "auto", borderRadius: 12, border: `1px solid ${th.border}` }}>
           <Table
             compact
-            cols={[
-              t.date,
-              t.invoiceNum,
-              t.supplier,
-              isUrdu ? "خریدا" : "Bought",
-              isUrdu ? "باقی" : "Remaining",
-              isUrdu ? "فی پیس لاگت" : "Cost / pc",
-              t.totalLabel,
-            ]}
-            rows={[...(lots.allLots || lots.remaining)]
-              .slice()
-              .reverse()
-              .map((l) => {
-                const rem = Number(l.remaining) || 0;
-                const gone = !l.edit && rem <= 0.0001;
-                const remText = l.edit
-                  ? `${isUrdu ? "ایڈٹ" : "Edit"} ${rem < 0 ? "−" : "+"}${stockLabel(product.category, Math.abs(rem))}`
-                  : gone
-                    ? (isUrdu ? "0 (فروخت)" : "0 (sold)")
-                    : stockLabel(product.category, rem);
-                return {
-                  data: l,
-                  cells: [
-                    <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{l.opening ? (isUrdu ? "پرانا / اوپننگ" : "Opening") : l.date}</span>,
-                    <span style={{ fontFamily: "monospace", color: l.edit ? "#fbbf24" : "#60a5fa", fontSize: 12, whiteSpace: "nowrap" }}>{l.invoice}</span>,
-                    <span style={{ whiteSpace: "nowrap", fontWeight: l.edit ? 800 : 400 }}>{l.edit ? (isUrdu ? "ایڈٹ" : "Edit") : l.supplier}</span>,
-                    <span style={{ fontWeight: 700, color: th.textMuted, whiteSpace: "nowrap" }}>{l.edit ? "—" : stockLabel(product.category, l.bought)}</span>,
-                    <span style={{ fontWeight: 700, color: l.edit ? "#fbbf24" : gone ? "#f87171" : "#34d399", whiteSpace: "nowrap" }}>
-                      {remText}
-                    </span>,
-                    <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{l.edit ? "—" : formatPKR(l.unitCost)}</span>,
-                    <span style={{ fontWeight: 700, whiteSpace: "nowrap", fontSize: 12 }}>{l.edit ? "—" : formatPKR((Number(l.bought) || 0) * l.unitCost)}</span>,
-                  ],
-                };
-              })}
+            cols={[isUrdu ? "وقت" : "When", isUrdu ? "کیا ہوا" : "Action", t.invoiceNum, isUrdu ? "مقدار" : "Qty", isUrdu ? "تفصیل" : "Detail"]}
+            rows={happened.map((r) => ({
+              data: r,
+              cells: [
+                <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{r.when}</span>,
+                <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, fontWeight: 700, background: `${actionColor(r.type)}22`, color: actionColor(r.type) }}>{actionLabel(r.type, isUrdu)}</span>,
+                <span style={{ fontFamily: "monospace", fontSize: 12, color: "#60a5fa" }}>{r.invoice}</span>,
+                <span style={{ fontWeight: 700 }}>{r.qty}</span>,
+                <span style={{ color: th.textMuted, fontSize: 12 }}>{r.detail}</span>,
+              ],
+            }))}
           />
         </div>
-        {!(lots.allLots || lots.remaining).length && (
-          <p style={{ color: th.textMuted, fontSize: 13, margin: "8px 0 0" }}>{isUrdu ? "کوئی خریداری ریکارڈ نہیں" : "No purchase lots on record"}</p>
-        )}
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "10px 12px", borderRadius: 12, border: `1px solid ${th.border}`, background: th.bgCard }}>
-        <span style={{ color: th.textMuted, fontSize: 13 }}>
-          {isUrdu ? "فروخت شدہ" : "Sold"} {stockLabel(product.category, lots.sold)}
-          {lots.editQty > 0 ? ` · ${isUrdu ? "ایڈٹ" : "Edit"} ${stockLabel(product.category, lots.editQty)}` : ""}
-          {lots.purchRet > 0 ? ` · ${isUrdu ? "واپسی" : "Returned"} ${stockLabel(product.category, lots.purchRet)}` : ""}
-        </span>
-        <span style={{ color: th.text, fontWeight: 800, fontSize: 13, whiteSpace: "nowrap" }}>
-          {isUrdu ? "اسٹاک مالیت" : "Stock value"} · {formatPKR(lots.costValue)}
-        </span>
+      <div>
+        <h3 style={{ margin: "0 0 8px", color: th.text, fontSize: 15 }}>{isUrdu ? "خریداری" : "Purchases"} · {bought.length}</h3>
+        <div style={{ maxHeight: 260, overflowY: "auto", borderRadius: 12, border: `1px solid ${th.border}` }}>
+          <Table
+            compact
+            cols={[t.date, t.invoiceNum, t.supplier, isUrdu ? "مقدار" : "Qty", isUrdu ? "ریٹ" : "Rate"]}
+            rows={bought.map((r) => ({
+              data: r,
+              cells: [
+                <span style={{ whiteSpace: "nowrap" }}>{r.date}</span>,
+                <span style={{ fontFamily: "monospace", color: r.edit ? "#fbbf24" : "#b45309" }}>{r.invoice}</span>,
+                r.party,
+                <span style={{ fontWeight: 700 }}>{r.edit && r.fromQty != null ? `${stockLabel(product.category, r.fromQty).replace(/ pcs$| kg$| ft²$/, "")} → ${stockLabel(product.category, r.toQty)}` : stockLabel(product.category, r.qty)}</span>,
+                r.edit ? "—" : formatPKR(r.rate),
+              ],
+            }))}
+          />
+        </div>
+      </div>
+
+      <div>
+        <h3 style={{ margin: "0 0 8px", color: th.text, fontSize: 15 }}>{isUrdu ? "فروخت" : "Sales"} · {sold.length}</h3>
+        <div style={{ maxHeight: 260, overflowY: "auto", borderRadius: 12, border: `1px solid ${th.border}` }}>
+          <Table
+            compact
+            cols={[t.date, t.invoiceNum, isUrdu ? "گاہک" : "Customer", isUrdu ? "مقدار" : "Qty"]}
+            rows={sold.map((r) => ({
+              data: r,
+              cells: [
+                <span style={{ whiteSpace: "nowrap" }}>{r.date}</span>,
+                <span style={{ fontFamily: "monospace", color: "#059669" }}>{r.invoice}</span>,
+                r.party,
+                <span style={{ fontWeight: 700 }}>{stockLabel(product.category, r.qty)}</span>,
+              ],
+            }))}
+          />
+        </div>
       </div>
 
       <button type="button" onClick={onClose} style={{ padding: "10px 14px", borderRadius: 10, border: `1px solid ${th.border}`, background: th.thHead, color: th.text, fontWeight: 700, cursor: "pointer" }}>
@@ -894,12 +1009,22 @@ function newestBillFor(product, purchases) {
 function StockEditModal({ product, lots, purchases, onClose, onChanged, isUrdu, th }) {
   const bill = newestBillFor(product, purchases);
   const shown = unitPrices(product, bill);
-  const [qty, setQty] = useState(String(Math.round((Number(lots.stock) || 0) * 1000) / 1000));
+  const isPipe = product.category === "Pipe";
+  const [qty, setQty] = useState(String(Math.round((Number(product.stock) || Number(lots.stock) || 0) * 1000) / 1000));
+  const [lengthFt, setLengthFt] = useState(String(shown.lengthFt || Number(product.length) || 20));
   const [cost, setCost] = useState(String(shown.cost));
   const [sale, setSale] = useState(String(shown.sale));
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const name = productDisplayName(product) || product.name || "—";
+  const fromQty = Number(product.stock) || Number(lots.stock) || 0;
+  const nextQty = Number(qty);
+  const nextCost = Number(cost);
+  const nextLen = Number(lengthFt) || 20;
+  const diff = Number.isFinite(nextQty) ? Math.round((nextQty - fromQty) * 1000) / 1000 : 0;
+  const costPerPc = isPipe ? nextCost * nextLen : nextCost;
+  const addFeet = isPipe ? Math.abs(diff) * nextLen : 0;
+  const addValue = Math.abs(diff) * (Number.isFinite(costPerPc) ? costPerPc : 0);
 
   const inputStyle = {
     width: "100%", padding: "10px 12px", borderRadius: 10, border: `1px solid ${th.border}`,
@@ -907,58 +1032,56 @@ function StockEditModal({ product, lots, purchases, onClose, onChanged, isUrdu, 
   };
 
   const save = async () => {
-    const nextQty = Number(qty);
-    const nextCost = Number(cost);
     const nextSale = Number(sale);
     if (!Number.isFinite(nextQty) || nextQty < 0) {
       setErr(isUrdu ? "اسٹاک صفر یا اس سے زیادہ ہونا چاہیے" : "Stock must be zero or more");
+      return;
+    }
+    if (isPipe && (!Number.isFinite(nextLen) || nextLen <= 0)) {
+      setErr(isUrdu ? "ایک پیس کی لمبائی فٹ میں لکھیں" : "Enter length of one piece in ft");
       return;
     }
     if (!Number.isFinite(nextCost) || nextCost < 0 || !Number.isFinite(nextSale) || nextSale < 0) {
       setErr(isUrdu ? "قیمت صفر یا اس سے زیادہ ہونی چاہیے" : "Price must be zero or more");
       return;
     }
-    const fromQty = Number(lots.stock) || 0;
-    const diff = Math.round((nextQty - fromQty) * 1000) / 1000;
     const costChanged = Math.abs(nextCost - shown.cost) > 0.009;
     const saleChanged = Math.abs(nextSale - shown.sale) > 0.009;
-    const isPipe = product.category === "Pipe";
+    const lengthChanged = isPipe && Math.abs(nextLen - (shown.lengthFt || Number(product.length) || 20)) > 0.009;
     setSaving(true);
     setErr("");
     try {
       const id = product._id || product.id;
-      const jobs = [];
       if (Math.abs(diff) > 0.0001) {
-        jobs.push((async () => {
-          const counted = await api.setStockCount(id, nextQty);
-          if (!counted?.success) throw new Error(counted?.message || "Stock was not updated");
-        })());
+        const counted = await api.setStockCount(id, nextQty, isPipe ? { length: nextLen, costPerFt: nextCost } : {});
+        if (!counted?.success) throw new Error(counted?.message || "Stock was not updated");
       }
-      if (costChanged || saleChanged) {
+      if (costChanged || saleChanged || lengthChanged) {
         const fields = {};
+        if (isPipe && lengthChanged) fields.length = nextLen;
         if (saleChanged) {
           if (isPipe) fields.purchasePrice = nextSale;
           else fields.price = nextSale;
         }
         if (costChanged) {
-          const len = shown.lengthFt || Number(product.length) || 20;
           const raw = Number(product.listCost) || 0;
-          fields.listCost = isPipe && pipeListCostIsPerPiece(raw, len)
-            ? Math.round(nextCost * len * 1000) / 1000
+          fields.listCost = isPipe && pipeListCostIsPerPiece(raw, nextLen)
+            ? Math.round(nextCost * nextLen * 1000) / 1000
             : nextCost;
           if (isPipe) fields.price = nextCost;
           else fields.purchasePrice = nextCost;
         }
-        jobs.push((async () => {
-          const res = await api.updateProduct(id, fields);
-          if (!res?.success) throw new Error(res?.message || "Price was not saved");
-        })());
+        const res = await api.updateProduct(id, fields);
+        if (!res?.success) throw new Error(res?.message || "Price was not saved");
       }
-      if (jobs.length) await Promise.all(jobs);
       onClose();
       if (onChanged) onChanged();
     } catch (e) {
-      setErr(e?.message || (isUrdu ? "محفوظ نہیں ہوا" : "Could not save"));
+      const raw = String(e?.message || "");
+      const expired = /token|session|expired|unauthorized|not authorized/i.test(raw);
+      setErr(expired
+        ? (isUrdu ? "سیشن ختم ہو گیا۔ دوبارہ لاگ ان کریں، پھر سیو کریں۔" : "Session expired. Login again, then Save.")
+        : (raw || (isUrdu ? "محفوظ نہیں ہوا" : "Could not save")));
     } finally {
       setSaving(false);
     }
@@ -969,14 +1092,21 @@ function StockEditModal({ product, lots, purchases, onClose, onChanged, isUrdu, 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ fontWeight: 800, color: th.text, fontSize: 16 }}>{name}</div>
         <div style={{ color: th.textMuted, fontSize: 12 }}>
-          {isUrdu ? "اب" : "Now"} {stockLabel(product.category, lots.stock)}
+          {isUrdu ? "اب" : "Now"} {stockLabel(product.category, fromQty)}
+          {isPipe ? ` · ${shown.lengthFt || 20} ft/${isUrdu ? "پیس" : "pc"}` : ""}
           {" · "}{isUrdu ? "لاگت" : "Cost"} {formatPKR(shown.cost)}/{shown.unit}
           {" · "}{isUrdu ? "فروخت" : "Sale"} {formatPKR(shown.sale)}/{shown.unit}
         </div>
         <label style={{ display: "flex", flexDirection: "column", gap: 6, color: th.textMuted, fontSize: 12, fontWeight: 700 }}>
-          {isUrdu ? "اسٹاک (کم یا زیادہ)" : "Stock (less or more)"}
+          {isPipe ? (isUrdu ? "اسٹاک (پیس / لینتھز)" : "Stock (pieces / lengths)") : (isUrdu ? "اسٹاک (کم یا زیادہ)" : "Stock (less or more)")}
           <input value={qty} onChange={(e) => setQty(e.target.value)} inputMode="decimal" style={inputStyle} />
         </label>
+        {isPipe ? (
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, color: th.textMuted, fontSize: 12, fontWeight: 700 }}>
+            {isUrdu ? "ایک پیس کی لمبائی (فٹ)" : "Length of 1 piece (ft)"}
+            <input value={lengthFt} onChange={(e) => setLengthFt(e.target.value)} inputMode="decimal" style={inputStyle} />
+          </label>
+        ) : null}
         <label style={{ display: "flex", flexDirection: "column", gap: 6, color: th.textMuted, fontSize: 12, fontWeight: 700 }}>
           {isUrdu ? `لاگت / ${shown.unit}` : `Cost / ${shown.unit}`}
           <input value={cost} onChange={(e) => setCost(e.target.value)} inputMode="decimal" style={inputStyle} />
@@ -985,6 +1115,18 @@ function StockEditModal({ product, lots, purchases, onClose, onChanged, isUrdu, 
           {isUrdu ? `فروخت / ${shown.unit}` : `Sale / ${shown.unit}`}
           <input value={sale} onChange={(e) => setSale(e.target.value)} inputMode="decimal" style={inputStyle} />
         </label>
+        {isPipe && Number.isFinite(nextCost) && nextLen > 0 ? (
+          <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(96,165,250,0.08)", border: `1px solid ${th.border}`, color: th.text, fontSize: 13, lineHeight: 1.55 }}>
+            <div>{isUrdu ? "1 پیس" : "1 pc"} = {nextLen} ft × {formatPKR(nextCost)}/ft = <b>{formatPKR(costPerPc)}</b></div>
+            {Math.abs(diff) > 0.0001 && Number.isFinite(nextQty) ? (
+              <div style={{ marginTop: 4, fontWeight: 700, color: diff > 0 ? "#34d399" : "#f87171" }}>
+                {diff > 0 ? "+" : "−"}{Math.round(Math.abs(diff))} {isUrdu ? "پیس" : "pcs"}
+                {" · "}{Math.round(addFeet)} ft
+                {" · "}{formatPKR(addValue)}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {err ? <div style={{ color: "#f87171", fontSize: 13, fontWeight: 700 }}>{err}</div> : null}
         <button
           type="button"
@@ -1101,7 +1243,10 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
   const soldSinceOf = (p) => (compare ? (compare.sold[String(p._id || p.id || "")] || 0) : 0);
   const payMap = useMemo(() => purchasePayMap(purchases), [purchases]);
 
-  const stockOf = (p) => Number(lotsOf(p).stock) || 0;
+  const stockOf = (p) => {
+    const n = Number(p?.stock);
+    return Number.isFinite(n) ? n : 0;
+  };
   const thresholdOf = (p) => {
     const n = Number(p.lowStockThreshold);
     return Number.isFinite(n) && n > 0 ? n : 10;
@@ -1213,7 +1358,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
 
   const printRows = inventory.map((p) => {
     const lots = lotsOf(p);
-    const stock = Number(lots.stock) || 0;
+    const stock = stockOf(p);
     const zero = stock <= 0;
     const cat = itemCatOf(p) || (isUrdu ? (p.category ? getUrduItemLabel(p.category) : "") : (p.category || ""));
     const status = isDemand ? (zero ? (isUrdu ? "زیرو" : "Zero") : (isUrdu ? "کم" : "Low")) : "";
@@ -1359,7 +1504,7 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
         cols={cols}
         rows={inventory.map((p) => {
           const lots = lotsOf(p);
-          const stock = Number(lots.stock) || Number(p.stock) || 0;
+          const stock = stockOf(p);
           const bill = billOf(p);
           const name = productDisplayName(p) || p.name || "—";
           const title = p.barcode ? `${name} · ${p.barcode}` : name;
@@ -1509,6 +1654,9 @@ export default function InventoryStockTable({ products = [], purchases = [], sal
           <StockDetailView
             product={detail}
             lots={lotsOf(detail)}
+            purchases={purchases}
+            sales={sales}
+            products={products}
             onClose={() => setDetail(null)}
             isUrdu={isUrdu}
             th={th}

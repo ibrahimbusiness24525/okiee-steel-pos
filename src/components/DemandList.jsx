@@ -27,8 +27,9 @@ function unitOf(cat) {
 
 function stockText(cat, qty) {
   if (cat === "Chader") return formatWeightKgG(qty);
-  const n = Math.round((Number(qty) || 0) * 1000) / 1000;
-  return `${n} ${unitOf(cat)}`;
+  const raw = Number(qty) || 0;
+  if (cat === "Net") return `${Math.round(raw * 100) / 100} ${unitOf(cat)}`;
+  return `${Math.round(raw)} ${unitOf(cat)}`;
 }
 
 function needText(cat, raw) {

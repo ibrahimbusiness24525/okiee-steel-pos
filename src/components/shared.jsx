@@ -472,17 +472,20 @@ export function DateFilterBar({ filter, setFilter, customFrom, setCustomFrom, cu
   );
 }
 
-export function Table({ cols, rows, onEdit, onDelete, onHistory, onRowClick, compact }) {
+export function Table({ cols, rows, onEdit, onDelete, onHistory, onRowClick, compact, loading, empty }) {
   const th = useTheme();
   const {t} = useLang();
   const { isMobile } = useResponsive();
   const cellPad = compact ? "8px 10px" : "12px 16px";
   const hasActions = !!(onEdit || onDelete || onHistory);
+  const emptyMsg = loading
+    ? (empty || "Loading…")
+    : (empty || t.noRecords);
   if (isMobile) {
     return (
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {rows.length === 0 && (
-          <div style={{textAlign:"center",padding:"40px",color:th.textDim,borderRadius:16,border:`1px solid ${th.border}`,background:th.bgCard}}>{t.noRecords}</div>
+          <div style={{textAlign:"center",padding:"40px",color:th.textDim,borderRadius:16,border:`1px solid ${th.border}`,background:th.bgCard}}>{emptyMsg}</div>
         )}
         {rows.map((row, i) => (
           <div key={i} onClick={onRowClick ? () => onRowClick(row.data) : undefined} style={{borderRadius:14,border:`1px solid ${th.border}`,background:th.bgCard,padding:"14px 16px",boxShadow:th.cardShadow,cursor:onRowClick?"pointer":"default"}}>
@@ -517,7 +520,7 @@ export function Table({ cols, rows, onEdit, onDelete, onHistory, onRowClick, com
             </tr>
           </thead>
           <tbody>
-            {rows.length===0&&<tr><td colSpan={cols.length+1} style={{textAlign:"center",padding:"48px",color:th.textDim}}>{t.noRecords}</td></tr>}
+            {rows.length===0&&<tr><td colSpan={cols.length+1} style={{textAlign:"center",padding:"48px",color:th.textDim}}>{emptyMsg}</td></tr>}
             {rows.map((row,i)=>(
               <tr key={i} style={{borderBottom:`1px solid ${th.border}`,transition:"background 0.15s",cursor:onRowClick?"pointer":"default"}}
                 onClick={onRowClick ? () => onRowClick(row.data) : undefined}

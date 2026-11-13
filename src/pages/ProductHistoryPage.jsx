@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
-import { Table } from "../components/shared";
-import { formatPKR, todayStr } from "../utils/helpers";
+import { Table, useTypeaheadNav, useResponsive } from "../components/shared";
+import { formatPKR, todayStr, formatDateTime } from "../utils/helpers";
+import { api } from "../utils/api";
 import { productDisplayName } from "../utils/constants";
 import { pidOf } from "../components/StockReturns";
 import { saleSoldLines } from "../components/InventoryStockTable";
@@ -25,11 +26,18 @@ function shiftIso(iso, days) {
 }
 
 function stockText(cat, qty) {
-  const n = Math.round((Number(qty) || 0) * 1000) / 1000;
-  if (cat === "Chader") return `${n} kg`;
-  if (cat === "Net") return `${n} ft`;
-  if (cat === "Pipe") return `${n} pcs`;
-  return String(n);
+  const raw = Number(qty) || 0;
+  if (cat === "Chader") {
+    const n = Math.round(raw * 1000) / 1000;
+    return `${n} kg`;
+  }
+  if (cat === "Net") {
+    const n = Math.round(raw * 100) / 100;
+    return `${n} ft`;
+  }
+  const pcs = Math.round(raw);
+  if (cat === "Pipe" || cat === "Hardware" || cat === "Custom") return `${pcs} pcs`;
+  return String(pcs);
 }
 
 function purchaseQtyFor(bill, id, name) {
@@ -61,25 +69,47 @@ function purchaseRate(bill) {
 export default function ProductHistoryPage({ products = [], purchases = [], sales = [], saleReturns = [] }) {
   const th = useTheme();
   const { lang } = useLang();
+  const { isMobile } = useResponsive();
   const isUrdu = lang === "ur";
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState("");
+  const [events, setEvents] = useState([]);
   const today = todayStr();
   const yesterday = shiftIso(today, -1);
 
   const options = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const picked = (products || []).find((p) => String(p._id || p.id || "") === selected);
+    const pickedLabel = picked ? (productDisplayName(picked) || picked.name || "") : "";
+    const searching = q && q.toLowerCase() !== String(pickedLabel).toLowerCase();
     return (products || [])
       .map((p) => ({
         id: String(p._id || p.id || ""),
         label: productDisplayName(p) || p.name || "—",
         product: p,
       }))
-      .filter((o) => o.id && (!q || o.label.toLowerCase().includes(q) || String(o.product.category || "").toLowerCase().includes(q)))
+      .filter((o) => o.id && (!searching || o.label.toLowerCase().includes(q) || String(o.product.category || "").toLowerCase().includes(q)))
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [products, query]);
+  }, [products, query, selected]);
+
+  const pickProduct = (o) => {
+    if (!o) return;
+    setSelected(o.id);
+    setQuery(o.label);
+    setOpen(false);
+  };
+  const { open, setOpen, hi, setHi, onKeyDown: navKeys, listRef } = useTypeaheadNav(options, pickProduct);
 
   const product = (products || []).find((p) => String(p._id || p.id || "") === selected) || null;
+
+  useEffect(() => {
+    if (!selected) { setEvents([]); return; }
+    let live = true;
+    api.getActivity({ productId: selected, limit: 800 }).then((r) => {
+      if (live) setEvents(r?.activities || []);
+    }).catch(() => { if (live) setEvents([]); });
+    return () => { live = false; };
+  }, [selected]);
 
   const report = useMemo(() => {
     if (!product) return null;
@@ -93,6 +123,7 @@ export default function ProductHistoryPage({ products = [], purchases = [], sale
     });
     const bought = [];
     (purchases || []).forEach((b) => {
+      if (b.stockEdit || String(b.notes || "").toLowerCase().includes("stock edit")) return;
       const qty = purchaseQtyFor(b, id, name);
       if (qty <= 0) return;
       bought.push({
@@ -139,9 +170,11 @@ export default function ProductHistoryPage({ products = [], purchases = [], sale
     };
   }, [product, products, purchases, sales, saleReturns, today, yesterday]);
 
+  const menuBg = th.dark ? "#1a1f2e" : "#ffffff";
   const inputStyle = {
-    width: "100%", padding: "10px 12px", borderRadius: 10, border: `1px solid ${th.border}`,
-    background: th.input || th.bgCard, color: th.text, fontSize: 14, outline: "none",
+    width: "100%", padding: "11px 12px", paddingInlineEnd: 40, borderRadius: 12, border: `1px solid ${th.inputBorder || th.border}`,
+    background: th.dark ? "#161b22" : (th.input || th.bgCard), color: th.text, fontSize: 14, outline: "none",
+    boxSizing: "border-box", colorScheme: th.dark ? "dark" : "light",
   };
   const card = {
     flex: "1 1 140px", padding: "12px 14px", borderRadius: 12, border: `1px solid ${th.border}`, background: th.bgCard,
@@ -149,26 +182,71 @@ export default function ProductHistoryPage({ products = [], purchases = [], sale
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div>
-        <h2 style={{ margin: 0, color: th.text, fontSize: 18 }}>{isUrdu ? "پروڈکٹ ہسٹری" : "Product History"}</h2>
-        <p style={{ margin: "4px 0 0", color: th.textMuted, fontSize: 13 }}>
-          {isUrdu
-            ? "پروڈکٹ چنیں۔ خرید، فروخت، آج، کل، اور اب کتنی باقی ہے سب یہاں ہے۔"
-            : "Pick a product to see every purchase, every sale, today, yesterday, and what is left."}
-        </p>
+      <div style={{ display: "flex", alignItems: isMobile ? "stretch" : "center", gap: 14, flexWrap: isMobile ? "wrap" : "nowrap" }}>
+        <div style={{ flex: "0 1 auto", minWidth: isMobile ? "100%" : 180 }}>
+          <h2 style={{ margin: 0, color: th.text, fontSize: 18 }}>{isUrdu ? "پروڈکٹ ہسٹری" : "Product History"}</h2>
+          <p style={{ margin: "4px 0 0", color: th.textMuted, fontSize: 13 }}>
+            {isUrdu ? "تلاش کرکے پروڈکٹ چنیں" : "Search and pick a product"}
+          </p>
+        </div>
+        <div style={{ flex: 1, minWidth: isMobile ? "100%" : 260, position: "relative" }}>
+          <input
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setOpen(true);
+              setHi(0);
+              if (selected) setSelected("");
+            }}
+            onFocus={() => setOpen(true)}
+            onKeyDown={navKeys}
+            placeholder={isUrdu ? "تلاش / پروڈکٹ چنیں" : "Search / select a product"}
+            style={inputStyle}
+            autoComplete="off"
+          />
+          <span
+            onMouseDown={(e) => { e.preventDefault(); setOpen((v) => !v); }}
+            style={{ position: "absolute", insetInlineEnd: 12, top: "50%", transform: "translateY(-50%)", color: th.textMuted, cursor: "pointer", fontSize: 12, userSelect: "none" }}
+          >{open ? "▴" : "▾"}</span>
+          {open && (
+            <>
+              <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onMouseDown={(e) => { e.preventDefault(); setOpen(false); }} />
+              <div
+                ref={listRef}
+                style={{
+                  position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 50,
+                  background: menuBg, color: th.text, border: `1px solid ${th.border}`,
+                  borderRadius: 12, maxHeight: 280, overflowY: "auto",
+                  boxShadow: th.dark ? "0 12px 32px rgba(0,0,0,0.55)" : "0 8px 24px rgba(15,23,42,0.14)",
+                }}
+              >
+                {options.length === 0
+                  ? <div style={{ padding: 14, textAlign: "center", color: th.textDim, fontSize: 13 }}>{isUrdu ? "کوئی پروڈکٹ نہیں ملا" : "No products found"}</div>
+                  : options.map((o, i) => (
+                    <div
+                      key={o.id}
+                      data-nav-i={i}
+                      onMouseDown={(e) => { e.preventDefault(); pickProduct(o); }}
+                      onMouseEnter={() => setHi(i)}
+                      style={{
+                        padding: "10px 14px", cursor: "pointer",
+                        borderBottom: `1px solid ${th.border}`,
+                        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+                        background: i === hi || o.id === selected ? "rgba(26,188,156,0.16)" : "transparent",
+                        color: th.text, fontSize: 14,
+                      }}
+                    >
+                      <span style={{ fontWeight: o.id === selected ? 700 : 500 }}>{o.label}</span>
+                      {o.product.category && (
+                        <span style={{ fontSize: 11, color: th.textMuted, flexShrink: 0 }}>{o.product.category}</span>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            </>
+          )}
+        </div>
       </div>
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder={isUrdu ? "نام سے تلاش" : "Search by name"}
-        style={inputStyle}
-      />
-      <select value={selected} onChange={(e) => setSelected(e.target.value)} style={inputStyle}>
-        <option value="">{isUrdu ? "پروڈکٹ چنیں" : "Select a product"}</option>
-        {options.map((o) => (
-          <option key={o.id} value={o.id}>{o.label}{o.product.category ? ` · ${o.product.category}` : ""}</option>
-        ))}
-      </select>
 
       {product && report && (
         <>
@@ -200,6 +278,24 @@ export default function ProductHistoryPage({ products = [], purchases = [], sale
                   r.party,
                   <span style={{ fontWeight: 700 }}>{stockText(product.category, r.qty)}</span>,
                   formatPKR(r.rate),
+                ],
+              }))}
+            />
+          </div>
+          <div>
+            <h3 style={{ margin: "4px 0 8px", color: th.text, fontSize: 15 }}>{isUrdu ? "سب کچھ جو ہوا" : "What happened"} · {events.length}</h3>
+            <Table
+              compact
+              cols={[isUrdu ? "وقت" : "When", isUrdu ? "کیا ہوا" : "Action", isUrdu ? "انوائس" : "Invoice", isUrdu ? "مقدار" : "Qty"]}
+              rows={[...events].sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || ""))).map((a) => ({
+                data: a,
+                cells: [
+                  <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatDateTime(a.date, a.createdAt)}</span>,
+                  <span>{a.summary || a.type}{a.party ? ` · ${a.party}` : ""}</span>,
+                  <span style={{ fontFamily: "monospace", fontSize: 12 }}>{a.invoice || "—"}</span>,
+                  a.fromQty != null && a.toQty != null
+                    ? `${stockText(product.category, a.fromQty).replace(/ pcs$| kg$| ft$/, "")} → ${stockText(product.category, a.toQty)}`
+                    : (a.qty ? stockText(product.category, a.qty) : "—"),
                 ],
               }))}
             />

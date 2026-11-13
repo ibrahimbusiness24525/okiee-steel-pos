@@ -14,9 +14,25 @@ const getBaseURL = () => {
 };
 export const API = getBaseURL();
 
+function noteAuthExpired(url, res, body) {
+  if (res.status !== 401) return;
+  if (/\/auth\/login/i.test(url)) return;
+  const msg = String(body?.message || "");
+  if (msg && !/token|session|not authorized|no token|expired|invalid/i.test(msg)) return;
+  try { sessionStorage.setItem("steelpos_auth_msg", "Session expired. Please login again."); } catch { /* ignore */ }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("steelpos-auth-expired"));
+  }
+}
+
 const smartFetch = async (url, options) => {
   try {
     const res = await fetch(url, options);
+    if (res.status === 401) {
+      const copy = res.clone();
+      const body = await copy.json().catch(() => ({}));
+      noteAuthExpired(url, res, body);
+    }
     return res;
   } catch (err) {
     const fallback = url.replace("http://localhost:", "http://127.0.0.1:");
@@ -36,12 +52,20 @@ export const api = {
   updateProduct: (id,d) => smartFetch(`${API}/products/${id}`,{method:"PUT",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   deleteProduct: (id) => smartFetch(`${API}/products/${id}`,{method:"DELETE",headers:authHeaders()}).then(r=>r.json()),
   adjustStock:   (id,type,qty) => smartFetch(`${API}/products/${id}/stock`,{method:"PATCH",headers:authHeaders(),body:JSON.stringify({type,qty})}).then(r=>r.json()),
-  setStockCount: (id, qty) => smartFetch(`${API}/products/${id}/stock-count`, { method: "PATCH", headers: authHeaders(), body: JSON.stringify({ qty }) }).then(r => r.json()),
+  setStockCount: (id, qty, extra = {}) => smartFetch(`${API}/products/${id}/stock-count`, { method: "PATCH", headers: authHeaders(), body: JSON.stringify({ qty, ...extra }) }).then(r => r.json()),
   getPurchases:  (opts = {}) => smartFetch(`${API}/purchases${opts.from ? `?from=${opts.from}&to=${opts.to || opts.from}` : ""}`, {headers:authHeaders()}).then(r=>r.json()),
   addPurchase:   (d) => smartFetch(`${API}/purchases`,{method:"POST",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   updatePurchase:(id,d) => smartFetch(`${API}/purchases/${id}`,{method:"PUT",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   deletePurchase:(id) => smartFetch(`${API}/purchases/${id}`,{method:"DELETE",headers:authHeaders()}).then(r=>r.json()),
-  getSales:      (opts = {}) => smartFetch(`${API}/sales${opts.from ? `?from=${opts.from}&to=${opts.to || opts.from}` : ""}`, {headers:authHeaders()}).then(r=>r.json()),
+  getSales:      (opts = {}) => {
+    const q = new URLSearchParams();
+    if (opts.from) q.set("from", opts.from);
+    if (opts.to) q.set("to", opts.to || opts.from);
+    if (opts.limit) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    return smartFetch(`${API}/sales${qs ? `?${qs}` : ""}`, {headers:authHeaders()}).then(r=>r.json());
+  },
+  getSale:       (id) => smartFetch(`${API}/sales/${id}`, {headers:authHeaders()}).then(r=>r.json()),
   addSale:       (d) => smartFetch(`${API}/sales`,    {method:"POST",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   updateSale:    (id,d) => smartFetch(`${API}/sales/${id}`,{method:"PUT",headers:authHeaders(),body:JSON.stringify(d)}).then(r=>r.json()),
   deleteSale:    (id) => smartFetch(`${API}/sales/${id}`,{method:"DELETE",headers:authHeaders()}).then(r=>r.json()),
@@ -89,6 +113,16 @@ export const api = {
   deleteLoader:  (id)    => smartFetch(`${API}/loaders/${id}`,{method:"DELETE",headers:authHeaders()}).then(r=>r.json()),
   getDailyLoaders: (date)=> smartFetch(`${API}/loaders/daily?date=${date}`,{headers:authHeaders()}).then(r=>r.json()),
   translateUrdu: (text) => smartFetch(`${API}/translate/urdu`, {method:"POST",headers:authHeaders(),body:JSON.stringify({text})}).then(r=>r.json()),
+  getActivity: (opts = {}) => {
+    const q = new URLSearchParams();
+    if (opts.from) q.set("from", opts.from);
+    if (opts.to) q.set("to", opts.to || opts.from);
+    if (opts.type && opts.type !== "all") q.set("type", opts.type);
+    if (opts.productId) q.set("product", opts.productId);
+    if (opts.limit) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    return smartFetch(`${API}/activity${qs ? `?${qs}` : ""}`, { headers: authHeaders() }).then((r) => r.json());
+  },
   getShopProfile: () => smartFetch(`${API}/shop-profile`, { headers: authHeaders() }).then(async (r) => {
     const d = await r.json().catch(() => ({}));
     return { ...d, success: d.success === true, _status: r.status, message: d.message || (r.ok ? d.message : "Failed to load shop profile") };

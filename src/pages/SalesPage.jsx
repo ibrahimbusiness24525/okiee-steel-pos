@@ -1,12 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, StatCard, Table, DateFilterBar, EditHistoryModal } from "../components/shared";
 import { api } from "../utils/api";
 import { saveSaleReturn, removeSaleReturn, netSaleAmount, saleReturnedAmount, netSaleItems } from "../utils/returnsStore";
-import { formatPKR, todayStr, printThermalOrA4, inDateFilter } from "../utils/helpers";
+import { formatPKR, todayStr, printThermalOrA4, inDateFilter, filterDateRange } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
-import { BillingNewSaleModal, BillingSaleInvoice, getPaymentBadgeStyle, SaleRecordDetail } from "./BillingPage";
+import { BillingNewSaleModal, BillingSaleInvoice, getPaymentBadgeStyle, SaleRecordDetail, hydrateSale } from "./BillingPage";
 import { SaleReturnModal, ReturnsTable } from "../components/StockReturns";
 import { reverseTradeFinance } from "../utils/tradeFinance";
 import {
@@ -97,7 +97,7 @@ function SaleThermalInvoice({ invoiceData, onClose }) {
   );
 }
 
-function SalesPage({ sales, products, lotCtx=null, loadSales, loadProducts, loaders=[], saleReturns=[], loadSaleReturns, purchases=[], purchaseReturns=[] }) {
+function SalesPage({ sales, products, lotCtx=null, loadSales, loadProducts, loaders=[], saleReturns=[], loadSaleReturns, purchases=[], purchaseReturns=[], billsLoading=false }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
@@ -110,10 +110,15 @@ function SalesPage({ sales, products, lotCtx=null, loadSales, loadProducts, load
   const [editData,      setEditData]      = useState(null);
   const [viewSale,      setViewSale]      = useState(null);
   const [historySale,   setHistorySale]   = useState(null);
-  const [dateFilter,    setDateFilter]    = useState("today");
+  const [dateFilter,    setDateFilter]    = useState("week");
   const [customFrom,    setCustomFrom]    = useState("");
   const [customTo,      setCustomTo]      = useState("");
   const [saleSearch,    setSaleSearch]    = useState("");
+
+  useEffect(() => {
+    if (typeof loadSales !== "function") return;
+    loadSales(filterDateRange(dateFilter, customFrom, customTo));
+  }, [dateFilter, customFrom, customTo]);
   const customerNames = useMemo(() => {
     const map = new Map();
     for (const s of sales || []) {
@@ -246,11 +251,11 @@ function SalesPage({ sales, products, lotCtx=null, loadSales, loadProducts, load
     if (editData) res = await api.updateSale(editData._id, saleData);
     else          res = await api.addSale(saleData);
 
-    if (res.success) { await loadSales(); await loadProducts(); }
+    if (res.success) { await loadSales(filterDateRange(dateFilter, customFrom, customTo)); await loadProducts(); }
     return res;
   };
 
-  const openEdit   = (s) => { setEditData(s); setShowSaleModal(true); };
+  const openEdit   = async (s) => { setEditData(await hydrateSale(s)); setShowSaleModal(true); };
   const openAdd    = ()  => { setEditData(null); setShowSaleModal(true); };
   const closeModal = ()  => { setShowSaleModal(false); setEditData(null); };
 
@@ -265,7 +270,7 @@ function SalesPage({ sales, products, lotCtx=null, loadSales, loadProducts, load
         paid: s.paidAmount,
         accountId: s.accountId,
       });
-      await loadSales(); await loadProducts(); await loadSaleReturns?.();
+      await loadSales(filterDateRange(dateFilter, customFrom, customTo)); await loadProducts(); await loadSaleReturns?.();
     }
     else alert(res.message);
   };
@@ -277,7 +282,8 @@ function SalesPage({ sales, products, lotCtx=null, loadSales, loadProducts, load
     else alert(res.message);
   };
 
-  const handleReprint = (s) => {
+  const handleReprint = async (s) => {
+    s = await hydrateSale(s);
     const items      = netSaleItems(s, saleReturns).filter((it) => !it.fullyReturned && (Number(it.subtotal) || 0) > 0.009);
     const fallback   = items.length ? items : buildItemsFromSale(s);
     const itemsSum   = items.reduce((sum, i) => sum + (Number(i.subtotal) || 0), 0);
@@ -452,9 +458,11 @@ function SalesPage({ sales, products, lotCtx=null, loadSales, loadProducts, load
             ]
           };
           })}
+          loading={billsLoading && recentSales.length === 0}
+          empty={billsLoading && recentSales.length === 0 ? (isUrdu ? "انوائس لوڈ ہو رہے ہیں…" : "Loading invoices…") : undefined}
           onEdit={openEdit}
-          onHistory={(s) => setHistorySale(s)}
-          onRowClick={(s) => setViewSale(s)}
+          onHistory={async (s) => setHistorySale(await hydrateSale(s))}
+          onRowClick={async (s) => setViewSale(await hydrateSale(s))}
         />
       </div>
 

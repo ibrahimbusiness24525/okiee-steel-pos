@@ -1,6 +1,20 @@
 export const formatPKR = (n) => "PKR " + Math.round(Number(n)||0).toLocaleString("en-PK");
 export const todayStr  = () => ymd(new Date());
 
+/** Pipe / hardware pieces are whole. Kg and net keep decimals. */
+export function formatHistoryQty(a) {
+  const cat = a?.category || "";
+  const keepDec = cat === "Chader" || cat === "Net";
+  const fmt = (n) => {
+    const x = Number(n);
+    if (!Number.isFinite(x)) return "";
+    return keepDec ? String(Math.round(x * 1000) / 1000) : String(Math.round(x));
+  };
+  if (a?.fromQty != null && a?.toQty != null) return `${fmt(a.fromQty)} → ${fmt(a.toQty)}`;
+  if (a?.qty == null || a?.qty === "") return "—";
+  return fmt(a.qty) || "—";
+}
+
 export function ymd(d) {
   const x = d instanceof Date ? d : new Date(d);
   if (isNaN(x)) return "";
@@ -27,6 +41,23 @@ export function parseYmd(str) {
   }
   const dt = new Date(s);
   return isNaN(dt) ? "" : ymd(dt);
+}
+
+/** API range for the billing/sales date chips. `all` is capped so the page cannot stall. */
+export function filterDateRange(filter, customFrom = "", customTo = "") {
+  const today = todayStr();
+  if (filter === "today") return { from: today, to: today };
+  if (filter === "yesterday") {
+    const y = addDaysYmd(-1);
+    return { from: y, to: y };
+  }
+  if (filter === "week") return { from: addDaysYmd(-6), to: today };
+  if (filter === "month") return { from: `${today.slice(0, 8)}01`, to: today };
+  if (filter === "custom") {
+    if (!customFrom && !customTo) return { from: today, to: today };
+    return { from: customFrom || customTo, to: customTo || customFrom };
+  }
+  return { limit: 800 };
 }
 
 /** today | yesterday | week (7d) | month (this calendar month) | custom | all */

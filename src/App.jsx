@@ -29,6 +29,7 @@ import ExpensesPage from "./pages/ExpensesPage";
 import LedgerPage from "./pages/LedgerPage";
 import RecordsPage from "./pages/RecordsPage";
 import ProductHistoryPage from "./pages/ProductHistoryPage";
+import SoftwareHistoryPage from "./pages/SoftwareHistoryPage";
 import StaffPage from "./pages/StaffPage";
 import LoadersPage from "./pages/LoadersPage";
 import ShopProfilePage from "./pages/ShopProfilePage";
@@ -109,7 +110,7 @@ function AppLoader() {
 
 const PAGE_KEY = "steelpos_active_page";
 const ROLE_PAGES = {
-  admin: ["dashboard", "products", "purchase", "sales", "accounts", "expenses", "ledger", "records", "staff", "loaders", "shop-profile", "profile"],
+  admin: ["dashboard", "products", "purchase", "sales", "accounts", "expenses", "ledger", "records", "history", "activity", "staff", "loaders", "shop-profile", "profile"],
   staff: ["billing", "loaders"],
   superadmin: ["superadmin"],
 };
@@ -146,6 +147,8 @@ function AppInner() {
   const [parties,   setParties]   = useState([]);
   const [expenses,  setExpenses]  = useState([]);
   const [stockReady, setStockReady] = useState(false);
+  const [billsLoading, setBillsLoading] = useState(true);
+  const salesReqId = useRef(0);
 
   const loadLoaders   = async () => { try { const r = await api.getLoaders();   if (r.success) setLoaders(r.loaders || []); } catch (e) {} };
   const loadProducts  = async (opts = {}) => {
@@ -164,7 +167,19 @@ function AppInner() {
     }
   };
   const loadPurchases = async (opts = {}) => { try { const r = await api.getPurchases(opts); if (r.success) setPurchases(Array.isArray(r.purchases) ? r.purchases : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); } catch (err) { console.error("Failed to load purchases:", err); } };
-  const loadSales     = async (opts = {}) => { try { const r = await api.getSales(opts);     if (r.success) setSales(Array.isArray(r.sales) ? r.sales : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); } catch (err) { console.error("Failed to load sales:", err); } };
+  const loadSales     = async (opts = {}) => {
+    const reqId = ++salesReqId.current;
+    setBillsLoading(true);
+    try {
+      const r = await api.getSales(opts);
+      if (reqId !== salesReqId.current) return;
+      if (r.success) setSales(Array.isArray(r.sales) ? r.sales : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []);
+    } catch (err) {
+      console.error("Failed to load sales:", err);
+    } finally {
+      if (reqId === salesReqId.current) setBillsLoading(false);
+    }
+  };
   const loadSaleReturns = async () => { try { const r = await listSaleReturns(); if (r.success) setSaleReturns(r.returns || []); } catch (e) {} };
   const loadPurchaseReturns = async () => { try { const r = await listPurchaseReturns(); if (r.success) setPurchaseReturns(r.returns || []); } catch (e) {} };
   const loadStaff     = async () => { const r = await api.getStaff();     if (r.success) setStaff(Array.isArray(r.staff) ? r.staff : Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []); };
@@ -214,20 +229,21 @@ function AppInner() {
         });
       }
       const day = todayStr();
-      const [purch, salesR, sret, pret] = await Promise.all([
-        api.getPurchases({ from: day, to: day }).catch(() => null),
-        api.getSales({ from: day, to: day }).catch(() => null),
-        listSaleReturns().catch(() => null),
-        listPurchaseReturns().catch(() => null),
-      ]);
-      if (cancel) return;
-      startTransition(() => {
+      const onBills = active === "billing" || active === "sales";
+      if (!onBills) loadSales({ from: day, to: day });
+      api.getPurchases({ from: day, to: day }).then((purch) => {
+        if (cancel) return;
         if (purch && purch.success) setPurchases(pick(purch, "purchases"));
-        if (salesR && salesR.success) setSales(pick(salesR, "sales"));
+      }).catch(() => {});
+      listSaleReturns().then((sret) => {
+        if (cancel) return;
         if (sret && sret.success) setSaleReturns(sret.returns || []);
+      }).catch(() => {});
+      listPurchaseReturns().then((pret) => {
+        if (cancel) return;
         if (pret && pret.success) setPurchaseReturns(pret.returns || []);
-        setStockReady(true);
-      });
+      }).catch(() => {});
+      setStockReady(true);
     };
     refresh();
     loadLoaders();
@@ -239,10 +255,10 @@ function AppInner() {
   useEffect(() => {
     if (!user || user.role === "superadmin") return;
     if (fullBillsAsked.current) return;
-    if (!["sales", "purchase", "records", "history", "ledger"].includes(active)) return;
+    if (!["purchase", "records", "history", "ledger"].includes(active)) return;
     fullBillsAsked.current = true;
-    loadSales();
     loadPurchases();
+    loadSales({ limit: 800 });
   }, [user, active]);
 
   // Each admin has their own shop profile; staff inherits their admin's branding.
@@ -294,6 +310,12 @@ function AppInner() {
     setProducts([]); setPurchases([]); setSales([]); setStaff([]); setLoaders([]); setSaleReturns([]); setPurchaseReturns([]); setParties([]); setExpenses([]);
   };
 
+  useEffect(() => {
+    const onExpired = () => handleLogout();
+    window.addEventListener("steelpos-auth-expired", onExpired);
+    return () => window.removeEventListener("steelpos-auth-expired", onExpired);
+  }, []);
+
   if (loading) return <AppLoader />;
   if (!user)   return <LoginPage onLogin={handleLogin} />;
   if (user.role === "superadmin") return <SuperAdminPage onLogout={handleLogout} />;
@@ -305,12 +327,13 @@ function AppInner() {
           {active === "dashboard"    && <Dashboard products={productsView} purchases={purchases} sales={sales} staff={staff} loaders={loaders} saleReturns={saleReturns} purchaseReturns={purchaseReturns} parties={parties} expenses={expenses} loadParties={loadParties} loadExpenses={loadExpenses} loadProducts={loadProducts} loadPurchases={loadPurchases} loadPurchaseReturns={loadPurchaseReturns} stockReady={stockReady} />}
           {active === "products"     && <ProductsPage products={productsView} purchases={purchases} sales={sales} purchaseReturns={purchaseReturns} saleReturns={saleReturns} loadProducts={loadProducts} loadPurchases={loadPurchases} loadPurchaseReturns={loadPurchaseReturns} />}
           {active === "purchase"     && <PurchasePage purchases={purchases} products={productsView} loadPurchases={loadPurchases} loadProducts={loadProducts} purchaseReturns={purchaseReturns} loadPurchaseReturns={loadPurchaseReturns} sales={sales} saleReturns={saleReturns} stockReady={stockReady} />}
-          {active === "sales"        && <SalesPage sales={sales} products={productsView} lotCtx={lotCtx} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} saleReturns={saleReturns} loadSaleReturns={loadSaleReturns} purchases={purchases} purchaseReturns={purchaseReturns} />}
+          {active === "sales"        && <SalesPage sales={sales} products={productsView} lotCtx={lotCtx} loadSales={loadSales} loadProducts={loadProducts} loaders={loaders} saleReturns={saleReturns} loadSaleReturns={loadSaleReturns} purchases={purchases} purchaseReturns={purchaseReturns} billsLoading={billsLoading} />}
           {active === "accounts"     && <AccountsPage />}
           {active === "expenses"     && <ExpensesPage loadExpenses={loadExpenses} loadParties={loadParties} />}
           {active === "ledger"       && <LedgerPage purchases={purchases} sales={sales} user={user} />}
           {active === "records"      && <RecordsPage products={productsView} purchases={purchases} sales={sales} />}
           {active === "history"     && <ProductHistoryPage products={productsView} purchases={purchases} sales={sales} saleReturns={saleReturns} />}
+          {active === "activity"    && <SoftwareHistoryPage />}
           {active === "staff"        && <StaffPage staff={staff} loadStaff={loadStaff} />}
           {active === "loaders"      && <LoadersPage loaders={loaders} loadLoaders={loadLoaders} />}
           {active === "shop-profile" && <ShopProfilePage />}
@@ -319,7 +342,7 @@ function AppInner() {
       )}
       {user.role === "staff" && (
         <>
-          {active === "billing" && <BillingPage sales={sales} products={productsView} lotCtx={lotCtx} loadSales={loadSales} loadProducts={loadProducts} currentUser={user} loaders={loaders} purchases={purchases} purchaseReturns={purchaseReturns} saleReturns={saleReturns} />}
+          {active === "billing" && <BillingPage sales={sales} products={productsView} lotCtx={lotCtx} loadSales={loadSales} loadProducts={loadProducts} currentUser={user} loaders={loaders} purchases={purchases} purchaseReturns={purchaseReturns} saleReturns={saleReturns} billsLoading={billsLoading} />}
           {active === "loaders" && <LoadersPage loaders={loaders} loadLoaders={loadLoaders} />}
         </>
       )}

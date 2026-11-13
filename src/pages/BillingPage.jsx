@@ -1,10 +1,10 @@
-import { useState, useRef, useLayoutEffect, useMemo } from "react";
+import { useState, useRef, useLayoutEffect, useMemo, useEffect } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, StatCard, Table, WeightKgGInput, useTypeaheadNav, DateFilterBar, EditHistoryModal } from "../components/shared";
 import { api } from "../utils/api";
 import { netSaleAmount, saleReturnedAmount, netSaleItems } from "../utils/returnsStore";
-import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, printThermalOrA4, inDateFilter } from "../utils/helpers";
+import { formatPKR, todayStr, loadShopProfile, formatWeightKgG, printThermalOrA4, inDateFilter, filterDateRange } from "../utils/helpers";
 import { convertQuantity, convertPrice, getUnitLabel, canConvert, unitOptions, productUnitOf } from "../utils/unitConversion";
 import { parseSaleInvoiceRow } from "../components/InvoiceComponents";
 import {
@@ -1600,7 +1600,16 @@ function SaleRecordDetail({ sale, saleReturns = [], isUrdu }) {
 }
 
 // ─── MAIN BILLING PAGE ────────────────────────────────────────────────────────
-function BillingPage({ sales, products, loadSales, loadProducts, currentUser, loaders=[], purchases=[], purchaseReturns=[], saleReturns=[], lotCtx=null }) {
+export async function hydrateSale(s) {
+  if (!s?._id) return s;
+  try {
+    const r = await api.getSale(s._id);
+    if (r?.success && r.sale) return r.sale;
+  } catch { /* list row is enough to keep going */ }
+  return s;
+}
+
+function BillingPage({ sales, products, loadSales, loadProducts, currentUser, loaders=[], purchases=[], purchaseReturns=[], saleReturns=[], lotCtx=null, billsLoading=false }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
@@ -1611,10 +1620,15 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
   const [editData,      setEditData]      = useState(null);
   const [viewSale,      setViewSale]      = useState(null);
   const [historySale,   setHistorySale]   = useState(null);
-  const [dateFilter,    setDateFilter]    = useState("today");
+  const [dateFilter,    setDateFilter]    = useState("week");
   const [customFrom,    setCustomFrom]    = useState("");
   const [customTo,      setCustomTo]      = useState("");
   const [saleSearch,    setSaleSearch]    = useState("");
+
+  useEffect(() => {
+    if (typeof loadSales !== "function") return;
+    loadSales(filterDateRange(dateFilter, customFrom, customTo));
+  }, [dateFilter, customFrom, customTo]);
 
   const shopSales = sales || [];
   const customerNames = useMemo(() => {
@@ -1740,11 +1754,14 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
     const res = editData
       ? await api.updateSale(editData._id, saleData)
       : await api.addSale(saleData);
-    if (res.success) { await loadProducts(); }
+    if (res.success) {
+      await loadProducts();
+      if (typeof loadSales === "function") await loadSales(filterDateRange(dateFilter, customFrom, customTo));
+    }
     return res;
   };
 
-  const openEdit = (s) => { setEditData(s); setShowSaleModal(true); };
+  const openEdit = async (s) => { setEditData(await hydrateSale(s)); setShowSaleModal(true); };
   const openAdd = () => { setEditData(null); setShowSaleModal(true); };
   const closeModal = () => { setShowSaleModal(false); setEditData(null); };
 
@@ -1787,7 +1804,8 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
     };
   };
 
-  const handleReprint = (s) => {
+  const handleReprint = async (s) => {
+    s = await hydrateSale(s);
     const items = netSaleItems(s, saleReturns).filter((it) => !it.fullyReturned && (Number(it.subtotal) || 0) > 0.009);
     const itemsSum = items.reduce((sum, i) => sum + (Number(i.subtotal) || 0), 0);
     const disc = Number(s.discount) || 0;
@@ -1925,9 +1943,11 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
               onMouseLeave={e=>e.currentTarget.style.background="rgba(96,165,250,0.12)"}>🖨️</button>,
           ]
         };})}
+        loading={billsLoading && recentSales.length === 0}
+        empty={billsLoading && recentSales.length === 0 ? (isUrdu ? "انوائس لوڈ ہو رہے ہیں…" : "Loading invoices…") : undefined}
         onEdit={openEdit}
-        onHistory={(s) => setHistorySale(s)}
-        onRowClick={(s) => setViewSale(s)}
+        onHistory={async (s) => setHistorySale(await hydrateSale(s))}
+        onRowClick={async (s) => setViewSale(await hydrateSale(s))}
       />
 
       {/* New / Edit sale modal */}

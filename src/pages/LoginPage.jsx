@@ -95,6 +95,13 @@ function LoginPage({ onLogin }) {
   useEffect(() => {
     // trigger fade-in after mount
     const t = setTimeout(() => setMounted(true), 60);
+    try {
+      const authMsg = sessionStorage.getItem("steelpos_auth_msg");
+      if (authMsg) {
+        sessionStorage.removeItem("steelpos_auth_msg");
+        setError(t.sessionExpired || authMsg);
+      }
+    } catch { /* ignore */ }
     return () => clearTimeout(t);
   }, []);
 
