@@ -97,7 +97,7 @@ function costAndSale(product) {
   };
 }
 
-function pipeLengthFt(product, bill) {
+export function pipeLengthFt(product, bill) {
   const fromBill = parseFloat(String(bill?.rows?.[0]?.length || "").replace(/[^0-9.]/g, "")) || 0;
   const fromProd = Number(product?.length) || Number(product?.unitLength) || 0;
   if (fromBill > 0) return fromBill;
@@ -150,6 +150,67 @@ export function unitPrices(product, bill) {
     sale: round2(Number(product?.price) || 0),
     lengthFt: 0,
   };
+}
+
+/** FIFO / P&L unit cost for one stock unit (one pipe piece, 1 kg, 1 pc). */
+export function fifoUnitCost(product, bill) {
+  const priced = unitPrices(product, bill);
+  if ((product?.category || "") === "Pipe") {
+    const len = priced.lengthFt || 20;
+    return Math.round((priced.cost * len) * 100) / 100;
+  }
+  return priced.cost;
+}
+
+function pipeLengthFromSaleItem(item, product) {
+  const fromForm = parseFloat(String(item?.form?.pipeRows?.[0]?.length || item?.rows?.[0]?.length || "").replace(/[^0-9.]/g, "")) || 0;
+  if (fromForm > 0) return fromForm;
+  return pipeLengthFt(product);
+}
+
+function looksLikePipePerFt(unit, perFt, perPc) {
+  const u = Number(unit) || 0;
+  if (!(u > 0)) return false;
+  if (perPc > 0 && Math.abs(u - perPc) / Math.max(perPc, 1) < 0.12) return false;
+  if (perFt > 0 && Math.abs(u - perFt) / Math.max(perFt, 1) < 0.25) return true;
+  return u < 400 && perPc > u * 6;
+}
+
+/** Cost locked on a sale line. Pipe cost is always rupees per piece (ft × /ft), never /ft × pcs. */
+export function saleItemCost(item, product) {
+  const qty = Number(item?.qty) || 0;
+  const cat = item?.category || product?.category || "";
+  let unit = Number(item?.costPrice) || 0;
+  let total = Number(item?.costTotal) || 0;
+  if (cat === "Pipe") {
+    const priced = unitPrices(product, item);
+    const len = pipeLengthFromSaleItem(item, product) || priced.lengthFt || 20;
+    const perFt = priced.cost;
+    const perPc = perFt * len;
+    if (unit > 0 && looksLikePipePerFt(unit, perFt, perPc)) {
+      unit = Math.round(unit * len * 100) / 100;
+      total = Math.round(unit * qty * 100) / 100;
+    } else if (total > 0.009 && qty > 0 && looksLikePipePerFt(total / qty, perFt, perPc)) {
+      unit = Math.round((total / qty) * len * 100) / 100;
+      total = Math.round(unit * qty * 100) / 100;
+    }
+    if (unit > 0 && qty > 0) {
+      const byUnit = Math.round(unit * qty * 100) / 100;
+      if (total <= 0.009 || byUnit > total + 0.02) total = byUnit;
+    } else if (total <= 0.009 && qty > 0 && perPc > 0) {
+      unit = Math.round(perPc * 100) / 100;
+      total = Math.round(perPc * qty * 100) / 100;
+    }
+    return { unit, total };
+  }
+  if (unit > 0 && qty > 0) {
+    const byUnit = Math.round(unit * qty * 100) / 100;
+    if (byUnit > total + 0.02 || total <= 0.009) total = byUnit;
+  } else if (total <= 0.009 && product && qty > 0) {
+    const pp = Number(product.purchasePrice) || Number(product.price) || Number(product.listCost) || 0;
+    if (pp > 0) total = Math.round(pp * qty * 100) / 100;
+  }
+  return { unit, total };
 }
 
 function purchaseQty(p) {
@@ -542,7 +603,7 @@ function rawLotsForProduct(product, ctx) {
 }
 
 function lotsFromContext(product, ctx) {
-  const fallback = costAndSale(product).cost;
+  const fallback = fifoUnitCost(product);
   const stock = Number(product?.stock) || 0;
   const raw = rawLotsForProduct(product, ctx);
   const lots = raw.map((l) => ({
@@ -686,7 +747,7 @@ export function fifoCostForQty(product, qty, opts = {}, extraQty = 0) {
   }
   if (extra > 0) {
     if (layers[0]) layers[0].remaining += extra;
-    else layers.push({ remaining: extra, unitCost: Number(lots.fifoCost) || 0 });
+    else layers.push({ remaining: extra, unitCost: Number(lots.fifoCost) || fifoUnitCost(product) || 0 });
   }
   let need = need0;
   let cost = 0;
@@ -698,7 +759,7 @@ export function fifoCostForQty(product, qty, opts = {}, extraQty = 0) {
     need -= take;
   }
   if (need > 0) {
-    const fb = Number(lots.fifoCost) || Number(costAndSale(product).cost) || 0;
+    const fb = Number(lots.fifoCost) || fifoUnitCost(product) || 0;
     cost += need * fb;
   }
   return Math.round(cost * 100) / 100;

@@ -5,7 +5,7 @@ import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, Table } from "../components/shared";
 import { formatPKR, formatDateTime, printThermalOrA4, downloadInvoicePdf, sharePdfOnWhatsApp, loadShopProfile, inDateFilter } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
-import InventoryStockTable, { inventoryStats } from "../components/InventoryStockTable";
+import InventoryStockTable, { inventoryStats, saleItemCost } from "../components/InventoryStockTable";
 import DemandList from "../components/DemandList";
 import { netSaleAmount, saleReturnedAmount, netSaleItems, netPurchaseLine, purchaseInvoiceNet, saleInvoiceNet } from "../utils/returnsStore";
 import {
@@ -85,29 +85,10 @@ function findProduct(products, id, name) {
   );
 }
 
-/** Line cost for P/L: unit cost × remaining qty when saved on the invoice. */
+/** Line cost for P/L: cost saved on the invoice. Pipe is ft × /ft per piece, not /ft × pcs. */
 function itemCostForProfit(item, products) {
-  const qty = Number(item.qty) || 0;
-  const sub = Number(item.subtotal) || 0;
-  const unit = Number(item.costPrice) || 0;
-  let total = Number(item.costTotal) || 0;
-  if (unit > 0 && qty > 0) {
-    const byUnit = +(unit * qty).toFixed(2);
-    if (byUnit > total + 0.02 || total <= 0.009) total = byUnit;
-  } else if (total <= 0.009 && products?.length && qty > 0) {
-    const prod = findProduct(products, item.productId || item.product, item.productName);
-    if (prod) {
-      const pp = item.category === "Pipe"
-        ? (Number(prod.price) || Number(prod.purchasePrice) || 0)
-        : (Number(prod.purchasePrice) || Number(prod.price) || 0);
-      if (pp > 0) total = +(pp * qty).toFixed(2);
-    }
-  }
-  if (item.category === "Pipe" && total > 0) {
-    const absProfit = Math.abs(sub - total);
-    return Math.max(0, sub - absProfit);
-  }
-  return total;
+  const prod = findProduct(products, item.productId || item.product, item.productName);
+  return saleItemCost(item, prod).total;
 }
 
 /** Same profit math on dashboard KPI and analytics. Sale returns shrink sale + cost per item.
@@ -212,15 +193,8 @@ function flattenSales(list, products) {
           const m = String(it.rows[0].desc).match(/^(\d+\.?\d*)/);
           if (m) qty = parseFloat(m[1]) || 0;
         }
-        let costAmt = Number(it.costTotal) || 0;
-        if (costAmt <= 0) {
-          costAmt = 0;
-        }
-        let profit = saleAmt - costAmt;
-        if (costAmt > 0 && /^pipe$/i.test(category)) {
-          profit = Math.abs(saleAmt - costAmt);
-          costAmt = saleAmt - profit;
-        }
+        const costAmt = itemCostForProfit(it, products);
+        const profit = saleAmt - costAmt;
         if (costAmt > 0) {
           lines.push({ date, invoice, customer, name, category, qty, saleAmt, costAmt, profit });
         }
@@ -230,15 +204,10 @@ function flattenSales(list, products) {
       const saleAmt = Number(s.total) || Number(s.grandTotal) || 0;
       const qty = Number(s.qty) || 0;
       const prod = findProduct(products, s.product, name);
-      const costAmt = Number(s.costTotal) || 0;
+      const costAmt = itemCostForProfit({ ...s, productName: name, category: s.category || prod?.category }, products);
       if (costAmt > 0) {
-        let profit = saleAmt - costAmt;
-        let cost = costAmt;
-        if (/^pipe$/i.test(s.category || prod?.category || "")) {
-          profit = Math.abs(saleAmt - costAmt);
-          cost = saleAmt - profit;
-        }
-        lines.push({ date, invoice, customer, name, category: resolveCategory(s, prod), qty, saleAmt, costAmt: cost, profit });
+        const profit = saleAmt - costAmt;
+        lines.push({ date, invoice, customer, name, category: resolveCategory(s, prod), qty, saleAmt, costAmt, profit });
       }
     }
   });
@@ -949,7 +918,7 @@ function DailyAnalyticsModal({
             <p style={{ color: th.textMuted, fontSize: 12, margin: "8px 0 0", lineHeight: 1.45 }}>
               {isUrdu
                 ? "یہ منافع ڈیش بورڈ والے منافع جیسا ہے: صرف ان آئٹمز پر جن کی لاگت ریکارڈ ہے (فروخت − لاگت)۔ پائپ پر فرق ہمیشہ مثبت گنا جاتا ہے۔ جن آئٹمز کی لاگت نہیں، وہ اس رقم میں شامل نہیں۔"
-                : "This is the same as dashboard Profit: sale minus recorded cost, only on items that have a cost. Pipe margin is always counted as positive. Items with no cost are left out — that is why sales total can be higher than the amount used for profit."}
+                : "This is the same as dashboard Profit: sale after discount minus cost at sale time. Pipe cost is per piece (length × /ft). Items with no cost are left out — that is why sales total can be higher than the amount used for profit."}
             </p>
           )}
         </div>

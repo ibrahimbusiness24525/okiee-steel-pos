@@ -23,7 +23,7 @@ import { productDisplayName } from "../utils/constants";
 import PaymentTerms, { useAccounts, derivePayment, isPayValid, calcDiscount, DiscountCashFields } from "../components/PaymentTerms";
 import { recordTradeFinance, reverseTradeFinance } from "../utils/tradeFinance";
 import PartyNamePicker from "../components/PartyNamePicker";
-import { stockLotsForProduct, fifoCostForQty, unitPrices } from "../components/InventoryStockTable";
+import { stockLotsForProduct, fifoCostForQty, unitPrices, saleItemCost } from "../components/InventoryStockTable";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BILLING PAGE — COMPLETE UPDATE
@@ -1240,9 +1240,12 @@ function BillingNewSaleModal({ products, onSave, onClose, isUrdu, prefill, loade
     // On edit: keep the original invoice unit cost (FIFO after stock deduct would change 100 → 80).
     const lockedCosts = prefill?.isEdit
       ? (prefill.items || []).map((it) => {
+          const prod = products.find((p) => String(p._id || p.id) === String(it.productId || it.product || ""))
+            || products.find((p) => String(p.name || "").trim().toLowerCase() === String(it.productName || "").trim().toLowerCase());
+          const { unit } = saleItemCost(it, prod);
           const oq = Number(it.qty) || 0;
           const ot = Number(it.costTotal) || 0;
-          const ou = Number(it.costPrice) || (oq > 0 && ot > 0 ? ot / oq : 0);
+          const ou = unit || Number(it.costPrice) || (oq > 0 && ot > 0 ? ot / oq : 0);
           return {
             productId: String(it.productId || it.product || ""),
             name: String(it.productName || "").trim().toLowerCase(),
