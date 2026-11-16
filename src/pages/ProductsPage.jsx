@@ -21,12 +21,13 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
   const [editing,setEditing]=useState(null); const [saving,setSaving]=useState(false);
   const [catTab,setCatTab]=useState("all"); const [search,setSearch]=useState("");
   const [showHwModal,setShowHwModal]=useState(false); const [hwSeed,setHwSeed]=useState(null);
-  const [hiddenCost,setHiddenCost]=useState(() => new Set());
+  const [revealedCost,setRevealedCost]=useState(() => new Set());
+  const [formErr,setFormErr]=useState("");
 
   const toggleCostPrice = (id, e) => {
     e?.stopPropagation?.();
     e?.preventDefault?.();
-    setHiddenCost((prev) => {
+    setRevealedCost((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -34,16 +35,37 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
     });
   };
 
-  const openAdd  = () => { setForm(EMPTY_FORM); setEditing(null); setShowModal(true); };
+  const openAdd  = () => { setForm(EMPTY_FORM); setEditing(null); setFormErr(""); setShowModal(true); };
   const openHwAdd = () => { setHwSeed(null); setShowHwModal(true); };
   const openEdit = (d) => {
     if (d.category === "Hardware") { setHwSeed(d); setShowHwModal(true); return; }
-    setForm({ category:d.category||"",name:d.name||"",pipeType:d.pipeType||"",pipeSubType:d.pipeSubType||"",pipeInch:d.pipeInch||"",gauge:d.gauge||"",length:d.length||"",weight:String(d.weight||""),basePrice:String(d.basePrice||""),percentage:String(d.percentage||""),subType:d.subType||"",stock:String(d.stock||""),price:String(d.price||""),purchasePrice:String(d.purchasePrice||""),unit:d.unit||"piece",width:d.width||"" });
-    setEditing(d._id); setShowModal(true);
+    const gaugeDigits = String(d.gauge || "").replace(/[^\d]/g, "");
+    const fromName = String(d.name || "").match(/(\d{2})\s*$/);
+    setForm({
+      category: d.category || "",
+      name: d.name || "",
+      pipeType: d.pipeType || "",
+      pipeSubType: d.pipeSubType || "",
+      pipeInch: d.pipeInch || "",
+      gauge: gaugeDigits || (fromName ? fromName[1] : ""),
+      length: d.length || "",
+      weight: String(d.weight || ""),
+      basePrice: String(d.basePrice || ""),
+      percentage: String(d.percentage || ""),
+      subType: d.subType || "",
+      stock: String(d.stock || ""),
+      price: String(d.price || ""),
+      purchasePrice: String(d.purchasePrice || ""),
+      unit: d.unit || "piece",
+      width: d.width || "",
+    });
+    setEditing(d._id);
+    setFormErr("");
+    setShowModal(true);
   };
   const canSave = () => {
     if(!form.category) return false;
-    if(form.category==="Pipe") return !!(form.pipeType&&form.pipeInch&&form.pipeInch!=="__custom__"&&form.gauge&&form.price);
+    if(form.category==="Pipe") return !!(form.pipeType&&form.pipeInch&&form.pipeInch!=="__custom__"&&form.gauge&&(form.price!==""&&form.price!=null));
     if(form.category==="Chader") return form.subType==="Custom" ? !!(form.name&&form.name.trim()) : !!(form.subType);
     if(form.category==="Net") { if(!form.subType) return false; if(form.subType==="Chorus") return !!(form.gauge); return !!form.name; }
     if(form.category==="Hardware") return !!form.name;
@@ -51,7 +73,17 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
     return false;
   };
   const save = async() => {
-    if(!canSave()) return;
+    if(!canSave()) {
+      if(form.category==="Pipe") {
+        if(!form.pipeInch || form.pipeInch==="__custom__") setFormErr(isUrdu ? "سائز لکھیں" : "Enter the pipe size");
+        else if(!form.gauge) setFormErr(isUrdu ? "گیج منتخب کریں" : "Select a gauge");
+        else setFormErr(isUrdu ? "لاگت فی فٹ لکھیں" : "Enter cost per feet");
+      } else {
+        setFormErr(isUrdu ? "ضروری فیلڈز بھریں" : "Fill the required fields");
+      }
+      return;
+    }
+    setFormErr("");
     const resolvedName = form.category==="Net"&&form.subType==="Chorus"
       ? (form.name&&form.name.trim() ? form.name.trim() : `Chorus ${form.gauge}`.trim())
       : (form.name||form.subType||form.category);
@@ -204,7 +236,7 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
             ? (hardwareSalePrice(p, purchases) || Number(p.price) || 0)
             : (Number(priced.sale) || Number(p.lotSale) || 0);
           const unitLbl = priced.unit ? ` /${priced.unit}` : (isPipe ? " /ft" : "");
-          const costShown = !hiddenCost.has(p._id);
+          const costShown = revealedCost.has(p._id);
           const fmtRs = (n) => {
             const v = Math.round((Number(n) || 0) * 100) / 100;
             if (!v) return "—";
@@ -262,6 +294,7 @@ function ProductsPage({ products, purchases = [], sales = [], purchaseReturns = 
           {form.category==="Net"&&<NetForm form={form} setForm={setForm}/>}
           {form.category==="Hardware"&&<HardwareForm form={form} setForm={setForm}/>}
           {form.category==="Custom"&&<CustomForm form={form} setForm={setForm}/>}
+          {formErr ? <div style={{ color:"#f87171", fontWeight:700, fontSize:13 }}>{formErr}</div> : null}
           {form.category&&<SaveBtn onClick={save} loading={saving} label={saving?t.saving:editing?t.updateProduct:t.saveProduct}/>}
         </div>
       </Modal>)}
@@ -284,16 +317,25 @@ function PipeForm({ form, setForm }) {
   const th=useTheme(); const {t,lang}=useLang(); const isUrdu=lang==="ur";
   const s={background:th.input,border:`1px solid ${th.inputBorder}`,color:th.text,borderRadius:12,padding:"11px 14px",fontSize:15,outline:"none",width:"100%",boxSizing:"border-box"};
   const LabelRow=({text,required})=>(<label style={{color:th.textMuted,fontSize:12,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:5,display:"block"}}>{text}{required&&<span style={{color:"#f87171",marginLeft:3}}>*</span>}</label>);
+  const inchList=form.pipeType==="round"?ROUND_INCHES:SQUARE_INCHES;
   const buildName=(f)=>{const parts=[];if(f.pipeType==="round"){if(f.pipeSubType)parts.push(f.pipeSubType.charAt(0).toUpperCase()+f.pipeSubType.slice(1));parts.push("Round");}else if(f.pipeType==="square")parts.push("Square");if(f.pipeInch)parts.push(f.pipeInch);if(f.gauge)parts.push(f.gauge);return parts.join(" ");};
   const selectType=(type)=>setForm(p=>({...p,pipeType:type,pipeSubType:"",pipeInch:"",gauge:"",price:"",name:""}));
   const selectSub=(sub)=>setForm(p=>({...p,pipeSubType:sub,pipeInch:"",gauge:"",price:"",name:""}));
-  const selectInch=(inch)=>setForm(p=>{const n=buildName({...p,pipeInch:inch});return{...p,pipeInch:inch,gauge:"",price:"",name:n};});
-  const selectGauge=(g)=>setForm(p=>{const n=buildName({...p,gauge:g});return{...p,gauge:g,price:"",name:n};});
+  const selectInch=(inch)=>{
+    if(inch==="__custom__") {
+      setForm(p=>({...p, pipeInch: p.pipeInch && p.pipeInch!=="__custom__" && !inchList.includes(p.pipeInch) ? p.pipeInch : "__custom__"}));
+      return;
+    }
+    setForm(p=>{
+      const keepGauge = p.pipeInch === inch || p.pipeInch === "__custom__" || (!inchList.includes(p.pipeInch) && p.pipeInch);
+      return { ...p, pipeInch: inch, gauge: keepGauge ? p.gauge : "", name: buildName({ ...p, pipeInch: inch, gauge: keepGauge ? p.gauge : "" }) };
+    });
+  };
+  const selectGauge=(g)=>setForm(p=>{const n=buildName({...p,gauge:g});return{...p,gauge:g,name:n};});
   const showSubType=form.pipeType==="round";
   const showInch=form.pipeType==="square"||(form.pipeType==="round"&&form.pipeSubType);
-  const showGauge=!!form.pipeInch&&form.pipeInch!=="__custom__";
-  const showPrice=!!form.gauge;
-  const inchList=form.pipeType==="round"?ROUND_INCHES:SQUARE_INCHES;
+  const showGauge=!!form.pipeInch;
+  const showPrice=!!form.gauge || form.price !== "";
 
   // custom inch: dropdown value helper
   const dropdownInchValue = inchList.includes(form.pipeInch) ? form.pipeInch : (form.pipeInch ? "__custom__" : "");
@@ -327,10 +369,7 @@ function PipeForm({ form, setForm }) {
           <LabelRow text={t.inches} required/>
           <select
             value={dropdownInchValue}
-            onChange={e=>{
-              if(e.target.value==="__custom__") setForm(p=>({...p,pipeInch:"__custom__",gauge:"",price:"",name:""}));
-              else selectInch(e.target.value);
-            }}
+            onChange={e=>selectInch(e.target.value)}
             style={s}
           >
             <option value="">— {t.inches} —</option>
@@ -341,12 +380,11 @@ function PipeForm({ form, setForm }) {
             <input
               type="text"
               value={form.pipeInch==="__custom__" ? "" : form.pipeInch}
-              onChange={e=>selectInch(e.target.value)}
+              onChange={e=>setForm(p=>({...p, pipeInch: e.target.value || "__custom__", name: buildName({ ...p, pipeInch: e.target.value })}))}
               placeholder={isUrdu ? 'اپنا سائز لکھیں... مثلاً 2.5"' : 'Type custom size... e.g. 2.5"'}
               style={{...s, border:"2px solid rgba(96,165,250,0.4)"}}
               onFocus={e=>e.target.style.borderColor="#60a5fa"}
               onBlur={e=>e.target.style.borderColor="rgba(96,165,250,0.4)"}
-              autoFocus
             />
           )}
         </div>
@@ -357,6 +395,9 @@ function PipeForm({ form, setForm }) {
           <select value={form.gauge||""} onChange={e=>selectGauge(e.target.value)} style={s}>
             <option value="">— {t.gauge} —</option>
             {PIPE_GAUGES.map(g=><option key={g.value} value={g.value} style={{background:th.bgModal}}>{g.label}</option>)}
+            {form.gauge && !PIPE_GAUGES.some(g=>g.value===form.gauge) ? (
+              <option value={form.gauge} style={{background:th.bgModal}}>{form.gauge} Gauge</option>
+            ) : null}
           </select>
         </div>
       )}
