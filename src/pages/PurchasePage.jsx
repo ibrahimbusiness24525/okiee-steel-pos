@@ -281,7 +281,10 @@ function ProductBlock({ index, products, block, onChange, onRemove, canRemove })
 
   const selectedProduct = products.find(p => p._id === block.productId);
   const category        = selectedProduct?.category || "";
-  const productPrice    = selectedProduct?.price    || 0;
+  // Pipe: price=cost/ft, purchasePrice=sale/ft — purchase form uses sale as base (+ Purchase %)
+  const productPrice    = category === "Pipe"
+    ? (Number(selectedProduct?.purchasePrice) || Number(selectedProduct?.price) || 0)
+    : (Number(selectedProduct?.price) || 0);
 
   const setRows = (updater) => {
     const newRows = typeof updater === "function" ? updater(block.rows) : updater;
