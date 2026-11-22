@@ -1623,7 +1623,7 @@ function BillingPage({ sales, products, loadSales, loadProducts, currentUser, lo
   const [editData,      setEditData]      = useState(null);
   const [viewSale,      setViewSale]      = useState(null);
   const [historySale,   setHistorySale]   = useState(null);
-  const [dateFilter,    setDateFilter]    = useState("week");
+  const [dateFilter,    setDateFilter]    = useState("today");
   const [customFrom,    setCustomFrom]    = useState("");
   const [customTo,      setCustomTo]      = useState("");
   const [saleSearch,    setSaleSearch]    = useState("");

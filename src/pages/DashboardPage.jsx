@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useLang } from "../context/LangContext";
 import { useResponsive, Icon, ICONS, Modal, Table } from "../components/shared";
-import { formatPKR, formatDateTime, printThermalOrA4, downloadInvoicePdf, sharePdfOnWhatsApp, loadShopProfile, inDateFilter } from "../utils/helpers";
+import { formatPKR, formatDateTime, printThermalOrA4, downloadInvoicePdf, sharePdfOnWhatsApp, loadShopProfile, inDateFilter, filterDateRange } from "../utils/helpers";
 import { safeProductName } from "../utils/constants";
 import InventoryStockTable, { inventoryStats, saleItemCost } from "../components/InventoryStockTable";
 import DemandList from "../components/DemandList";
@@ -1108,7 +1108,7 @@ function DailyAnalyticsModal({
 
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
-function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=[], purchaseReturns=[], parties=[], expenses=[], loadParties, loadExpenses, loadProducts, loadPurchases, loadPurchaseReturns, stockReady = false }) {
+function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=[], purchaseReturns=[], parties=[], expenses=[], loadParties, loadExpenses, loadProducts, loadPurchases, loadSales, loadPurchaseReturns, stockReady = false }) {
   const th = useTheme();
   const { t, lang } = useLang();
   const { isMobile } = useResponsive();
@@ -1117,6 +1117,16 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
   const [filter, setFilter] = useState("today");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+
+  // Login only loads today's bills — reload when dashboard period changes (same as Billing).
+  useEffect(() => {
+    const range = filterDateRange(filter, customFrom, customTo);
+    if (typeof loadSales === "function") loadSales(range);
+    if (typeof loadPurchases === "function") {
+      if (range.from) loadPurchases({ from: range.from, to: range.to || range.from });
+      else loadPurchases();
+    }
+  }, [filter, customFrom, customTo]);
   const [supplierSearch, setSupplierSearch] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
   const [showProfitModal, setShowProfitModal] = useState(false);
@@ -1555,15 +1565,12 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
           {/* Items — sale amounts after prorated invoice discount */}
           <div style={{ paddingBottom:8, paddingRight:14 }}>
             {openItems.length > 0 ? openItems.map((item, j) => {
-              const isPipe = item.category === "Pipe";
               const grossSub = Number(item.subtotal) || 0;
               const share = openGross > 0.009 ? grossSub / openGross : 0;
               const discShare = disc > 0.009 ? disc * share : 0;
               const sub = Math.max(0, Math.round((grossSub - discShare) * 100) / 100);
               const cost = Number(item.costTotal) || 0;
-              const itemProfit = isPipe
-                ? (cost > 0 ? Math.abs(sub - cost) : null)
-                : (cost > 0 ? (sub - cost) : null);
+              const itemProfit = cost > 0.009 ? (sub - cost) : null;
               return (
                 <div key={j} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12, marginBottom:3, gap:8, opacity: item.returned ? 0.85 : 1 }}>
                   <span style={{ color:th.text, fontWeight:600, flex:1, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
@@ -1577,14 +1584,14 @@ function Dashboard({ products, purchases, sales, staff, loaders=[], saleReturns=
                   <span style={{ color:th.textDim, fontSize:11 }}>
                     {isUrdu ? "فروخت:" : "Sale:"} <span style={{ color:"#60a5fa", fontWeight:600 }}>{formatPKR(sub)}</span>
                   </span>
-                  {!isPipe && cost > 0 && (
+                  {cost > 0.009 && (
                     <span style={{ color:th.textDim, fontSize:11 }}>
                       {isUrdu ? "لاگت:" : "Cost:"} <span style={{ color:"#f87171", fontWeight:600 }}>{formatPKR(cost)}</span>
                     </span>
                   )}
                   {itemProfit !== null && (
-                    <span style={{ fontWeight:700, fontSize:12, color: isPipe ? "#10b981" : (itemProfit < 0 ? "#ef4444" : "#10b981"), minWidth:70, textAlign:"right" }}>
-                      {isPipe ? "+" + formatPKR(itemProfit) : (itemProfit >= 0 ? "+" : "") + formatPKR(itemProfit)}
+                    <span style={{ fontWeight:700, fontSize:12, color: itemProfit < 0 ? "#ef4444" : "#10b981", minWidth:70, textAlign:"right" }}>
+                      {(itemProfit >= 0 ? "+" : "") + formatPKR(itemProfit)}
                     </span>
                   )}
                 </div>
