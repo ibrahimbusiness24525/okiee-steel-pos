@@ -7,6 +7,7 @@ import { formatPKR, formatDateTime, printThermalOrA4, downloadInvoicePdf, todayS
 import { safeProductName } from "../utils/constants";
 import { ledgerApi, partyTotals, openingKindOf } from "../utils/ledgerStore";
 import PartyLedgerSheet, { buildPartyLedger } from "../components/PartyLedgerSheet";
+import { hydrateSale } from "./BillingPage";
 
 function partyOpening(p) {
   if (!p) return 0;
@@ -182,17 +183,39 @@ function purchasesToInvoiceData(purchaseList, invoiceTitle, supplierName, produc
   };
 }
 
+function saleItemRows(item) {
+  const subtotal = Number(item?.subtotal) || item?.rows?.reduce((a, r) => a + (Number(r.amount) || 0), 0) || 0;
+  if (item?.rows && item.rows.length) {
+    return item.rows.map((r) => ({
+      ...r,
+      amount: Number(r.amount) || subtotal || 0,
+      qty: r.qty != null && r.qty !== "" ? r.qty : item.qty,
+    }));
+  }
+  const qty = Number(item?.qty) || 0;
+  const cat = item?.category || "";
+  const unit = cat === "Chader" ? "kg" : cat === "Net" ? "ft" : "pc";
+  const rate = qty > 0 ? Math.round((subtotal / qty) * 100) / 100 : subtotal;
+  return [{
+    desc: qty > 0 ? `${qty}${unit} × Rs${rate}/${unit}` : (item?.productName || "1"),
+    amount: subtotal,
+    qty: qty || 1,
+  }];
+}
+
 function salesToInvoiceData(salesList, invoiceTitle, customerName) {
   const itemMap = {};
   (salesList || []).forEach((s) => {
     if (s.items && s.items.length > 0) {
       s.items.forEach((item, idx) => {
         const key = `${item.productName || ""}__${item.category || ""}__${idx}`;
-        const subtotal = item.subtotal || item.rows?.reduce((a, r) => a + (Number(r.amount) || 0), 0) || 0;
+        const subtotal = Number(item.subtotal) || item.rows?.reduce((a, r) => a + (Number(r.amount) || 0), 0) || 0;
+        if (subtotal <= 0.009) return;
+        const rows = saleItemRows(item);
         if (!itemMap[key]) {
-          itemMap[key] = { productName: item.productName || "—", category: item.category || "", rows: item.rows || [], subtotal };
+          itemMap[key] = { productName: item.productName || "—", category: item.category || "", qty: Number(item.qty) || 0, rows, subtotal };
         } else {
-          itemMap[key].rows = [...itemMap[key].rows, ...(item.rows || [])];
+          itemMap[key].rows = [...itemMap[key].rows, ...rows];
           itemMap[key].subtotal += subtotal;
         }
       });
@@ -207,7 +230,7 @@ function salesToInvoiceData(salesList, invoiceTitle, customerName) {
       : saleFallbackRows(s);
     const rowTotal = rows.reduce((a, r) => a + (Number(r.amount) || 0), 0);
     if (!itemMap[key]) {
-      itemMap[key] = { productName: s.productName || safeProductName(s.product), category: s.category || "", rows, subtotal: rowTotal };
+      itemMap[key] = { productName: s.productName || safeProductName(s.product), category: s.category || "", qty: Number(s.qty) || 0, rows, subtotal: rowTotal };
     } else {
       itemMap[key].rows = [...itemMap[key].rows, ...rows];
       itemMap[key].subtotal += rowTotal;
@@ -480,13 +503,23 @@ export default function RecordsPage({ products = [], purchases = [], sales = [] 
     return phone;
   };
 
-  const openInvoiceGroup = (group, kind, send) => {
+  const openInvoiceGroup = async (group, kind, send) => {
     const h = group.head || {};
     const inv = invoiceNo(h) || (kind === "sale" ? "INV" : "PO");
+    let list = group.items || [];
+    // List API used to omit items.rows — fetch full sale so slip lines are complete.
+    if (kind === "sale") {
+      list = await Promise.all(list.map(async (s) => {
+        const hasRows = (s.items || []).some((it) => (it.rows || []).length > 0);
+        if (hasRows) return s;
+        return hydrateSale(s);
+      }));
+    }
     const data = kind === "sale"
-      ? salesToInvoiceData(group.items, inv, h.customer || "—")
-      : purchasesToInvoiceData(group.items, inv, h.supplier || h.supplierName || "—", products);
+      ? salesToInvoiceData(list, inv, h.customer || "—")
+      : purchasesToInvoiceData(list, inv, h.supplier || h.supplierName || "—", products);
     data.date = h.date || data.date || todayStr();
+    data.isPurchase = kind === "purchase";
     const phone = kind === "sale"
       ? findPhone(h.customer, "customer")
       : findPhone(h.supplier || h.supplierName, "supplier");

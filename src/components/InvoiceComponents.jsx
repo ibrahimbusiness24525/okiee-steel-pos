@@ -466,8 +466,23 @@ function CombinedSaleInvoice({ invoiceData, onClose, isUrdu }) {
 
   const lineItems = [];
   (items || []).forEach(item => {
-    (item.rows || []).forEach(row => {
+    const sub = Number(item.subtotal) || 0;
+    const qty = Number(item.qty) || 0;
+    const rows = (item.rows && item.rows.length)
+      ? item.rows
+      : (sub > 0.009
+        ? [{
+            desc: qty > 0 ? `${qty}pc` : (item.productName || "1"),
+            amount: sub,
+            qty: qty || 1,
+          }]
+        : []);
+    rows.forEach(row => {
       const line = parseRow(row, item.category, item.productName);
+      if ((Number(line.amount) || 0) <= 0.009 && sub > 0.009) {
+        line.amount = sub;
+        if (!(Number(line.qty) > 0) && qty > 0) line.qty = String(qty);
+      }
       if ((Number(line.amount) || 0) <= 0.009) return;
       lineItems.push({ ...line, pack: packLabel(item.category, line.qty) });
     });

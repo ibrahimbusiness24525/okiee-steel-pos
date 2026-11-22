@@ -704,7 +704,7 @@ function BillingProductBlock({ index, products, block, onChange, onRemove, canRe
   const wrapRef = useRef(null);
   const keepInViewRef = useRef(false);
   const [open, setOpen] = useState(true);
-  const [showCost, setShowCost] = useState(true);
+  const [showCost, setShowCost] = useState(false);
   const [search, setSearch] = useState(() => {
     const found = products.find(p => (p._id || p.id) === block.productId);
     return found ? productDisplayName(found) : "";
